@@ -22,7 +22,19 @@ import {
   type TaskStatus,
   openStore,
 } from '@amrita/store';
-import { type ChatUsage, ProviderError, type ProviderInfo, ProviderRegistry } from './provider.ts';
+import {
+  type ChatProvider,
+  type ChatUsage,
+  type FetchLike,
+  MOCK_PROVIDER_ID,
+  MockProvider,
+  ProviderError,
+  type ProviderInfo,
+  REAL_PROVIDERS,
+  defaultFetch,
+  envPresent,
+  readEnvSecret,
+} from './provider.ts';
 import { clean } from './util.ts';
 
 /** A non-streaming chat turn request. */
@@ -67,6 +79,8 @@ export interface KernelOptions {
   /** SQLite path, or ':memory:'. */
   dbPath: string;
   spillDir?: string;
+  /** Injectable fetch for real provider adapters (tests pass a fake; defaults to global fetch). */
+  fetchImpl?: FetchLike;
 }
 
 /**
@@ -79,12 +93,14 @@ export class AmritaKernel {
   readonly store: Store;
   readonly dbPath: string;
   readonly startedAt: string;
-  private readonly providers = new ProviderRegistry();
+  private readonly mock = new MockProvider();
+  private readonly fetchImpl: FetchLike;
 
-  private constructor(store: Store, dbPath: string, startedAt: string) {
+  private constructor(store: Store, dbPath: string, startedAt: string, fetchImpl: FetchLike) {
     this.store = store;
     this.dbPath = dbPath;
     this.startedAt = startedAt;
+    this.fetchImpl = fetchImpl;
   }
 
   /** Open (creating + migrating) the store and start the kernel. */
@@ -93,7 +109,12 @@ export class AmritaKernel {
       path: opts.dbPath,
       ...(opts.spillDir ? { spillDir: opts.spillDir } : {}),
     });
-    return new AmritaKernel(store, opts.dbPath, new Date().toISOString());
+    return new AmritaKernel(
+      store,
+      opts.dbPath,
+      new Date().toISOString(),
+      opts.fetchImpl ?? defaultFetch,
+    );
   }
 
   close(): void {
@@ -173,8 +194,86 @@ export class AmritaKernel {
 
   // ── chat turn + providers ────────────────────────────────────────────────
 
+  /** Provider availability from account config + env presence. No secret values. */
   listProviders(): ProviderInfo[] {
-    return this.providers.list();
+    const accounts = this.store.listAccounts();
+    return [
+      {
+        id: MOCK_PROVIDER_ID,
+        kind: 'mock',
+        available: true,
+        configuredAccounts: 0,
+        envReady: false,
+      },
+      ...REAL_PROVIDERS.map((spec): ProviderInfo => {
+        const bound = accounts.filter((a) => a.provider === spec.id && a.secretRef);
+        const envReady = bound.some((a) => a.secretRef !== null && envPresent(a.secretRef));
+        return {
+          id: spec.id,
+          kind: 'real',
+          available: envReady,
+          configuredAccounts: bound.length,
+          envReady,
+        };
+      }),
+    ];
+  }
+
+  /**
+   * Resolve the concrete provider for a turn. For real providers this reads the
+   * account's bound `secret_ref` env var **here only** and hands the value to the
+   * adapter; the value never leaves this method. Throws a structured, secret-free
+   * `ProviderError` for any config/availability problem.
+   */
+  private resolveChatProvider(input: ChatTurnInput): {
+    providerId: string;
+    model: string;
+    provider: ChatProvider;
+  } {
+    let account = input.accountId
+      ? this.store.listAccounts().find((a) => a.id === input.accountId)
+      : undefined;
+    if (input.accountId && !account) {
+      throw new ProviderError('not_found', `no such account: ${input.accountId}`);
+    }
+    const providerId = input.provider ?? account?.provider ?? MOCK_PROVIDER_ID;
+    if (account && input.provider && input.provider !== account.provider) {
+      throw new ProviderError(
+        'unknown_provider',
+        `account provider '${account.provider}' does not match requested '${input.provider}'`,
+      );
+    }
+
+    if (providerId === MOCK_PROVIDER_ID) {
+      return { providerId, model: input.model ?? 'mock-default', provider: this.mock };
+    }
+
+    const spec = REAL_PROVIDERS.find((p) => p.id === providerId);
+    if (!spec) throw new ProviderError('unknown_provider', `unknown provider: ${providerId}`);
+
+    // Default account rule: first bound account for this provider.
+    if (!account) {
+      account = this.store.listAccounts().find((a) => a.provider === providerId && a.secretRef);
+      if (!account) {
+        throw new ProviderError('not_found', `no configured account for provider '${providerId}'`);
+      }
+    }
+    if (!account.secretRef) {
+      throw new ProviderError(
+        'missing_secret_ref',
+        `account ${account.id} has no secret_ref bound`,
+      );
+    }
+    const apiKey = readEnvSecret(account.secretRef); // the ONLY secret-value read
+    if (!apiKey) {
+      throw new ProviderError('missing_env_value', `env var ${account.secretRef} is not set`);
+    }
+    const model = input.model ?? spec.defaultModel;
+    return {
+      providerId,
+      model,
+      provider: spec.create({ apiKey, model, fetchImpl: this.fetchImpl }),
+    };
   }
 
   /** Append a turn-scoped event (turn/model namespaces) via the Store API. */
@@ -198,31 +297,21 @@ export class AmritaKernel {
   }
 
   /**
-   * Run one non-streaming chat turn: record the user message, invoke the provider
+   * Run one non-streaming chat turn: record the user message, `await` the provider
    * boundary (a side effect, OUTSIDE any store transaction), then persist the
    * assistant message + turn/model events. Defaults to the deterministic `mock`
-   * provider. Requesting a real provider/account returns a safe structured error.
-   * The result contains no secret values.
+   * provider; a real provider needs a bound account + present env var. The result
+   * contains no secret values.
    */
-  runChatTurn(input: ChatTurnInput): ChatTurnResult {
+  async runChatTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
     const conv = this.store.getConversation(input.conversationId);
-    if (!conv)
+    if (!conv) {
       throw new ProviderError('not_found', `no such conversation: ${input.conversationId}`);
+    }
     const projectId = conv.projectId;
 
-    // Requesting a real account is not runnable yet — fail safely (no secret read).
-    if (input.accountId) {
-      const status = this.store.getProviderConfigStatus(input.accountId);
-      if (!status) throw new ProviderError('not_found', `no such account: ${input.accountId}`);
-      throw new ProviderError(
-        'provider_unavailable',
-        `real provider execution is not implemented yet (account status: ${status})`,
-      );
-    }
-
-    const providerId = input.provider ?? 'mock';
-    const provider = this.providers.resolveChat(providerId); // throws ProviderError if unavailable
-    const model = input.model ?? (providerId === 'mock' ? 'mock-default' : 'default');
+    // Resolve the provider first — a config error records nothing.
+    const { providerId, model, provider } = this.resolveChatProvider(input);
     const turnId = newId();
     const channel = input.channel;
 
@@ -263,7 +352,17 @@ export class AmritaKernel {
     const messages = this.store
       .listMessages(input.conversationId)
       .map((m) => ({ role: m.role, text: m.text }));
-    const resp = provider.generate({ messages, model });
+    let resp: Awaited<ReturnType<ChatProvider['generate']>>;
+    try {
+      resp = await provider.generate({ messages, model });
+    } catch (e) {
+      const message = e instanceof ProviderError ? e.message : `${providerId} request failed`;
+      this.emitTurnEvent(projectId, input.conversationId, turnId, 'turn.failed', {
+        error: message,
+      });
+      if (e instanceof ProviderError) throw e;
+      throw new ProviderError('provider_error', message);
+    }
 
     this.emitTurnEvent(projectId, input.conversationId, turnId, 'model.response', {
       text: resp.text,

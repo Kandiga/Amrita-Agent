@@ -14,16 +14,20 @@ const SYSTEM_SLUG = 'system';
 const DEFAULT_CONVERSATION_TITLE = '(default)';
 
 /** Resolve a project by slug first, then by id; throw if neither matches. */
-export function resolveProjectId(client: InProcessClient, slugOrId: string): string {
-  const bySlug = client.call<ProjectRowLite | null>('project.get', { slug: slugOrId });
+export async function resolveProjectId(client: InProcessClient, slugOrId: string): Promise<string> {
+  const bySlug = await client.call<ProjectRowLite | null>('project.get', { slug: slugOrId });
   if (bySlug) return bySlug.id;
-  const byId = client.call<ProjectRowLite | null>('project.get', { id: slugOrId });
+  const byId = await client.call<ProjectRowLite | null>('project.get', { id: slugOrId });
   if (byId) return byId.id;
   throw new CliError(`project not found: ${slugOrId}`, 'not_found');
 }
 
-function ensureSystemProjectId(client: InProcessClient): string {
-  return client.call<ProjectRowLite>('project.ensure', { slug: SYSTEM_SLUG, name: 'System' }).id;
+async function ensureSystemProjectId(client: InProcessClient): Promise<string> {
+  const p = await client.call<ProjectRowLite>('project.ensure', {
+    slug: SYSTEM_SLUG,
+    name: 'System',
+  });
+  return p.id;
 }
 
 /**
@@ -31,14 +35,18 @@ function ensureSystemProjectId(client: InProcessClient): string {
  * when a write command supplies no explicit conversation. Deterministic: it is
  * located by its sentinel title, so repeated commands reuse the same row.
  */
-export function ensureDefaultConversation(client: InProcessClient, projectId: string): string {
-  const convs = client.call<ConversationLite[]>('conversation.list', { projectId });
+export async function ensureDefaultConversation(
+  client: InProcessClient,
+  projectId: string,
+): Promise<string> {
+  const convs = await client.call<ConversationLite[]>('conversation.list', { projectId });
   const existing = convs.find((c) => c.title === DEFAULT_CONVERSATION_TITLE);
   if (existing) return existing.id;
-  return client.call<ConversationLite>('conversation.create', {
+  const created = await client.call<ConversationLite>('conversation.create', {
     projectId,
     title: DEFAULT_CONVERSATION_TITLE,
-  }).id;
+  });
+  return created.id;
 }
 
 export interface WriteContext {
@@ -52,19 +60,19 @@ export interface WriteContext {
  * - else `project` → that project's default conversation;
  * - else → the system project's default conversation.
  */
-export function resolveWriteContext(
+export async function resolveWriteContext(
   client: InProcessClient,
   opts: { project?: string | undefined; conversation?: string | undefined },
-): WriteContext {
+): Promise<WriteContext> {
   if (opts.conversation) {
-    const conv = client.call<ConversationLite | null>('conversation.get', {
+    const conv = await client.call<ConversationLite | null>('conversation.get', {
       conversationId: opts.conversation,
     });
     if (!conv) throw new CliError(`conversation not found: ${opts.conversation}`, 'not_found');
     return { projectId: conv.projectId, conversationId: conv.id };
   }
   const projectId = opts.project
-    ? resolveProjectId(client, opts.project)
-    : ensureSystemProjectId(client);
-  return { projectId, conversationId: ensureDefaultConversation(client, projectId) };
+    ? await resolveProjectId(client, opts.project)
+    : await ensureSystemProjectId(client);
+  return { projectId, conversationId: await ensureDefaultConversation(client, projectId) };
 }

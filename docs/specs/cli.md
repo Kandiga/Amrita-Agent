@@ -55,9 +55,22 @@ amrita provider list --db PATH
 `amrita chat` runs one turn through the kernel: it records your message, calls the provider boundary
 (default **`mock`**, deterministic), and prints the assistant reply plus a `(provider · model · in/out
 tok)` metadata line (or the full result with `--json`). With no `--conversation`, it uses the project's
-default conversation (WO#2.2). Requesting a real provider (e.g. `--provider anthropic`) returns a safe
-error — real adapters are not implemented yet. `amrita provider list` shows each provider's
-availability and which env var a real one would need (a NAME, never a value).
+default conversation (WO#2.2).
+
+**Real providers (ADR-0012):** `--provider anthropic` or `--provider openai` runs the real adapter —
+*if* you've connected an account for that provider and bound its `secret_ref` to an env var that is
+set in your environment:
+
+```bash
+amrita account connect --provider anthropic --label work --db PATH      # → ACCOUNT_ID
+amrita account bind-secret ACCOUNT_ID ANTHROPIC_API_KEY --db PATH        # binds a NAME, not a value
+export ANTHROPIC_API_KEY=...                                             # the value lives only here
+amrita chat "hello" --provider anthropic --model claude-sonnet-4-5 --db PATH
+```
+
+If no account is configured (or its env var is missing), `chat` fails with a safe structured error and
+a non-zero exit — never a secret value. `amrita provider list` shows each provider's availability,
+configured-account count, and whether its env var is present (a boolean — never the value).
 
 ## Project & conversation resolution
 
@@ -79,6 +92,6 @@ your environment.
 
 ## Not implemented yet
 
-Real model providers (only the deterministic `mock` runs today), streaming responses, Telegram, web
-UI, lanes/tools, and installer/update are future work. `amrita chat` exercises the full turn path
-against the mock provider; wiring real (async) adapters is a later WO (ADR-0011).
+Streaming responses, tool calling, Telegram, web UI, lanes, and installer/update are future work.
+`amrita chat` runs the full async turn against the `mock` provider or a configured `anthropic`/`openai`
+account (ADR-0012). Real adapters are never exercised against the network in tests.

@@ -28,21 +28,28 @@ export function createStdioServer(
     output.write(`${JSON.stringify(resp)}\n`);
   };
 
+  // Process lines strictly in order even though dispatch is async: each line
+  // chains off the previous so responses are emitted in request order.
+  let chain: Promise<void> = Promise.resolve();
+
   rl.on('line', (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      write({ id: null, error: { code: 'invalid_request', message: 'invalid JSON' } });
-      return;
-    }
-    write(dispatch(kernel, parsed));
+    chain = chain.then(async () => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        write({ id: null, error: { code: 'invalid_request', message: 'invalid JSON' } });
+        return;
+      }
+      write(await dispatch(kernel, parsed));
+    });
   });
 
+  // Run onClose only after every queued request has been answered.
   rl.once('close', () => {
-    opts.onClose?.();
+    void chain.then(() => opts.onClose?.());
   });
 
   return { close: () => rl.close() };

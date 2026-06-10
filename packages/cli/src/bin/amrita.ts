@@ -8,7 +8,7 @@ import { run } from '../run.ts';
  *   amrita health --db ~/.amrita/amrita.db
  *   amrita project ensure crm --name "Secure CRM" --db ~/.amrita/amrita.db
  */
-const code = run(process.argv.slice(2), {
+const code = await run(process.argv.slice(2), {
   out: (line) => process.stdout.write(`${line}\n`),
   err: (line) => process.stderr.write(`${line}\n`),
 });

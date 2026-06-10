@@ -66,10 +66,18 @@ deterministic and free of provider/tool/lane execution.
 | `chat.turn` | `{conversationId, text, provider?, model?, accountId?, dryRun?, channel?}` | turn result (secret-free) |
 | `providers.list` | — | provider availability (no secret values) |
 
-A **chat turn** records the user message, calls the provider boundary (default `mock`), and persists
-the assistant message + `turn.*`/`model.*` events (ADR-0011). The assistant message is a
-`message.agent` (searchable). Requesting a real provider/account returns a `provider_unavailable`
-error — real adapters are deferred, and no secret value is ever read or returned.
+A **chat turn** records the user message, `await`s the provider boundary (default `mock`), and
+persists the assistant message + `turn.*`/`model.*` events (ADR-0011/0012). The assistant message is a
+`message.agent` (searchable). **`dispatch` is async** — handlers may return a Promise; the stdio
+server serializes requests so responses stay in order.
+
+**Providers (ADR-0012):** `mock` (deterministic, default) plus real `anthropic`/`openai` adapters
+(native `fetch`, injectable for tests). A real provider needs an account with a bound `secret_ref`
+whose env var is present; the secret **value** is read only at adapter construction and never enters
+events/RPC/CLI/logs. Selection: `provider=anthropic|openai` uses the given `accountId` or the first
+configured account for that provider, else a safe `not_found`. Errors are structured and value-free:
+`missing_secret_ref` · `missing_env_value` · `not_found` · `provider_unavailable` · `provider_error`.
+`providers.list` reports `available`/`configuredAccounts`/`envReady` (booleans only).
 
 Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the originating/system
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to

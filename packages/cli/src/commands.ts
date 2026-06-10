@@ -8,7 +8,7 @@ export interface CommandCtx {
 }
 export interface Command {
   describe: string;
-  run(client: InProcessClient, ctx: CommandCtx): { result: unknown; summary: string };
+  run(client: InProcessClient, ctx: CommandCtx): Promise<{ result: unknown; summary: string }>;
 }
 
 interface ProjectLite {
@@ -39,9 +39,10 @@ interface ChatTurnLite {
 }
 interface ProviderInfoLite {
   id: string;
+  kind: string;
   available: boolean;
-  requiresEnv: string | null;
-  envPresent: boolean;
+  configuredAccounts: number;
+  envReady: boolean;
 }
 interface HealthLite {
   schemaVersion: number;
@@ -52,8 +53,8 @@ interface HealthLite {
 export const COMMANDS: Record<string, Command> = {
   health: {
     describe: 'show daemon health and row counts',
-    run(client) {
-      const h = client.call<HealthLite>('health');
+    async run(client) {
+      const h = await client.call<HealthLite>('health');
       const c = h.counts;
       return {
         result: h,
@@ -66,10 +67,10 @@ export const COMMANDS: Record<string, Command> = {
 
   'project ensure': {
     describe: 'create-or-get a project by slug',
-    run(client, { positionals, flags }) {
+    async run(client, { positionals, flags }) {
       const slug = positionals[0];
       if (!slug) throw new CliError('usage: amrita project ensure <slug> [--name NAME]');
-      const p = client.call<ProjectLite>('project.ensure', {
+      const p = await client.call<ProjectLite>('project.ensure', {
         slug,
         name: strFlag(flags, 'name') ?? slug,
       });
@@ -78,8 +79,8 @@ export const COMMANDS: Record<string, Command> = {
   },
   'project list': {
     describe: 'list projects',
-    run(client) {
-      const ps = client.call<ProjectLite[]>('project.list');
+    async run(client) {
+      const ps = await client.call<ProjectLite[]>('project.list');
       return {
         result: ps,
         summary: ps.length
@@ -91,13 +92,13 @@ export const COMMANDS: Record<string, Command> = {
 
   'conversation create': {
     describe: 'create a conversation under a project',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const project = strFlag(flags, 'project');
       if (!project) throw new CliError('usage: amrita conversation create --project <ID_OR_SLUG>');
-      const projectId = resolveProjectId(client, project);
+      const projectId = await resolveProjectId(client, project);
       const title = strFlag(flags, 'title');
       const parent = strFlag(flags, 'parent');
-      const c = client.call<ConvLite>('conversation.create', {
+      const c = await client.call<ConvLite>('conversation.create', {
         projectId,
         ...(title ? { title } : {}),
         ...(parent ? { parentId: parent } : {}),
@@ -107,10 +108,10 @@ export const COMMANDS: Record<string, Command> = {
   },
   'conversation tree': {
     describe: 'print a conversation and its descendants',
-    run(client, { positionals }) {
+    async run(client, { positionals }) {
       const id = positionals[0];
       if (!id) throw new CliError('usage: amrita conversation tree <CONVERSATION_ID>');
-      const nodes = client.call<ConvLite[]>('conversation.tree', { conversationId: id });
+      const nodes = await client.call<ConvLite[]>('conversation.tree', { conversationId: id });
       return {
         result: nodes,
         summary: nodes.map((n) => `${n.id}  ${n.title ?? '(untitled)'}`).join('\n') || '(empty)',
@@ -120,36 +121,34 @@ export const COMMANDS: Record<string, Command> = {
 
   'message user': {
     describe: 'record a user message in a conversation',
-    run(client, { positionals }) {
+    async run(client, { positionals }) {
       const conversationId = positionals[0];
       const text = positionals.slice(1).join(' ');
       if (!conversationId || !text) {
         throw new CliError('usage: amrita message user <CONVERSATION_ID> <TEXT>');
       }
-      const ctx = resolveWriteContext(client, { conversation: conversationId });
-      const r = client.call<{ messageId: string; event: { seq: number } }>('message.user.record', {
-        projectId: ctx.projectId,
-        conversationId: ctx.conversationId,
-        text,
-        channel: 'cli',
-      });
+      const ctx = await resolveWriteContext(client, { conversation: conversationId });
+      const r = await client.call<{ messageId: string; event: { seq: number } }>(
+        'message.user.record',
+        { projectId: ctx.projectId, conversationId: ctx.conversationId, text, channel: 'cli' },
+      );
       return { result: r, summary: `recorded message ${r.messageId} (seq ${r.event.seq})` };
     },
   },
 
   'task create': {
     describe: 'create a task',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const project = strFlag(flags, 'project');
       const title = strFlag(flags, 'title');
       if (!project || !title) {
         throw new CliError('usage: amrita task create --project <ID_OR_SLUG> --title TITLE');
       }
-      const ctx = resolveWriteContext(client, {
+      const ctx = await resolveWriteContext(client, {
         project,
         conversation: strFlag(flags, 'conversation'),
       });
-      const r = client.call<{ taskId: string }>('tasks.create', {
+      const r = await client.call<{ taskId: string }>('tasks.create', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
         title,
@@ -159,11 +158,11 @@ export const COMMANDS: Record<string, Command> = {
   },
   'task list': {
     describe: 'list tasks in a project',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const project = strFlag(flags, 'project');
       if (!project) throw new CliError('usage: amrita task list --project <ID_OR_SLUG>');
-      const ts = client.call<TaskLite[]>('tasks.list', {
-        projectId: resolveProjectId(client, project),
+      const ts = await client.call<TaskLite[]>('tasks.list', {
+        projectId: await resolveProjectId(client, project),
       });
       return {
         result: ts,
@@ -175,31 +174,31 @@ export const COMMANDS: Record<string, Command> = {
   },
   'task complete': {
     describe: 'mark a task done',
-    run(client, { positionals }) {
+    async run(client, { positionals }) {
       const taskId = positionals[0];
       if (!taskId) throw new CliError('usage: amrita task complete <TASK_ID>');
-      const task = client.call<TaskLite[]>('tasks.list', {}).find((t) => t.id === taskId);
+      const task = (await client.call<TaskLite[]>('tasks.list', {})).find((t) => t.id === taskId);
       if (!task) throw new CliError(`task not found: ${taskId}`, 'not_found');
       const conversationId =
-        task.conversationId ?? ensureDefaultConversation(client, task.projectId);
-      client.call('tasks.complete', { projectId: task.projectId, conversationId, taskId });
+        task.conversationId ?? (await ensureDefaultConversation(client, task.projectId));
+      await client.call('tasks.complete', { projectId: task.projectId, conversationId, taskId });
       return { result: { ok: true, taskId }, summary: `completed ${taskId}` };
     },
   },
 
   'decision record': {
     describe: 'record a decision',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const project = strFlag(flags, 'project');
       const text = strFlag(flags, 'text');
       if (!project || !text) {
         throw new CliError('usage: amrita decision record --project <ID_OR_SLUG> --text TEXT');
       }
-      const ctx = resolveWriteContext(client, {
+      const ctx = await resolveWriteContext(client, {
         project,
         conversation: strFlag(flags, 'conversation'),
       });
-      const r = client.call<{ decisionId: string }>('decisions.record', {
+      const r = await client.call<{ decisionId: string }>('decisions.record', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
         text,
@@ -210,7 +209,7 @@ export const COMMANDS: Record<string, Command> = {
 
   'memory put': {
     describe: 'store a memory entry',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const scope = strFlag(flags, 'scope');
       const content = strFlag(flags, 'content');
       if (scope !== 'user' && scope !== 'project') {
@@ -221,8 +220,8 @@ export const COMMANDS: Record<string, Command> = {
       if (scope === 'project' && !project) {
         throw new CliError('--project is required for --scope project');
       }
-      const ctx = resolveWriteContext(client, project ? { project } : {});
-      const r = client.call<{ entryId: string }>('memory.put', {
+      const ctx = await resolveWriteContext(client, project ? { project } : {});
+      const r = await client.call<{ entryId: string }>('memory.put', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
         scope,
@@ -233,15 +232,15 @@ export const COMMANDS: Record<string, Command> = {
   },
   'memory search': {
     describe: 'full-text search memory',
-    run(client, { positionals, flags }) {
+    async run(client, { positionals, flags }) {
       const query = positionals.join(' ');
       if (!query) throw new CliError('usage: amrita memory search <QUERY>');
       const scope = strFlag(flags, 'scope');
       const project = strFlag(flags, 'project');
-      const ms = client.call<MemLite[]>('memory.search', {
+      const ms = await client.call<MemLite[]>('memory.search', {
         query,
         ...(scope ? { scope } : {}),
-        ...(project ? { projectId: resolveProjectId(client, project) } : {}),
+        ...(project ? { projectId: await resolveProjectId(client, project) } : {}),
       });
       return {
         result: ms,
@@ -252,14 +251,15 @@ export const COMMANDS: Record<string, Command> = {
 
   'account connect': {
     describe: 'register a provider account (no secret value)',
-    run(client, { flags }) {
+    async run(client, { flags }) {
       const provider = strFlag(flags, 'provider');
-      if (!provider)
+      if (!provider) {
         throw new CliError('usage: amrita account connect --provider PROVIDER [--label LABEL]');
+      }
       const label = strFlag(flags, 'label');
       const authMode = strFlag(flags, 'auth-mode') ?? 'api_key';
-      const ctx = resolveWriteContext(client, {});
-      const r = client.call<{ accountId: string }>('accounts.connect', {
+      const ctx = await resolveWriteContext(client, {});
+      const r = await client.call<{ accountId: string }>('accounts.connect', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
         provider,
@@ -274,13 +274,13 @@ export const COMMANDS: Record<string, Command> = {
   },
   'account bind-secret': {
     describe: 'bind an account to an env-var NAME (never a secret value)',
-    run(client, { positionals }) {
+    async run(client, { positionals }) {
       const accountId = positionals[0];
       const envName = positionals[1];
       if (!accountId || !envName) {
         throw new CliError('usage: amrita account bind-secret <ACCOUNT_ID> <ENV_NAME>');
       }
-      client.call('accounts.bindSecretRef', { accountId, envName });
+      await client.call('accounts.bindSecretRef', { accountId, envName });
       return {
         result: { ok: true, accountId, secretRef: envName },
         summary: `bound ${accountId} → ${envName}`,
@@ -289,30 +289,32 @@ export const COMMANDS: Record<string, Command> = {
   },
   'account status': {
     describe: 'show provider config status',
-    run(client, { positionals }) {
+    async run(client, { positionals }) {
       const accountId = positionals[0];
       if (!accountId) throw new CliError('usage: amrita account status <ACCOUNT_ID>');
-      const r = client.call<{ status: string | null }>('accounts.configStatus', { accountId });
+      const r = await client.call<{ status: string | null }>('accounts.configStatus', {
+        accountId,
+      });
       return { result: r, summary: `status: ${r.status ?? 'unknown'}` };
     },
   },
 
   chat: {
     describe: 'run a chat turn (mock provider by default)',
-    run(client, { positionals, flags }) {
+    async run(client, { positionals, flags }) {
       const text = positionals.join(' ');
       if (!text) {
         throw new CliError(
-          'usage: amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--model MODEL]',
+          'usage: amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock|anthropic|openai] [--model MODEL]',
         );
       }
-      const ctx = resolveWriteContext(client, {
+      const ctx = await resolveWriteContext(client, {
         project: strFlag(flags, 'project'),
         conversation: strFlag(flags, 'conversation'),
       });
       const provider = strFlag(flags, 'provider');
       const model = strFlag(flags, 'model');
-      const turn = client.call<ChatTurnLite>('chat.turn', {
+      const turn = await client.call<ChatTurnLite>('chat.turn', {
         conversationId: ctx.conversationId,
         text,
         channel: 'cli',
@@ -327,14 +329,15 @@ export const COMMANDS: Record<string, Command> = {
 
   'provider list': {
     describe: 'list chat providers and availability',
-    run(client) {
-      const ps = client.call<ProviderInfoLite[]>('providers.list');
+    async run(client) {
+      const ps = await client.call<ProviderInfoLite[]>('providers.list');
       const summary = ps
         .map((p) => {
-          const env = p.requiresEnv
-            ? ` (needs ${p.requiresEnv}: ${p.envPresent ? 'present' : 'missing'})`
-            : '';
-          return `${p.id}\t${p.available ? 'available' : 'unavailable'}${env}`;
+          const detail =
+            p.kind === 'real'
+              ? ` (${p.configuredAccounts} account(s), env ${p.envReady ? 'ready' : 'missing'})`
+              : '';
+          return `${p.id}\t${p.available ? 'available' : 'unavailable'}${detail}`;
         })
         .join('\n');
       return { result: ps, summary };

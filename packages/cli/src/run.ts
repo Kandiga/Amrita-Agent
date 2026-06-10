@@ -43,10 +43,10 @@ function matchCommand(positionals: string[]): { key: string; rest: string[] } | 
 }
 
 /**
- * Run one CLI invocation in-process. Returns the process exit code (0 ok, 1 RPC
- * failure, 2 usage error). Never prints a stack trace or a secret value.
+ * Run one CLI invocation in-process. Resolves to the process exit code (0 ok, 1
+ * RPC failure, 2 usage error). Never prints a stack trace or a secret value.
  */
-export function run(argv: string[], io: IO): number {
+export async function run(argv: string[], io: IO): Promise<number> {
   const { positionals, flags } = parseArgs(argv);
   const json = flags.json === true;
 
@@ -69,10 +69,10 @@ export function run(argv: string[], io: IO): number {
 
   const kernel = AmritaKernel.open({ dbPath: db });
   try {
-    const { result, summary } = COMMANDS[matched.key]?.run(new InProcessClient(kernel), {
+    const { result, summary } = (await COMMANDS[matched.key]?.run(new InProcessClient(kernel), {
       positionals: matched.rest,
       flags,
-    }) ?? { result: null, summary: '' };
+    })) ?? { result: null, summary: '' };
     io.out(json ? JSON.stringify(result, null, 2) : summary);
     return 0;
   } catch (e) {

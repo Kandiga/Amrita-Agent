@@ -1,16 +1,13 @@
 /**
  * The chat-provider boundary. A `ChatProvider` turns a transcript into one
- * assistant reply. The only provider that actually runs in WO#2.3 is the
- * deterministic `mock` — real adapters (Anthropic, OpenAI, …) are *scaffolded*
- * for status/discovery but not executed, so tests never make a network call and
- * no secret value is ever read beyond a presence check.
+ * assistant reply, **asynchronously**. The deterministic `mock` provider needs
+ * no config; the real adapters (`anthropic`, `openai`) are constructed with a
+ * secret value read from the environment *at construction time only* — that value
+ * goes into the request's auth header and is never stored, logged, or returned.
  *
- * Provider calls are pure side effects — the kernel invokes `generate()` OUTSIDE
- * any store transaction, then persists the result as events.
- *
- * NOTE: `generate()` is synchronous here because the only implementation (mock)
- * is synchronous. Real HTTP adapters are async; integrating them is a future WO
- * that will make the kernel turn + RPC dispatch async (see ADR-0011).
+ * Provider calls are pure side effects — the kernel `await`s `generate()` OUTSIDE
+ * any store transaction, then persists the result as events. Adapters accept an
+ * injectable `fetchImpl`, so tests never hit the network.
  */
 
 export interface ChatMessage {
@@ -32,12 +29,18 @@ export interface ChatResponse {
 }
 export interface ChatProvider {
   readonly id: string;
-  generate(req: ChatRequest): ChatResponse;
+  generate(req: ChatRequest): Promise<ChatResponse>;
 }
 
-/** Structured provider failure (no stack/secret). `code` maps to an RPC error code. */
+/** Structured provider failure (no stack/secret/headers). `code` maps to an RPC code. */
 export class ProviderError extends Error {
-  readonly code: 'provider_unavailable' | 'unknown_provider' | 'not_found';
+  readonly code:
+    | 'provider_unavailable'
+    | 'unknown_provider'
+    | 'not_found'
+    | 'missing_secret_ref'
+    | 'missing_env_value'
+    | 'provider_error';
   constructor(code: ProviderError['code'], message: string) {
     super(message);
     this.name = 'ProviderError';
@@ -47,11 +50,11 @@ export class ProviderError extends Error {
 
 export const MOCK_PROVIDER_ID = 'mock';
 
-/** A deterministic provider for tests and local dev. No clock, no randomness. */
+/** A deterministic provider for tests and local dev. No clock, no randomness, no I/O. */
 export class MockProvider implements ChatProvider {
   readonly id = MOCK_PROVIDER_ID;
 
-  generate(req: ChatRequest): ChatResponse {
+  async generate(req: ChatRequest): Promise<ChatResponse> {
     const lastUser = [...req.messages].reverse().find((m) => m.role === 'user');
     const text = lastUser
       ? `[mock:${req.model}] You said: "${lastUser.text}". (deterministic reply)`
@@ -65,61 +68,182 @@ export class MockProvider implements ChatProvider {
   }
 }
 
+// ── env secret boundary ──────────────────────────────────────────────────────
+
 /** Presence-only env check. Returns a boolean; never returns or logs the value. */
 export function envPresent(name: string): boolean {
   const v = process.env[name];
   return typeof v === 'string' && v.length > 0;
 }
 
-export interface ProviderInfo {
-  id: string;
-  kind: 'mock' | 'scaffold';
-  /** Whether `chat.turn` can run this provider right now. */
-  available: boolean;
-  /** The env var a real adapter would need (a NAME, never a value). */
-  requiresEnv: string | null;
-  /** Presence of that env var (boolean only). */
-  envPresent: boolean;
+/**
+ * Read a secret *value* from the environment. The ONLY place a secret value is
+ * read — and only to hand it to an adapter's auth header in the same call. The
+ * value is never returned to RPC/CLI, persisted, or logged.
+ */
+export function readEnvSecret(name: string): string | undefined {
+  const v = process.env[name];
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
-interface ScaffoldEntry {
-  id: string;
-  requiresEnv: string;
+// ── fetch injection ──────────────────────────────────────────────────────────
+
+export interface FetchResponseLike {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
 }
-const SCAFFOLD_PROVIDERS: readonly ScaffoldEntry[] = [
-  { id: 'anthropic', requiresEnv: 'ANTHROPIC_API_KEY' },
-  { id: 'openai', requiresEnv: 'OPENAI_API_KEY' },
+export type FetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) => Promise<FetchResponseLike>;
+
+export const defaultFetch: FetchLike = (url, init) => {
+  const f = globalThis.fetch;
+  if (!f)
+    throw new ProviderError('provider_unavailable', 'global fetch is unavailable in this runtime');
+  return f(url, init) as Promise<FetchResponseLike>;
+};
+
+interface AdapterOptions {
+  apiKey: string;
+  model?: string;
+  fetchImpl?: FetchLike;
+  baseUrl?: string;
+}
+
+// ── anthropic ────────────────────────────────────────────────────────────────
+
+interface AnthropicResponse {
+  content?: { type: string; text?: string }[];
+  stop_reason?: string;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+export function createAnthropicProvider(opts: AdapterOptions): ChatProvider {
+  const fetchImpl = opts.fetchImpl ?? defaultFetch;
+  const baseUrl = opts.baseUrl ?? 'https://api.anthropic.com';
+  return {
+    id: 'anthropic',
+    async generate(req: ChatRequest): Promise<ChatResponse> {
+      const system = req.messages
+        .filter((m) => m.role === 'system')
+        .map((m) => m.text)
+        .join('\n\n');
+      const messages = req.messages
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.text }));
+      const body = JSON.stringify({
+        model: req.model,
+        max_tokens: 1024,
+        ...(system ? { system } : {}),
+        messages,
+      });
+      let res: FetchResponseLike;
+      try {
+        res = await fetchImpl(`${baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': opts.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body,
+        });
+      } catch {
+        throw new ProviderError('provider_error', 'anthropic request failed (network error)');
+      }
+      if (!res.ok) {
+        throw new ProviderError(
+          'provider_error',
+          `anthropic request failed with status ${res.status}`,
+        );
+      }
+      const data = (await res.json()) as AnthropicResponse;
+      const text = (data.content ?? [])
+        .filter((b) => b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('');
+      return {
+        text,
+        finishReason: data.stop_reason ?? 'stop',
+        usage: {
+          inputTokens: data.usage?.input_tokens ?? 0,
+          outputTokens: data.usage?.output_tokens ?? 0,
+        },
+      };
+    },
+  };
+}
+
+// ── openai ───────────────────────────────────────────────────────────────────
+
+interface OpenaiResponse {
+  choices?: { message?: { content?: string }; finish_reason?: string }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+export function createOpenaiProvider(opts: AdapterOptions): ChatProvider {
+  const fetchImpl = opts.fetchImpl ?? defaultFetch;
+  const baseUrl = opts.baseUrl ?? 'https://api.openai.com';
+  return {
+    id: 'openai',
+    async generate(req: ChatRequest): Promise<ChatResponse> {
+      const messages = req.messages.map((m) => ({
+        role: m.role === 'agent' ? 'assistant' : m.role,
+        content: m.text,
+      }));
+      const body = JSON.stringify({ model: req.model, messages });
+      let res: FetchResponseLike;
+      try {
+        res = await fetchImpl(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${opts.apiKey}` },
+          body,
+        });
+      } catch {
+        throw new ProviderError('provider_error', 'openai request failed (network error)');
+      }
+      if (!res.ok) {
+        throw new ProviderError(
+          'provider_error',
+          `openai request failed with status ${res.status}`,
+        );
+      }
+      const data = (await res.json()) as OpenaiResponse;
+      const choice = data.choices?.[0];
+      return {
+        text: choice?.message?.content ?? '',
+        finishReason: choice?.finish_reason ?? 'stop',
+        usage: {
+          inputTokens: data.usage?.prompt_tokens ?? 0,
+          outputTokens: data.usage?.completion_tokens ?? 0,
+        },
+      };
+    },
+  };
+}
+
+/** The real (env-backed) provider catalog. */
+export interface RealProviderSpec {
+  id: string;
+  defaultModel: string;
+  create(opts: AdapterOptions): ChatProvider;
+}
+export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
+  { id: 'anthropic', defaultModel: 'claude-sonnet-4-5', create: createAnthropicProvider },
+  { id: 'openai', defaultModel: 'gpt-4o-mini', create: createOpenaiProvider },
 ];
 
-/** Knows which providers exist and which can actually run. */
-export class ProviderRegistry {
-  private readonly mock = new MockProvider();
-
-  list(): ProviderInfo[] {
-    return [
-      { id: MOCK_PROVIDER_ID, kind: 'mock', available: true, requiresEnv: null, envPresent: false },
-      ...SCAFFOLD_PROVIDERS.map(
-        (s): ProviderInfo => ({
-          id: s.id,
-          kind: 'scaffold',
-          available: false, // not implemented in WO#2.3 — never runnable here
-          requiresEnv: s.requiresEnv,
-          envPresent: envPresent(s.requiresEnv),
-        }),
-      ),
-    ];
-  }
-
-  /** Resolve a runnable provider, or throw a structured, secret-safe error. */
-  resolveChat(id: string): ChatProvider {
-    if (id === MOCK_PROVIDER_ID) return this.mock;
-    const scaffold = SCAFFOLD_PROVIDERS.find((s) => s.id === id);
-    if (scaffold) {
-      throw new ProviderError(
-        'provider_unavailable',
-        `provider '${id}' is scaffolded but not implemented yet (would require the ${scaffold.requiresEnv} env var)`,
-      );
-    }
-    throw new ProviderError('unknown_provider', `unknown provider: ${id}`);
-  }
+/** Provider availability, computed by the kernel from account config + env presence. */
+export interface ProviderInfo {
+  id: string;
+  kind: 'mock' | 'real';
+  /** Whether `chat.turn` can run this provider right now. */
+  available: boolean;
+  /** Number of bound accounts (with a secret_ref) for this provider. */
+  configuredAccounts: number;
+  /** Whether at least one bound account's env var is present (boolean only). */
+  envReady: boolean;
 }

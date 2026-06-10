@@ -19,6 +19,9 @@ export const RPC_ERROR_CODES = [
   'not_found',
   'conflict',
   'provider_unavailable',
+  'provider_error',
+  'missing_secret_ref',
+  'missing_env_value',
   'internal',
 ] as const;
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
@@ -57,12 +60,12 @@ function safeIssues(issues: z.ZodIssue[]): { path: string; message: string; code
 
 interface RpcMethod {
   params: z.ZodTypeAny;
-  run: (kernel: AmritaKernel, params: unknown) => unknown;
+  run: (kernel: AmritaKernel, params: unknown) => unknown | Promise<unknown>;
 }
 
 function def<S extends z.ZodTypeAny>(
   params: S,
-  handler: (kernel: AmritaKernel, params: z.infer<S>) => unknown,
+  handler: (kernel: AmritaKernel, params: z.infer<S>) => unknown | Promise<unknown>,
 ): RpcMethod {
   // dispatch validates `params` against this schema before calling `run`,
   // so the cast is sound.
@@ -236,8 +239,8 @@ function classify(message: string): RpcErrorCode {
   return 'internal';
 }
 
-/** Validate + dispatch one request against the kernel. Always returns a response. */
-export function dispatch(kernel: AmritaKernel, raw: unknown): RpcResponse {
+/** Validate + dispatch one request against the kernel. Always resolves to a response. */
+export async function dispatch(kernel: AmritaKernel, raw: unknown): Promise<RpcResponse> {
   const idGuess: RpcId =
     raw && typeof raw === 'object' && 'id' in raw ? ((raw as { id?: RpcId }).id ?? null) : null;
 
@@ -260,7 +263,7 @@ export function dispatch(kernel: AmritaKernel, raw: unknown): RpcResponse {
   }
 
   try {
-    return ok(id, m.run(kernel, params.data));
+    return ok(id, await m.run(kernel, params.data));
   } catch (e) {
     // Never leak a stack trace; map the message to a structured code.
     if (e instanceof ProviderError) {

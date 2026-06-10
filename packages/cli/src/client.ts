@@ -33,8 +33,8 @@ export class InProcessClient {
     this.kernel = kernel;
   }
 
-  call<T = unknown>(method: string, params?: unknown): T {
-    const r = dispatch(this.kernel, { id: null, method, params });
+  async call<T = unknown>(method: string, params?: unknown): Promise<T> {
+    const r = await dispatch(this.kernel, { id: null, method, params });
     if (isErrorResponse(r)) {
       throw new RpcClientError(r.error.code, r.error.message, r.error.details);
     }

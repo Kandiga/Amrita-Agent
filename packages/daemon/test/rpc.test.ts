@@ -16,34 +16,34 @@ afterEach(() => {
   kernel.close();
 });
 
-function call(method: string, params?: unknown): unknown {
-  const r = dispatch(kernel, { id: 1, method, params });
+async function call(method: string, params?: unknown): Promise<unknown> {
+  const r = await dispatch(kernel, { id: 1, method, params });
   if (isErrorResponse(r)) throw new Error(`${method}: ${r.error.code} ${r.error.message}`);
   return r.result;
 }
 
 describe('rpc dispatch', () => {
-  it('ping and health', () => {
-    expect(call('ping')).toEqual({ pong: true });
-    const h = call('health') as { ok: boolean; schemaVersion: number };
+  it('ping and health', async () => {
+    expect(await call('ping')).toEqual({ pong: true });
+    const h = (await call('health')) as { ok: boolean; schemaVersion: number };
     expect(h.ok).toBe(true);
     expect(h.schemaVersion).toBe(2);
   });
 
-  it('rejects an unknown method', () => {
-    const r = dispatch(kernel, { id: 1, method: 'nope' });
+  it('rejects an unknown method', async () => {
+    const r = await dispatch(kernel, { id: 1, method: 'nope' });
     expect(isErrorResponse(r) && r.error.code).toBe('unknown_method');
   });
 
-  it('rejects a malformed request', () => {
-    const r1 = dispatch(kernel, 42); // not an object
+  it('rejects a malformed request', async () => {
+    const r1 = await dispatch(kernel, 42); // not an object
     expect(isErrorResponse(r1) && r1.error.code).toBe('invalid_request');
-    const r2 = dispatch(kernel, { params: {} }); // no method
+    const r2 = await dispatch(kernel, { params: {} }); // no method
     expect(isErrorResponse(r2) && r2.error.code).toBe('invalid_request');
   });
 
-  it('rejects invalid params with structured details (no values echoed)', () => {
-    const r = dispatch(kernel, { id: 9, method: 'project.ensure', params: {} });
+  it('rejects invalid params with structured details (no values echoed)', async () => {
+    const r = await dispatch(kernel, { id: 9, method: 'project.ensure', params: {} });
     expect(isErrorResponse(r)).toBe(true);
     if (isErrorResponse(r)) {
       expect(r.id).toBe(9);
@@ -54,59 +54,66 @@ describe('rpc dispatch', () => {
     }
   });
 
-  it('runs the project → conversation → message → events flow', () => {
-    const project = call('project.ensure', { slug: 'demo', name: 'Demo' }) as { id: string };
-    const conv = call('conversation.create', { projectId: project.id }) as { id: string };
-    const rec = call('message.user.record', {
+  it('runs the project → conversation → message → events flow', async () => {
+    const project = (await call('project.ensure', { slug: 'demo', name: 'Demo' })) as {
+      id: string;
+    };
+    const conv = (await call('conversation.create', { projectId: project.id })) as { id: string };
+    const rec = (await call('message.user.record', {
       projectId: project.id,
       conversationId: conv.id,
       text: 'hello',
-    }) as { messageId: string };
-    const events = call('events.list', { conversationId: conv.id }) as unknown[];
+    })) as { messageId: string };
+    const events = (await call('events.list', { conversationId: conv.id })) as unknown[];
     expect(events).toHaveLength(1);
     expect(rec.messageId).toBeTypeOf('string');
   });
 
-  it('runs tasks / decisions / memory / settings over RPC', () => {
-    const p = call('project.ensure', { slug: 'd', name: 'D' }) as { id: string };
-    const c = call('conversation.create', { projectId: p.id }) as { id: string };
+  it('runs tasks / decisions / memory / settings over RPC', async () => {
+    const p = (await call('project.ensure', { slug: 'd', name: 'D' })) as { id: string };
+    const c = (await call('conversation.create', { projectId: p.id })) as { id: string };
     const ctx = { projectId: p.id, conversationId: c.id };
 
-    const t = call('tasks.create', { ...ctx, title: 'fix bug' }) as { taskId: string };
-    call('tasks.complete', { ...ctx, taskId: t.taskId });
-    expect((call('tasks.list', { status: 'done' }) as unknown[]).length).toBe(1);
+    const t = (await call('tasks.create', { ...ctx, title: 'fix bug' })) as { taskId: string };
+    await call('tasks.complete', { ...ctx, taskId: t.taskId });
+    expect(((await call('tasks.list', { status: 'done' })) as unknown[]).length).toBe(1);
 
-    const d = call('decisions.record', { ...ctx, text: 'use WAL' }) as { decisionId: string };
-    expect((call('decisions.list', { projectId: p.id }) as { id: string }[])[0]?.id).toBe(
+    const d = (await call('decisions.record', { ...ctx, text: 'use WAL' })) as {
+      decisionId: string;
+    };
+    expect(((await call('decisions.list', { projectId: p.id })) as { id: string }[])[0]?.id).toBe(
       d.decisionId,
     );
 
-    call('memory.put', { ...ctx, scope: 'project', content: 'pagination notes' });
-    expect((call('memory.search', { query: 'pagination' }) as unknown[]).length).toBe(1);
+    await call('memory.put', { ...ctx, scope: 'project', content: 'pagination notes' });
+    expect(((await call('memory.search', { query: 'pagination' })) as unknown[]).length).toBe(1);
 
-    call('settings.update', { ...ctx, key: 'theme', value: 'dark' });
-    expect(call('settings.get', { key: 'theme' })).toEqual({ value: 'dark' });
+    await call('settings.update', { ...ctx, key: 'theme', value: 'dark' });
+    expect(await call('settings.get', { key: 'theme' })).toEqual({ value: 'dark' });
   });
 
-  it('account responses never include a secret value; bad env-name → invalid_params', () => {
-    const p = call('project.ensure', { slug: 'a', name: 'A' }) as { id: string };
-    const c = call('conversation.create', { projectId: p.id }) as { id: string };
-    const acc = call('accounts.connect', {
+  it('account responses never include a secret value; bad env-name → invalid_params', async () => {
+    const p = (await call('project.ensure', { slug: 'a', name: 'A' })) as { id: string };
+    const c = (await call('conversation.create', { projectId: p.id })) as { id: string };
+    const acc = (await call('accounts.connect', {
       projectId: p.id,
       conversationId: c.id,
       provider: 'anthropic',
       authMode: 'api_key',
-    }) as { accountId: string };
-    call('accounts.bindSecretRef', { accountId: acc.accountId, envName: 'ANTHROPIC_API_KEY' });
+    })) as { accountId: string };
+    await call('accounts.bindSecretRef', {
+      accountId: acc.accountId,
+      envName: 'ANTHROPIC_API_KEY',
+    });
 
-    const accounts = call('accounts.list') as { secretRef: string | null }[];
+    const accounts = (await call('accounts.list')) as { secretRef: string | null }[];
     expect(accounts[0]?.secretRef).toBe('ANTHROPIC_API_KEY'); // env NAME, not a value
     expect(JSON.stringify(accounts)).not.toMatch(/sk-|password|secret_value/i);
-    expect(call('accounts.configStatus', { accountId: acc.accountId })).toEqual({
+    expect(await call('accounts.configStatus', { accountId: acc.accountId })).toEqual({
       status: 'healthy',
     });
 
-    const bad = dispatch(kernel, {
+    const bad = await dispatch(kernel, {
       id: 1,
       method: 'accounts.bindSecretRef',
       params: { accountId: acc.accountId, envName: 'not-an-env-name' },

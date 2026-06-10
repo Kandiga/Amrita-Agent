@@ -20,10 +20,10 @@ interface Captured {
   out: string;
   err: string;
 }
-function cli(args: string[]): Captured {
+async function cli(args: string[]): Promise<Captured> {
   let out = '';
   let err = '';
-  const code = run([...args, '--db', dbPath], {
+  const code = await run([...args, '--db', dbPath], {
     out: (l) => {
       out += `${l}\n`;
     },
@@ -38,65 +38,69 @@ function json<T>(c: Captured): T {
 }
 
 describe('amrita CLI', () => {
-  it('health works on a temp DB', () => {
-    const r = cli(['health']);
+  it('health works on a temp DB', async () => {
+    const r = await cli(['health']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('amritad');
     expect(r.out).toContain('schema v2');
   });
 
-  it('project ensure + list', () => {
-    expect(cli(['project', 'ensure', 'crm', '--name', 'Secure CRM']).code).toBe(0);
-    expect(cli(['project', 'ensure', 'crm']).out).toContain('crm'); // idempotent
-    const list = cli(['project', 'list']);
+  it('project ensure + list', async () => {
+    expect((await cli(['project', 'ensure', 'crm', '--name', 'Secure CRM'])).code).toBe(0);
+    expect((await cli(['project', 'ensure', 'crm'])).out).toContain('crm'); // idempotent
+    const list = await cli(['project', 'list']);
     expect(list.code).toBe(0);
     expect(list.out).toContain('crm');
   });
 
-  it('conversation create + tree', () => {
-    cli(['project', 'ensure', 'crm']);
+  it('conversation create + tree', async () => {
+    await cli(['project', 'ensure', 'crm']);
     const conv = json<{ id: string }>(
-      cli(['conversation', 'create', '--project', 'crm', '--json']),
+      await cli(['conversation', 'create', '--project', 'crm', '--json']),
     );
-    const tree = cli(['conversation', 'tree', conv.id]);
+    const tree = await cli(['conversation', 'tree', conv.id]);
     expect(tree.code).toBe(0);
     expect(tree.out).toContain(conv.id);
   });
 
-  it('user message records and is reflected in health counts', () => {
-    cli(['project', 'ensure', 'crm']);
+  it('user message records and is reflected in health counts', async () => {
+    await cli(['project', 'ensure', 'crm']);
     const conv = json<{ id: string }>(
-      cli(['conversation', 'create', '--project', 'crm', '--json']),
+      await cli(['conversation', 'create', '--project', 'crm', '--json']),
     );
-    const msg = cli(['message', 'user', conv.id, 'hello amrita']);
+    const msg = await cli(['message', 'user', conv.id, 'hello amrita']);
     expect(msg.code).toBe(0);
     expect(msg.out).toContain('recorded message');
-    const h = json<{ counts: { messages: number; events: number } }>(cli(['health', '--json']));
+    const h = json<{ counts: { messages: number; events: number } }>(
+      await cli(['health', '--json']),
+    );
     expect(h.counts.messages).toBeGreaterThanOrEqual(1);
     expect(h.counts.events).toBeGreaterThanOrEqual(1);
   });
 
-  it('task create / list / complete', () => {
-    cli(['project', 'ensure', 'crm']);
+  it('task create / list / complete', async () => {
+    await cli(['project', 'ensure', 'crm']);
     const t = json<{ taskId: string }>(
-      cli(['task', 'create', '--project', 'crm', '--title', 'fix bug', '--json']),
+      await cli(['task', 'create', '--project', 'crm', '--title', 'fix bug', '--json']),
     );
-    expect(cli(['task', 'list', '--project', 'crm']).out).toContain('fix bug');
-    expect(cli(['task', 'complete', t.taskId]).out).toContain('completed');
-    const list = json<{ status: string }[]>(cli(['task', 'list', '--project', 'crm', '--json']));
+    expect((await cli(['task', 'list', '--project', 'crm'])).out).toContain('fix bug');
+    expect((await cli(['task', 'complete', t.taskId])).out).toContain('completed');
+    const list = json<{ status: string }[]>(
+      await cli(['task', 'list', '--project', 'crm', '--json']),
+    );
     expect(list[0]?.status).toBe('done');
   });
 
-  it('decision record', () => {
-    cli(['project', 'ensure', 'crm']);
-    const d = cli(['decision', 'record', '--project', 'crm', '--text', 'use SQLite + WAL']);
+  it('decision record', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const d = await cli(['decision', 'record', '--project', 'crm', '--text', 'use SQLite + WAL']);
     expect(d.code).toBe(0);
     expect(d.out).toContain('decision');
   });
 
-  it('memory put + search via FTS', () => {
-    cli(['project', 'ensure', 'crm']);
-    cli([
+  it('memory put + search via FTS', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    await cli([
       'memory',
       'put',
       '--scope',
@@ -106,60 +110,60 @@ describe('amrita CLI', () => {
       '--content',
       'RTL bidi export',
     ]);
-    const hits = json<{ content: string }[]>(cli(['memory', 'search', 'bidi', '--json']));
+    const hits = json<{ content: string }[]>(await cli(['memory', 'search', 'bidi', '--json']));
     expect(hits).toHaveLength(1);
     expect(hits[0]?.content).toContain('RTL');
-    // user-scope memory needs no project
-    expect(cli(['memory', 'put', '--scope', 'user', '--content', 'global pref']).code).toBe(0);
+    expect((await cli(['memory', 'put', '--scope', 'user', '--content', 'global pref'])).code).toBe(
+      0,
+    );
   });
 
-  it('account connect / bind-secret / status never print a secret value', () => {
+  it('account connect / bind-secret / status never print a secret value', async () => {
     const acc = json<{ accountId: string }>(
-      cli(['account', 'connect', '--provider', 'anthropic', '--label', 'work', '--json']),
+      await cli(['account', 'connect', '--provider', 'anthropic', '--label', 'work', '--json']),
     );
-    const bind = cli(['account', 'bind-secret', acc.accountId, 'ANTHROPIC_API_KEY']);
+    const bind = await cli(['account', 'bind-secret', acc.accountId, 'ANTHROPIC_API_KEY']);
     expect(bind.code).toBe(0);
     expect(bind.out).toContain('ANTHROPIC_API_KEY'); // an env NAME, safe
-    const status = cli(['account', 'status', acc.accountId]);
+    const status = await cli(['account', 'status', acc.accountId]);
     expect(status.out).toBe('status: healthy');
-    // nothing across these printed a secret-shaped value
     expect(`${acc.accountId}${bind.out}${status.out}`).not.toMatch(/sk-[a-z]/i);
   });
 
-  it('rejects a bad env-name with a non-zero exit and safe error', () => {
+  it('rejects a bad env-name with a non-zero exit and safe error', async () => {
     const acc = json<{ accountId: string }>(
-      cli(['account', 'connect', '--provider', 'openai', '--json']),
+      await cli(['account', 'connect', '--provider', 'openai', '--json']),
     );
-    const bad = cli(['account', 'bind-secret', acc.accountId, 'not-an-env-name']);
+    const bad = await cli(['account', 'bind-secret', acc.accountId, 'not-an-env-name']);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('env-var');
     expect(bad.err).not.toMatch(/\bat \//); // no stack trace
   });
 
-  it('--json emits structured output and errors', () => {
-    const h = cli(['health', '--json']);
+  it('--json emits structured output and errors', async () => {
+    const h = await cli(['health', '--json']);
     expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(2);
-    const bad = cli(['bogus', 'command', '--json']);
+    const bad = await cli(['bogus', 'command', '--json']);
     expect(bad.code).toBe(2);
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');
   });
 
-  it('chat runs a mock turn and prints the assistant reply', () => {
-    cli(['project', 'ensure', 'crm']);
-    const r = cli(['chat', 'fix the PDF export bug', '--project', 'crm']);
+  it('chat runs a mock turn and prints the assistant reply', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const r = await cli(['chat', 'fix the PDF export bug', '--project', 'crm']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('[mock:');
     expect(r.out).toContain('PDF export');
     expect(r.out).toContain('tok'); // metadata line
     const j = json<{ provider: string; text: string }>(
-      cli(['chat', 'hello', '--project', 'crm', '--json']),
+      await cli(['chat', 'hello', '--project', 'crm', '--json']),
     );
     expect(j.provider).toBe('mock');
     expect(j.text).toContain('hello');
   });
 
-  it('provider list shows mock available and scaffolds unavailable (no secrets)', () => {
-    const r = cli(['provider', 'list']);
+  it('provider list shows mock available and real providers unconfigured (no secrets)', async () => {
+    const r = await cli(['provider', 'list']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('mock\tavailable');
     expect(r.out).toContain('anthropic');
@@ -167,19 +171,19 @@ describe('amrita CLI', () => {
     expect(r.out).not.toMatch(/sk-[a-z]/i);
   });
 
-  it('chat with an unavailable provider fails non-zero, safely', () => {
-    cli(['project', 'ensure', 'crm']);
-    const r = cli(['chat', 'hi', '--project', 'crm', '--provider', 'anthropic']);
+  it('chat with an unconfigured real provider fails non-zero, safely', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const r = await cli(['chat', 'hi', '--project', 'crm', '--provider', 'anthropic']);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('not implemented');
+    expect(r.err).toContain('no configured account');
     expect(r.err).not.toMatch(/sk-[a-z]/i);
   });
 
-  it('usage errors exit non-zero', () => {
-    expect(cli(['task', 'create', '--project', 'crm']).code).toBe(2); // missing --title
+  it('usage errors exit non-zero', async () => {
+    expect((await cli(['task', 'create', '--project', 'crm'])).code).toBe(2); // missing --title
     // missing --db entirely
     let err = '';
-    const code = run(['health'], {
+    const code = await run(['health'], {
       out: () => {},
       err: (l) => {
         err += l;
