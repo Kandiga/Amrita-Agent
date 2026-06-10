@@ -97,9 +97,37 @@ constraint violation rolls back the event), and never writes a secret. Mapping:
 | `message.*` | `messages` (+FTS) | insert one row, `id == event.id`; `content_json` is the full payload |
 | `task.created/updated/completed` | `tasks` | insert / patch mutable fields / `status='done'` |
 | `decision.recorded/superseded` | `decisions` | **INSERT only** (`supersedes_id` on the new row); append-only triggers honored |
-| `memory.updated/consolidated` | `memory_entries` | metadata update of an existing row (content never from events); no-op if absent |
-| `provider.connected/degraded/restored` | `accounts` | `metadata_json.health` only — never `secret_ref` |
+| `memory.updated/consolidated` | `memory_entries` | **upsert** from inline content (≤4000); `char_count` generated (ADR-0007) |
+| `provider.connected/degraded/restored` | `accounts` | `connected` creates-or-marks the row; degraded/restored mark health; **never `secret_ref`** |
 | `connector.installed/updated/removed` | `connectors` | insert / status patch / delete |
 | `settings.updated` | `settings` | upsert; secret-ish keys already blocked by the event schema + CHECK |
 | `lane.spawned/mandate/progress/merge_report/completed/aborted` | `lanes` | state machine; project/conversation from the envelope |
 | everything else | — | log-only (no projection) |
+
+## Public Store API (`store.ts`, ADR-0007)
+
+**The daemon/kernel uses the Store API, never raw SQL.** Write APIs construct a validated protocol
+event and call `appendEvent` (so every entity write is logged + projected atomically); read APIs return
+mapped camelCase rows.
+
+**Write APIs** (each returns the generated id where relevant + the sealed event): `createTask`,
+`updateTask`, `completeTask`, `recordDecision`, `supersedeDecision`, `putMemoryEntry`,
+`consolidateMemoryEntries`, `updateSetting`, `installConnector`, `updateConnector`, `removeConnector`,
+`connectProviderAccount`, `markProviderDegraded`, `markProviderRestored`. All take an `EntityWriteOpts`
+(`origin` default `system`, optional `turnId`/`laneId`/`channel`). Global-config writes
+(settings/connectors/accounts) still carry a `conversationId` (the originating/system conversation).
+
+**Read APIs:** `getConversationTree` (recursive `parent_id` walk), `listTasks`, `listDecisions`
+(`includeSuperseded?`), `getDecisionHistory` (recursive `supersedes_id` chain), `searchMemory`
+(LIKE — no memory FTS yet, deferred), `getSetting`, `listConnectors`/`getConnector`,
+`listAccounts`/`getAccountHealth`, `listLanes`. Plus the lower-level `appendEvent`, `recordUserMessage`,
+`getEvents`, `searchMessages`.
+
+### Secret boundary
+
+- **`accounts`:** the API never sets `secret_ref` (it stays `NULL`); events never carry a secret
+  value. `secret_ref` is an env-NAME reference, bound through a separate secure path (not WO#1.4).
+- **`settings`:** secret-ish keys (`secret`/`api_key`/`apikey`/`token`/`password`) are rejected by the
+  event schema's `.refine` **and** the table CHECK — neither weakened.
+- **`memory`:** content is the user's own data (bounded ≤4000) and is stored as written; it is *not*
+  a credential surface and is not key-tripwired (ADR-0007). The API never copies a secret into it.

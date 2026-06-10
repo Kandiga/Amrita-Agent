@@ -120,37 +120,48 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       return;
     }
 
-    // ── memory_entries (metadata projection; content never comes from events) ─
+    // ── memory_entries (content-bearing upsert; ADR-0007) ─────────────────
     case 'memory.updated': {
       const p = ev.payload;
-      // scope + project_id are written together to keep the schema's
-      // scope/project_id CHECK consistent; an inconsistent event rolls back.
-      // No-op if the row doesn't exist yet (content-bearing creation is a direct
-      // store concern, not an event — see ADR-0006).
+      // Upsert: create the row or update it. scope + project_id are written
+      // together so the table's scope/project_id CHECK stays consistent (an
+      // inconsistent event rolls back). char_count regenerates from content.
       db.prepare(
-        `UPDATE memory_entries
-            SET scope = ?, project_id = ?,
-                source = COALESCE(?, source),
-                source_message_id = COALESCE(?, source_message_id),
-                updated_at = ?
-          WHERE id = ?`,
+        `INSERT INTO memory_entries (id, scope, project_id, content, source, source_message_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           scope = excluded.scope,
+           project_id = excluded.project_id,
+           content = excluded.content,
+           source = COALESCE(excluded.source, memory_entries.source),
+           source_message_id = COALESCE(excluded.source_message_id, memory_entries.source_message_id),
+           updated_at = excluded.updated_at`,
       ).run(
+        p.entryId,
         p.scope,
         p.projectId ?? null,
+        p.content,
         p.source ?? null,
         p.sourceMessageId ?? null,
         ev.ts,
-        p.entryId,
+        ev.ts,
       );
       return;
     }
     case 'memory.consolidated': {
       const p = ev.payload;
-      // Mark the result entry consolidated; source rows are left intact (no
-      // destructive GC in the reducer — deferred). No-op if result is absent.
+      // Upsert the consolidated result entry; source rows are left intact (no
+      // destructive GC in the reducer — deferred).
       db.prepare(
-        "UPDATE memory_entries SET scope = ?, project_id = ?, source = 'consolidated', updated_at = ? WHERE id = ?",
-      ).run(p.scope, p.projectId ?? null, ev.ts, p.resultEntryId);
+        `INSERT INTO memory_entries (id, scope, project_id, content, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'consolidated', ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           scope = excluded.scope,
+           project_id = excluded.project_id,
+           content = excluded.content,
+           source = 'consolidated',
+           updated_at = excluded.updated_at`,
+      ).run(p.resultEntryId, p.scope, p.projectId ?? null, p.content, ev.ts, ev.ts);
       return;
     }
 
@@ -160,10 +171,19 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
     case 'provider.restored': {
       const p = ev.payload;
       if (!p.accountId) return; // health with no account to attach to: log-only
-      const row = db.prepare('SELECT metadata_json FROM accounts WHERE id = ?').get(p.accountId) as
+      let row = db.prepare('SELECT metadata_json FROM accounts WHERE id = ?').get(p.accountId) as
         | { metadata_json: string | null }
         | undefined;
-      if (!row) return;
+      if (!row) {
+        // Only `provider.connected` may create the account; it never sets
+        // secret_ref (NULL) — secret binding is a separate secure path (ADR-0007).
+        if (ev.type !== 'provider.connected') return;
+        db.prepare(
+          `INSERT INTO accounts (id, provider, auth_mode, secret_ref, metadata_json, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
+        ).run(p.accountId, ev.payload.provider, ev.payload.authMode, ev.ts, ev.ts);
+        row = { metadata_json: null };
+      }
       const meta = (row.metadata_json ? JSON.parse(row.metadata_json) : {}) as Record<
         string,
         unknown

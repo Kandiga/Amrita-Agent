@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 import {
   type AmritaEvent,
   type ConversationRow,
+  type EventChannel,
+  type EventOrigin,
   type EventType,
   type MessageRow,
   type ProjectRow,
@@ -43,7 +45,109 @@ export interface RecordUserMessageInput {
   conversationId: string;
   text: string;
   turnId?: string;
-  channel?: 'web' | 'telegram' | 'cli' | 'api';
+  channel?: EventChannel;
+}
+
+/** Envelope context shared by every entity-write API (ADR-0007). */
+export interface EntityWriteOpts {
+  /** Who caused this (defaults to `system`). */
+  origin?: EventOrigin;
+  turnId?: string;
+  laneId?: string;
+  channel?: EventChannel;
+}
+
+export type TaskStatus = 'now' | 'later' | 'done' | 'dropped';
+export type MemoryScope = 'user' | 'project';
+export type ConnectorStatus = 'needs_setup' | 'ready' | 'error' | 'disabled';
+export type AuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
+export type LaneStatus = 'spawned' | 'running' | 'merging' | 'completed' | 'aborted';
+
+export interface TaskRow {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  sourceMessageId: string | null;
+  laneId: string | null;
+  status: TaskStatus;
+  title: string;
+  body: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DecisionRow {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  sourceMessageId: string | null;
+  supersedesId: string | null;
+  text: string;
+  createdAt: string;
+}
+
+export interface MemoryEntryRow {
+  id: string;
+  scope: MemoryScope;
+  projectId: string | null;
+  content: string;
+  charCount: number;
+  source: string | null;
+  sourceMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConnectorRow {
+  id: string;
+  slug: string;
+  kind: string;
+  status: ConnectorStatus;
+  manifestJson: string | null;
+  configJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Account row — `secretRef` is an env-NAME, never a secret value (ADR-0003). */
+export interface AccountRow {
+  id: string;
+  provider: string;
+  label: string | null;
+  authMode: AuthMode;
+  secretRef: string | null;
+  metadataJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountHealth {
+  health: string | null;
+  healthReason: string | null;
+  healthAt: string | null;
+}
+
+export interface LaneRow {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  kind: string;
+  status: LaneStatus;
+  mandateJson: string;
+  budgetJson: string | null;
+  mergeJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationNode {
+  id: string;
+  projectId: string;
+  title: string | null;
+  parentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
 }
 
 function now(): string {
@@ -107,7 +211,11 @@ export class Store {
     return row;
   }
 
-  createConversation(input: { projectId: string; title?: string }): ConversationRow {
+  createConversation(input: {
+    projectId: string;
+    title?: string;
+    parentId?: string;
+  }): ConversationRow {
     const ts = now();
     const row: ConversationRow = {
       id: newId(),
@@ -117,12 +225,13 @@ export class Store {
       updatedAt: ts,
       archivedAt: null,
     };
+    // parent_id integrity (exists / not self) is enforced by SQL triggers (ADR-0003).
     this.db
       .prepare(
-        `INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived_at)
-         VALUES (@id, @projectId, @title, @createdAt, @updatedAt, @archivedAt)`,
+        `INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived_at, parent_id)
+         VALUES (@id, @projectId, @title, @createdAt, @updatedAt, @archivedAt, @parentId)`,
       )
-      .run(row);
+      .run({ ...row, parentId: input.parentId ?? null });
     return row;
   }
 
@@ -157,20 +266,28 @@ export class Store {
       });
   }
 
-  /** Spill a large tool.completed result to a file + artifact row; return the rewritten payload. */
-  private maybeSpill(ev: UnsealedEvent): UnsealedEvent['payload'] {
-    if (ev.type !== 'tool.completed') return ev.payload;
+  /**
+   * Plan a spill for a large `tool.completed` result: insert the `artifacts` row
+   * and rewrite the payload *now* (inside the transaction), but defer the file
+   * write to after commit by returning it as `pending` — so a rolled-back spill
+   * leaves no orphan file (ADR-0007).
+   */
+  private prepareSpill(ev: UnsealedEvent): {
+    payload: UnsealedEvent['payload'];
+    pending: { filePath: string; data: string } | null;
+  } {
+    if (ev.type !== 'tool.completed') return { payload: ev.payload, pending: null };
     const payload = ev.payload as {
       toolCallId: string;
       result: { result?: unknown; isError?: boolean };
     };
     const serialized = JSON.stringify(payload.result.result ?? null);
-    if (Buffer.byteLength(serialized, 'utf8') <= SPILL_THRESHOLD_BYTES) return ev.payload;
+    if (Buffer.byteLength(serialized, 'utf8') <= SPILL_THRESHOLD_BYTES) {
+      return { payload: ev.payload, pending: null };
+    }
 
     const artifactId = newId();
-    mkdirSync(this.spillDir, { recursive: true });
     const filePath = join(this.spillDir, `${artifactId}.json`);
-    writeFileSync(filePath, serialized);
     this.db
       .prepare(
         `INSERT INTO artifacts (id, conversation_id, kind, path, bytes, created_at)
@@ -186,12 +303,15 @@ export class Store {
       );
 
     return {
-      toolCallId: payload.toolCallId,
-      result: {
-        spilledArtifactId: artifactId,
-        preview: serialized.slice(0, 500),
-        isError: payload.result.isError ?? false,
+      payload: {
+        toolCallId: payload.toolCallId,
+        result: {
+          spilledArtifactId: artifactId,
+          preview: serialized.slice(0, 500),
+          isError: payload.result.isError ?? false,
+        },
       },
+      pending: { filePath, data: serialized },
     };
   }
 
@@ -208,16 +328,24 @@ export class Store {
     if (isStreamOnly(unsealed.type)) {
       throw new Error(`refusing to persist stream-only event: ${unsealed.type}`);
     }
-    const tx = this.db.transaction((): AmritaEvent => {
-      const seq = this.nextSeq(unsealed.conversationId);
-      const payload = this.maybeSpill(unsealed);
-      const sealed = parseEvent({ ...unsealed, seq, payload });
-      this.insertEventRow(sealed);
-      applyEventProjection(this.db, sealed); // same-transaction read-model projection
-      this.touchConversation(unsealed.conversationId);
-      return sealed;
-    });
-    return tx();
+    const tx = this.db.transaction(
+      (): { sealed: AmritaEvent; pending: { filePath: string; data: string } | null } => {
+        const seq = this.nextSeq(unsealed.conversationId);
+        const spill = this.prepareSpill(unsealed);
+        const sealed = parseEvent({ ...unsealed, seq, payload: spill.payload });
+        this.insertEventRow(sealed);
+        applyEventProjection(this.db, sealed); // same-transaction read-model projection
+        this.touchConversation(unsealed.conversationId);
+        return { sealed, pending: spill.pending };
+      },
+    );
+    const { sealed, pending } = tx();
+    if (pending) {
+      // Side effect after commit: a rolled-back spill never reaches here (ADR-0007).
+      mkdirSync(dirname(pending.filePath), { recursive: true });
+      writeFileSync(pending.filePath, pending.data);
+    }
+    return sealed;
   }
 
   /**
@@ -287,6 +415,559 @@ export class Store {
       LIMIT ?`;
     const params = opts.conversationId ? [query, opts.conversationId, limit] : [query, limit];
     return this.db.prepare(sql).all(...params) as SearchHit[];
+  }
+
+  // ── public write API (events → projection; never raw table writes) ───────
+
+  /** Build a validated entity event and append it through the atomic path. */
+  private emit(
+    type: string,
+    projectId: string,
+    conversationId: string,
+    payload: unknown,
+    opts: EntityWriteOpts = {},
+  ): AmritaEvent {
+    return this.appendEvent({
+      id: newId(),
+      ts: now(),
+      projectId,
+      conversationId,
+      origin: opts.origin ?? 'system',
+      ...(opts.turnId ? { turnId: opts.turnId } : {}),
+      ...(opts.laneId ? { laneId: opts.laneId } : {}),
+      ...(opts.channel ? { channel: opts.channel } : {}),
+      type,
+      payload,
+    } as UnsealedEvent);
+  }
+
+  createTask(
+    input: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+      status?: TaskStatus;
+      sourceMessageId?: string;
+      laneId?: string;
+    } & EntityWriteOpts,
+  ): { taskId: string; event: AmritaEvent } {
+    const taskId = newId();
+    const event = this.emit(
+      'task.created',
+      input.projectId,
+      input.conversationId,
+      {
+        taskId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        ...(input.laneId ? { laneId: input.laneId } : {}),
+        title: input.title,
+        ...(input.status ? { status: input.status } : {}),
+      },
+      input,
+    );
+    return { taskId, event };
+  }
+
+  updateTask(
+    input: {
+      projectId: string;
+      conversationId: string;
+      taskId: string;
+      status?: TaskStatus;
+      title?: string;
+      body?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'task.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        taskId: input.taskId,
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.body !== undefined ? { body: input.body } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  completeTask(
+    input: { projectId: string; conversationId: string; taskId: string } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'task.completed',
+        input.projectId,
+        input.conversationId,
+        { taskId: input.taskId },
+        input,
+      ),
+    };
+  }
+
+  recordDecision(
+    input: {
+      projectId: string;
+      conversationId: string;
+      text: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { decisionId: string; event: AmritaEvent } {
+    const decisionId = newId();
+    const event = this.emit(
+      'decision.recorded',
+      input.projectId,
+      input.conversationId,
+      {
+        decisionId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        text: input.text,
+      },
+      input,
+    );
+    return { decisionId, event };
+  }
+
+  supersedeDecision(
+    input: {
+      projectId: string;
+      conversationId: string;
+      supersedesId: string;
+      text: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { decisionId: string; event: AmritaEvent } {
+    const decisionId = newId();
+    const event = this.emit(
+      'decision.superseded',
+      input.projectId,
+      input.conversationId,
+      {
+        decisionId,
+        supersedesId: input.supersedesId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        text: input.text,
+      },
+      input,
+    );
+    return { decisionId, event };
+  }
+
+  /**
+   * Create or update a memory entry. The envelope `projectId` is the *context*;
+   * the payload carries `projectId` only for `scope='project'` (so the table's
+   * scope/project CHECK holds). Content is bounded (≤4000) and stored as-is —
+   * memory is user data, not a secret surface (ADR-0007).
+   */
+  putMemoryEntry(
+    input: {
+      projectId: string;
+      conversationId: string;
+      scope: MemoryScope;
+      content: string;
+      entryId?: string;
+      source?: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { entryId: string; event: AmritaEvent } {
+    const entryId = input.entryId ?? newId();
+    const event = this.emit(
+      'memory.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        entryId,
+        scope: input.scope,
+        content: input.content,
+        ...(input.scope === 'project' ? { projectId: input.projectId } : {}),
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      },
+      input,
+    );
+    return { entryId, event };
+  }
+
+  consolidateMemoryEntries(
+    input: {
+      projectId: string;
+      conversationId: string;
+      scope: MemoryScope;
+      content: string;
+      sourceEntryIds: string[];
+      resultEntryId?: string;
+    } & EntityWriteOpts,
+  ): { resultEntryId: string; event: AmritaEvent } {
+    const resultEntryId = input.resultEntryId ?? newId();
+    const event = this.emit(
+      'memory.consolidated',
+      input.projectId,
+      input.conversationId,
+      {
+        resultEntryId,
+        sourceEntryIds: input.sourceEntryIds,
+        content: input.content,
+        scope: input.scope,
+        ...(input.scope === 'project' ? { projectId: input.projectId } : {}),
+      },
+      input,
+    );
+    return { resultEntryId, event };
+  }
+
+  /** Set a non-secret config value. Secret-ish keys are rejected by the event schema. */
+  updateSetting(
+    input: {
+      projectId: string;
+      conversationId: string;
+      key: string;
+      value: unknown;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'settings.updated',
+        input.projectId,
+        input.conversationId,
+        { key: input.key, value: input.value },
+        input,
+      ),
+    };
+  }
+
+  installConnector(
+    input: {
+      projectId: string;
+      conversationId: string;
+      slug: string;
+      kind: string;
+      connectorId?: string;
+    } & EntityWriteOpts,
+  ): { connectorId: string; event: AmritaEvent } {
+    const connectorId = input.connectorId ?? newId();
+    const event = this.emit(
+      'connector.installed',
+      input.projectId,
+      input.conversationId,
+      { connectorId, slug: input.slug, kind: input.kind },
+      input,
+    );
+    return { connectorId, event };
+  }
+
+  updateConnector(
+    input: {
+      projectId: string;
+      conversationId: string;
+      connectorId: string;
+      slug: string;
+      status?: ConnectorStatus;
+      fields?: string[];
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'connector.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        connectorId: input.connectorId,
+        slug: input.slug,
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.fields ? { fields: input.fields } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  removeConnector(
+    input: {
+      projectId: string;
+      conversationId: string;
+      connectorId: string;
+      slug: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'connector.removed',
+        input.projectId,
+        input.conversationId,
+        { connectorId: input.connectorId, slug: input.slug },
+        input,
+      ),
+    };
+  }
+
+  /** Connect (create-or-mark) a provider account. Never sets a secret value. */
+  connectProviderAccount(
+    input: {
+      projectId: string;
+      conversationId: string;
+      provider: string;
+      authMode: AuthMode;
+      accountId?: string;
+    } & EntityWriteOpts,
+  ): { accountId: string; event: AmritaEvent } {
+    const accountId = input.accountId ?? newId();
+    const event = this.emit(
+      'provider.connected',
+      input.projectId,
+      input.conversationId,
+      { provider: input.provider, accountId, authMode: input.authMode },
+      input,
+    );
+    return { accountId, event };
+  }
+
+  markProviderDegraded(
+    input: {
+      projectId: string;
+      conversationId: string;
+      provider: string;
+      accountId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'provider.degraded',
+        input.projectId,
+        input.conversationId,
+        { provider: input.provider, accountId: input.accountId, reason: input.reason },
+        input,
+      ),
+    };
+  }
+
+  markProviderRestored(
+    input: {
+      projectId: string;
+      conversationId: string;
+      provider: string;
+      accountId: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'provider.restored',
+        input.projectId,
+        input.conversationId,
+        { provider: input.provider, accountId: input.accountId },
+        input,
+      ),
+    };
+  }
+
+  // ── public read / query API ──────────────────────────────────────────────
+
+  /** A conversation and all its descendants via `parent_id` lineage. */
+  getConversationTree(conversationId: string): ConversationNode[] {
+    return this.db
+      .prepare(
+        `WITH RECURSIVE tree(id) AS (
+           SELECT id FROM conversations WHERE id = ?
+           UNION ALL
+           SELECT c.id FROM conversations c JOIN tree t ON c.parent_id = t.id
+         )
+         SELECT id, project_id AS projectId, title, parent_id AS parentId,
+                created_at AS createdAt, updated_at AS updatedAt, archived_at AS archivedAt
+         FROM conversations WHERE id IN (SELECT id FROM tree)
+         ORDER BY created_at ASC`,
+      )
+      .all(conversationId) as ConversationNode[];
+  }
+
+  listTasks(
+    filters: { projectId?: string; conversationId?: string; status?: TaskStatus } = {},
+  ): TaskRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.conversationId) {
+      where.push('conversation_id = ?');
+      vals.push(filters.conversationId);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      vals.push(filters.status);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, lane_id AS laneId, status, title, body,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM tasks ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as TaskRow[];
+  }
+
+  listDecisions(
+    filters: { projectId?: string; conversationId?: string; includeSuperseded?: boolean } = {},
+  ): DecisionRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.conversationId) {
+      where.push('conversation_id = ?');
+      vals.push(filters.conversationId);
+    }
+    if (!filters.includeSuperseded) {
+      // "current" = not pointed at by any superseding row
+      where.push('id NOT IN (SELECT supersedes_id FROM decisions WHERE supersedes_id IS NOT NULL)');
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, supersedes_id AS supersedesId, text,
+                created_at AS createdAt
+         FROM decisions ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as DecisionRow[];
+  }
+
+  /** The supersession chain for a decision: it and everything it (transitively) supersedes. */
+  getDecisionHistory(decisionId: string): DecisionRow[] {
+    return this.db
+      .prepare(
+        `WITH RECURSIVE chain(id) AS (
+           SELECT id FROM decisions WHERE id = ?
+           UNION ALL
+           SELECT d.supersedes_id FROM decisions d JOIN chain c ON d.id = c.id
+           WHERE d.supersedes_id IS NOT NULL
+         )
+         SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, supersedes_id AS supersedesId, text,
+                created_at AS createdAt
+         FROM decisions WHERE id IN (SELECT id FROM chain)
+         ORDER BY created_at ASC`,
+      )
+      .all(decisionId) as DecisionRow[];
+  }
+
+  /**
+   * Substring search over memory content. A `LIKE` fallback — there is no FTS
+   * index on `memory_entries` yet (a `memory_fts` migration is deferred, ADR-0007).
+   */
+  searchMemory(
+    query: string,
+    opts: { scope?: MemoryScope; projectId?: string; limit?: number } = {},
+  ): MemoryEntryRow[] {
+    const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const where = ["content LIKE ? ESCAPE '\\'"];
+    const vals: (string | number)[] = [`%${escaped}%`];
+    if (opts.scope) {
+      where.push('scope = ?');
+      vals.push(opts.scope);
+    }
+    if (opts.projectId) {
+      where.push('project_id = ?');
+      vals.push(opts.projectId);
+    }
+    vals.push(opts.limit ?? 20);
+    return this.db
+      .prepare(
+        `SELECT id, scope, project_id AS projectId, content, char_count AS charCount,
+                source, source_message_id AS sourceMessageId, created_at AS createdAt, updated_at AS updatedAt
+         FROM memory_entries WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(...vals) as MemoryEntryRow[];
+  }
+
+  /** A non-secret config value, parsed from its JSON, or `undefined` if unset. */
+  getSetting<T = unknown>(key: string): T | undefined {
+    const row = this.db.prepare('SELECT value_json AS v FROM settings WHERE key = ?').get(key) as
+      | { v: string }
+      | undefined;
+    return row ? (JSON.parse(row.v) as T) : undefined;
+  }
+
+  listConnectors(): ConnectorRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, slug, kind, status, manifest_json AS manifestJson, config_json AS configJson,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM connectors ORDER BY created_at ASC`,
+      )
+      .all() as ConnectorRow[];
+  }
+
+  getConnector(slug: string): ConnectorRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, slug, kind, status, manifest_json AS manifestJson, config_json AS configJson,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM connectors WHERE slug = ?`,
+      )
+      .get(slug) as ConnectorRow | undefined;
+  }
+
+  /** Accounts. `secretRef` is an env-NAME reference, never a secret value. */
+  listAccounts(): AccountRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, provider, label, auth_mode AS authMode, secret_ref AS secretRef,
+                metadata_json AS metadataJson, created_at AS createdAt, updated_at AS updatedAt
+         FROM accounts ORDER BY created_at ASC`,
+      )
+      .all() as AccountRow[];
+  }
+
+  getAccountHealth(accountId: string): AccountHealth | undefined {
+    const row = this.db
+      .prepare('SELECT metadata_json AS m FROM accounts WHERE id = ?')
+      .get(accountId) as { m: string | null } | undefined;
+    if (!row) return undefined;
+    const meta = (row.m ? JSON.parse(row.m) : {}) as Record<string, unknown>;
+    return {
+      health: (meta.health as string | undefined) ?? null,
+      healthReason: (meta.healthReason as string | undefined) ?? null,
+      healthAt: (meta.healthAt as string | undefined) ?? null,
+    };
+  }
+
+  listLanes(
+    filters: { projectId?: string; conversationId?: string; status?: LaneStatus } = {},
+  ): LaneRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.conversationId) {
+      where.push('conversation_id = ?');
+      vals.push(filters.conversationId);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      vals.push(filters.status);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId, kind, status,
+                mandate_json AS mandateJson, budget_json AS budgetJson, merge_json AS mergeJson,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM lanes ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as LaneRow[];
   }
 }
 

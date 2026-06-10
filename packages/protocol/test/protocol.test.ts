@@ -170,9 +170,17 @@ describe('entity event taxonomy (WO#1.2)', () => {
       sourceMessageId: newId(),
       text: 'use SQLite + WAL',
     },
+    'memory.updated': {
+      entryId: newId(),
+      scope: 'project',
+      content: 'remember the brief',
+      projectId: newId(),
+      source: 'curated',
+    },
     'memory.consolidated': {
       resultEntryId: newId(),
       sourceEntryIds: [newId(), newId()],
+      content: 'merged note',
       scope: 'project',
       projectId: newId(),
     },

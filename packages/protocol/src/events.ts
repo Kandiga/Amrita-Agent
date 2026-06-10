@@ -138,14 +138,15 @@ export const eventPayloads = {
   // memory.written is the markdown-vault file-export signal (path-based), kept
   // distinct from the row-level memory_entries events below. See ADR-0004.
   'memory.written': z.object({ path: z.string(), bytes: z.number().int().nonnegative() }).strict(),
-  // RECONCILED in WO#1.2: a row-level upsert of a memory_entries row (create or
-  // update), carrying entry provenance for projection. (Was path-based.)
+  // A row-level upsert of a memory_entries row (create or update). Carries the
+  // bounded content inline (≤4000, the table budget) so the row is rebuildable
+  // from the log; `projectId` is present only for project scope. See ADR-0007.
   'memory.updated': z
     .object({
       entryId: idSchema,
       scope: memoryScopeSchema,
+      content: z.string().min(1).max(4000),
       projectId: idSchema.optional(),
-      charCount: z.number().int().nonnegative().optional(),
       source: z.string().optional(),
       sourceMessageId: idSchema.optional(),
     })
@@ -154,6 +155,7 @@ export const eventPayloads = {
     .object({
       resultEntryId: idSchema,
       sourceEntryIds: z.array(idSchema).min(1),
+      content: z.string().min(1).max(4000),
       scope: memoryScopeSchema,
       projectId: idSchema.optional(),
     })
