@@ -15,7 +15,8 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 ## Tables
 
 - **projects** `(id, slug unique, name, root?, created_at, updated_at)`
-- **conversations** `(id, project_id→projects, title?, created_at, updated_at, archived_at?)`
+- **conversations** `(id, project_id→projects, title?, created_at, updated_at, archived_at?,
+  parent_id?)` — `parent_id` is a trigger-enforced self-reference (lineage; added in `0001`).
 - **messages** `(id, conversation_id→conversations, turn_id?, role, content_json, content*, created_at)`
   — `content` is a VIRTUAL generated column = `json_extract(content_json,'$.text')`, used as the FTS
   external-content source.
@@ -27,13 +28,38 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
   by `messages_ai/ad/au` triggers that index `json_extract(content_json,'$.text')`.
 - **schema_migrations** `(version, applied_at)`
 
+### Entity baseline (migration `0001_full_store_schema`, ADR-0003)
+
+- **tasks** `(id, project_id→projects CASCADE, conversation_id?→conversations SET NULL,
+  source_message_id?→messages SET NULL, lane_id?, status[now|later|done|dropped], title, body?,
+  created_at, updated_at)`.
+- **decisions** `(id, project_id→projects, conversation_id?, source_message_id?,
+  supersedes_id?→decisions, text, created_at)` — **append-only**: `BEFORE UPDATE`/`BEFORE DELETE`
+  triggers `RAISE(ABORT)`; correct by inserting a superseding row.
+- **memory_entries** `(id, scope[user|project], project_id?→projects CASCADE, content,
+  char_count*, source?, source_message_id?→messages SET NULL, created_at, updated_at)` —
+  `char_count` is generated `length(content)`; CHECKs enforce scope/`project_id` consistency and a
+  ≤4000-char budget.
+- **lanes** `(id, project_id→projects CASCADE, conversation_id→conversations CASCADE, kind,
+  status[spawned|running|merging|completed|aborted], mandate_json, budget_json?, merge_json?,
+  created_at, updated_at)`.
+- **accounts** `(id, provider, label?, auth_mode[api_key|subscription_cli|local_endpoint|oauth],
+  secret_ref?, metadata_json?, created_at, updated_at, UNIQUE(provider,label))` — `secret_ref` is an
+  ENV-NAME (CHECK: `^[A-Z][A-Z0-9_]*$` via GLOB), **never a secret value**.
+- **connectors** `(id, slug unique, kind, status[needs_setup|ready|error|disabled], manifest_json?,
+  config_json?, created_at, updated_at)` — no secrets in `config_json`.
+- **settings** `(key, value_json, updated_at)` — CHECK rejects keys containing
+  `secret`/`api_key`/`apikey`/`token`/`password`.
+
 ## Migrations (`migrate.ts`)
 
 - `MIGRATIONS` is an ordered, append-only list. Never edit a shipped migration; add the next one.
 - `migrateUp(db)` applies every unrecorded migration in a transaction, recording its version.
 - `migrateDown(db, toVersion?)` reverts highest-first using the paired `.down.sql`.
 - `currentVersion(db)` reports the highest applied version (or -1).
-- **Acceptance:** up → down → up leaves an identical schema and an idempotent second `up` applies 0.
+- **Acceptance:** up → down → up across both migrations leaves an identical schema and an idempotent
+  second `up` applies 0; a targeted `migrateDown(db, 0)` reverts only `0001` (spine intact, lineage
+  column dropped).
 
 ## The store API (`store.ts`)
 

@@ -66,18 +66,41 @@ stream-only type. Full detail: [`specs/event-protocol.md`](specs/event-protocol.
 
 ### 3.3 Store
 
-Tables `projects`, `conversations`, `messages` (+ FTS5 external-content `messages_fts`), `events`
-(`UNIQUE(conversation_id, seq)`), `artifacts`, `schema_migrations`. Hand-written reversible
-migrations. The store assigns `seq`, runs the hybrid user-message transaction (message row + event
-together), ranks search with bm25, and spills >32 KB tool results. Full detail:
-[`specs/store.md`](specs/store.md).
+The Phase-0 store schema has two layers, both delivered as hand-written reversible migrations.
+
+**Spine (event sourcing) — migration `0000_init`:** `projects`, `conversations`, `messages`
+(+ FTS5 external-content `messages_fts`), `events` (`UNIQUE(conversation_id, seq)`), `artifacts`,
+`schema_migrations`. The store assigns `seq`, runs the hybrid user-message transaction (message row
++ event together), ranks search with bm25, and spills >32 KB tool results.
+
+**Entity baseline — migration `0001_full_store_schema`** (see [ADR-0003](adr/0003-full-store-schema-baseline.md)):
+
+- `conversations.parent_id` — **lineage** self-reference (trigger-enforced integrity, no FK clause).
+- `tasks` — project work items with provenance (`project_id`, `conversation_id?`,
+  `source_message_id?`, `lane_id?`), `status ∈ {now, later, done, dropped}`.
+- `decisions` — **append-only** log (UPDATE/DELETE blocked by triggers), with `supersedes_id` and
+  `source_message_id?` provenance.
+- `memory_entries` — `scope ∈ {user, project}`, per-entry char budget (generated `char_count`),
+  source/provenance fields.
+- `lanes` — `mandate_json` / `budget_json` / `merge_json` + `status` lifecycle.
+- `accounts` — provider/account metadata + **`secret_ref` only** (an ENV-NAME; never a secret value).
+- `connectors` — manifest/status/config metadata, no secrets.
+- `settings` — non-secret config values (a CHECK rejects secret-ish keys).
+
+Constraints that protect the plan's invariants (append-only decisions, scope/budget on memory,
+`secret_ref` env-name shape, secret-key tripwire on settings, lineage integrity) live in the SQL
+migration; the Drizzle `schema.ts` mirrors the table shapes ([ADR-0005](adr/0005-drizzle-canonical-better-sqlite3-runtime.md)).
+Full detail: [`specs/store.md`](specs/store.md).
 
 ## 4. Phasing & acceptance
 
-- **Phase 0 — foundation (this work order).** `@amrita/protocol` + `@amrita/store`, fully typed and
-  tested. **Acceptance:** Zod round-trip of a sealed event; FTS returns ranked hits; migrations go
-  up→down→up; `seq` is monotonic per conversation; stream-only events are rejected; >32 KB tool
-  result spills.
+- **Phase 0 — foundation.** `@amrita/protocol` + `@amrita/store`, fully typed and tested.
+  WO#0 delivered the protocol + store spine; **WO#1.1 completes the §3.3 entity baseline** (the
+  `0001` migration above). **Acceptance:** Zod round-trip of a sealed event; FTS returns ranked
+  hits; migrations go up→down→up (across both migrations, plus a targeted down); `seq` is monotonic
+  per conversation; stream-only events are rejected; >32 KB tool result spills; all §3.3 tables
+  exist; the entity invariants hold (append-only decisions, memory scope/budget, `secret_ref` shape,
+  settings tripwire, lineage integrity).
 - **Phase 1 — providers.** Role policy (`fast/main/deep`), provider catalog, `auto` resolver, and
   the Claude Code local-login probe (`claude auth status --json`) ported from v0.1 as a
   `subscription_cli` auth mode. **Acceptance:** `auto` resolves to a healthy provider; doctor-style

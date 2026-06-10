@@ -24,34 +24,76 @@ function project(): string {
   return store.createProject({ slug: `p-${newId().toLowerCase().slice(0, 8)}`, name: 'Test' }).id;
 }
 
+const REQUIRED_TABLES = [
+  'projects',
+  'conversations',
+  'messages',
+  'messages_fts',
+  'events',
+  'artifacts',
+  'schema_migrations',
+  'tasks',
+  'decisions',
+  'memory_entries',
+  'lanes',
+  'accounts',
+  'connectors',
+  'settings',
+];
+
+function tableNames(db: Database.Database): string[] {
+  return (
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
+      name: string;
+    }[]
+  ).map((t) => t.name);
+}
+
 describe('migrations', () => {
-  it('apply up, down, and up again (reversible)', () => {
+  it('apply up, down, and up again (reversible) across both migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    expect(migrateUp(db)).toBe(1);
-    expect(currentVersion(db)).toBe(0);
-    // schema present
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-      .all() as { name: string }[];
-    const names = tables.map((t) => t.name);
-    expect(names).toContain('events');
-    expect(names).toContain('messages');
-    expect(names).toContain('messages_fts');
+    // up: both 0000 and 0001 apply
+    expect(migrateUp(db)).toBe(2);
+    expect(currentVersion(db)).toBe(1);
+    for (const name of REQUIRED_TABLES) {
+      expect(tableNames(db)).toContain(name);
+    }
 
-    expect(migrateDown(db)).toBe(1);
+    // full down: both revert; even the lineage column is gone
+    expect(migrateDown(db)).toBe(2);
     expect(currentVersion(db)).toBe(-1);
-    const after = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='events'")
-      .all();
-    expect(after).toHaveLength(0);
+    expect(tableNames(db)).not.toContain('events');
+    expect(tableNames(db)).not.toContain('tasks');
 
-    // up again — idempotent re-application
-    expect(migrateUp(db)).toBe(1);
-    expect(currentVersion(db)).toBe(0);
-    expect(migrateUp(db)).toBe(0); // nothing left to apply
+    // up again — and a second up is a no-op
+    expect(migrateUp(db)).toBe(2);
+    expect(currentVersion(db)).toBe(1);
+    expect(migrateUp(db)).toBe(0);
     db.close();
+  });
+
+  it('targets a single migration with toVersion (down to 0 reverts only 0001)', () => {
+    const db = new Database(':memory:');
+    migrateUp(db);
+    // revert everything above version 0 → only 0001
+    expect(migrateDown(db, 0)).toBe(1);
+    expect(currentVersion(db)).toBe(0);
+    expect(tableNames(db)).toContain('events'); // spine intact
+    expect(tableNames(db)).not.toContain('tasks'); // 0001 reverted
+    // parent_id column is gone again
+    const cols = (db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(cols).not.toContain('parent_id');
+    db.close();
+  });
+
+  it('all required tables exist after openStore migration', () => {
+    for (const name of REQUIRED_TABLES) {
+      expect(tableNames(store.db)).toContain(name);
+    }
   });
 });
 
@@ -182,6 +224,157 @@ describe('stream-only events', () => {
       store.appendEvent(unsealed(projectId, c, 'model.delta', { text: 'partial' })),
     ).toThrow(/stream-only/);
     expect(store.getEvents(c)).toHaveLength(0);
+  });
+});
+
+describe('conversation lineage (parent_id)', () => {
+  it('represents a parent → child relationship', () => {
+    const projectId = project();
+    const parent = store.createConversation({ projectId }).id;
+    const childId = newId();
+    const ts = new Date().toISOString();
+    store.db
+      .prepare(
+        `INSERT INTO conversations (id, project_id, title, created_at, updated_at, parent_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(childId, projectId, 'branch', ts, ts, parent);
+    const row = store.db
+      .prepare('SELECT parent_id AS parentId FROM conversations WHERE id = ?')
+      .get(childId) as { parentId: string };
+    expect(row.parentId).toBe(parent);
+  });
+
+  it('rejects a self-parent and a missing parent', () => {
+    const projectId = project();
+    const ts = new Date().toISOString();
+    const id = newId();
+    const insert = (parentId: string) =>
+      store.db
+        .prepare(
+          `INSERT INTO conversations (id, project_id, title, created_at, updated_at, parent_id)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, projectId, null, ts, ts, parentId);
+    expect(() => insert(id)).toThrow(/its own parent/);
+    expect(() => insert(newId())).toThrow(/parent conversation does not exist/);
+  });
+});
+
+describe('decisions are append-only', () => {
+  function insertDecision(projectId: string, text: string, supersedes?: string): string {
+    const id = newId();
+    const ts = new Date().toISOString();
+    store.db
+      .prepare(
+        `INSERT INTO decisions (id, project_id, text, supersedes_id, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(id, projectId, text, supersedes ?? null, ts);
+    return id;
+  }
+
+  it('allows insert + supersede but blocks update and delete', () => {
+    const projectId = project();
+    const first = insertDecision(projectId, 'use SQLite');
+    // supersede with a new row — allowed
+    const second = insertDecision(projectId, 'use SQLite + WAL', first);
+    expect(second).toBeTypeOf('string');
+
+    expect(() =>
+      store.db.prepare('UPDATE decisions SET text = ? WHERE id = ?').run('changed', first),
+    ).toThrow(/append-only/);
+    expect(() => store.db.prepare('DELETE FROM decisions WHERE id = ?').run(first)).toThrow(
+      /append-only/,
+    );
+  });
+});
+
+describe('no secrets in accounts/settings (schema tripwires)', () => {
+  const ts = () => new Date().toISOString();
+
+  function insertAccount(secretRef: string | null): void {
+    store.db
+      .prepare(
+        `INSERT INTO accounts (id, provider, label, auth_mode, secret_ref, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(newId(), 'anthropic', secretRef ?? null, 'api_key', secretRef, ts(), ts());
+  }
+
+  it('accepts an ENV-NAME secret_ref but rejects non-env-name values', () => {
+    expect(() => insertAccount('ANTHROPIC_API_KEY')).not.toThrow();
+    // lowercase + dashes is not an ENV-NAME → rejected by the schema CHECK
+    expect(() => insertAccount('not-an-env-name')).toThrow();
+    expect(() => insertAccount('lowercase_name')).toThrow();
+  });
+
+  it('stores only a secret_ref, never a value (sanity on the persisted column)', () => {
+    insertAccount('OPENAI_API_KEY');
+    const row = store.db
+      .prepare("SELECT secret_ref AS r FROM accounts WHERE secret_ref = 'OPENAI_API_KEY'")
+      .get() as { r: string };
+    expect(row.r).toBe('OPENAI_API_KEY');
+    expect(row.r).not.toMatch(/^sk-/);
+  });
+
+  it('rejects secret-ish settings keys, accepts plain config', () => {
+    const put = (key: string) =>
+      store.db
+        .prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)')
+        .run(key, '"v"', ts());
+    expect(() => put('theme')).not.toThrow();
+    expect(() => put('openai_api_key')).toThrow();
+    expect(() => put('telegram_bot_token')).toThrow();
+  });
+});
+
+describe('memory_entries scope + budget', () => {
+  const ts = () => new Date().toISOString();
+  function insertMemory(scope: string, projectId: string | null, content: string): void {
+    store.db
+      .prepare(
+        `INSERT INTO memory_entries (id, scope, project_id, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(newId(), scope, projectId, content, ts(), ts());
+  }
+
+  it('enforces scope/project_id consistency and the char budget; computes char_count', () => {
+    const projectId = project();
+    insertMemory('project', projectId, 'remember the brief');
+    insertMemory('user', null, 'global preference');
+
+    const row = store.db
+      .prepare("SELECT char_count AS n FROM memory_entries WHERE content = 'global preference'")
+      .get() as { n: number };
+    expect(row.n).toBe('global preference'.length);
+
+    expect(() => insertMemory('project', null, 'x')).toThrow(); // project scope needs a project
+    expect(() => insertMemory('user', projectId, 'x')).toThrow(); // user scope must not have one
+    expect(() => insertMemory('project', projectId, 'y'.repeat(4001))).toThrow(); // over budget
+  });
+});
+
+describe('lanes persistence', () => {
+  it('stores a lane with mandate/budget/merge JSON and a checked status', () => {
+    const projectId = project();
+    const c = store.createConversation({ projectId }).id;
+    const ts = new Date().toISOString();
+    const laneId = newId();
+    store.db
+      .prepare(
+        `INSERT INTO lanes (id, project_id, conversation_id, kind, status, mandate_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(laneId, projectId, c, 'claude-code', 'spawned', '{"goal":"x"}', ts, ts);
+    const row = store.db.prepare('SELECT status FROM lanes WHERE id = ?').get(laneId) as {
+      status: string;
+    };
+    expect(row.status).toBe('spawned');
+    expect(() =>
+      store.db.prepare('UPDATE lanes SET status = ? WHERE id = ?').run('not-a-status', laneId),
+    ).toThrow();
   });
 });
 
