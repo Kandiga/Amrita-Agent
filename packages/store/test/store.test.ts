@@ -35,6 +35,7 @@ const REQUIRED_TABLES = [
   'tasks',
   'decisions',
   'memory_entries',
+  'memory_entries_fts',
   'lanes',
   'accounts',
   'connectors',
@@ -50,39 +51,45 @@ function tableNames(db: Database.Database): string[] {
 }
 
 describe('migrations', () => {
-  it('apply up, down, and up again (reversible) across both migrations', () => {
+  it('apply up, down, and up again (reversible) across all migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: both 0000 and 0001 apply
-    expect(migrateUp(db)).toBe(2);
-    expect(currentVersion(db)).toBe(1);
+    // up: 0000, 0001, 0002 all apply
+    expect(migrateUp(db)).toBe(3);
+    expect(currentVersion(db)).toBe(2);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
-    // full down: both revert; even the lineage column is gone
-    expect(migrateDown(db)).toBe(2);
+    // full down: all revert; even the lineage column is gone
+    expect(migrateDown(db)).toBe(3);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
+    expect(tableNames(db)).not.toContain('memory_entries_fts');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(2);
-    expect(currentVersion(db)).toBe(1);
+    expect(migrateUp(db)).toBe(3);
+    expect(currentVersion(db)).toBe(2);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
 
-  it('targets a single migration with toVersion (down to 0 reverts only 0001)', () => {
+  it('targets migrations with toVersion (step down 0002 then 0001)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert everything above version 0 → only 0001
+    // revert only above version 1 → just 0002 (memory FTS)
+    expect(migrateDown(db, 1)).toBe(1);
+    expect(currentVersion(db)).toBe(1);
+    expect(tableNames(db)).not.toContain('memory_entries_fts');
+    expect(tableNames(db)).toContain('memory_entries'); // 0001 intact
+
+    // revert above version 0 → just 0001
     expect(migrateDown(db, 0)).toBe(1);
     expect(currentVersion(db)).toBe(0);
     expect(tableNames(db)).toContain('events'); // spine intact
     expect(tableNames(db)).not.toContain('tasks'); // 0001 reverted
-    // parent_id column is gone again
     const cols = (db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]).map(
       (c) => c.name,
     );
@@ -1011,6 +1018,154 @@ describe('Store API (WO#1.4)', () => {
       store.db.prepare('SELECT COUNT(*) AS n FROM artifacts').get() as { n: number }
     ).n;
     expect(artifactsAfter).toBe(artifactsBefore); // artifact row rolled back too
+  });
+});
+
+describe('secure config binding + memory FTS (WO#1.5)', () => {
+  function connectedAccount(): { projectId: string; conversationId: string; accountId: string } {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    const { accountId } = store.connectProviderAccount({
+      projectId,
+      conversationId,
+      provider: 'anthropic',
+      authMode: 'api_key',
+    });
+    return { projectId, conversationId, accountId };
+  }
+
+  it('binds an env-NAME secret ref and stores only the name', () => {
+    const { accountId } = connectedAccount();
+    expect(store.getAccountSecretRef(accountId)).toBeNull();
+    store.bindAccountSecretRef(accountId, 'ANTHROPIC_API_KEY');
+    expect(store.getAccountSecretRef(accountId)).toBe('ANTHROPIC_API_KEY');
+    const acc = store.listAccounts().find((a) => a.id === accountId);
+    expect(acc?.secretRef).toBe('ANTHROPIC_API_KEY');
+    expect(acc?.secretRef).not.toMatch(/[a-z]/); // an env-NAME, never a secret value
+  });
+
+  it('rejects non-env-name / secret-like refs and persists nothing', () => {
+    const { accountId } = connectedAccount();
+    expect(() => store.bindAccountSecretRef(accountId, 'not-an-env-name')).toThrow();
+    expect(() => store.bindAccountSecretRef(accountId, 'lowercase_key')).toThrow();
+    expect(() => store.bindAccountSecretRef(accountId, 'NOUNDERSCORE')).toThrow();
+    expect(store.getAccountSecretRef(accountId)).toBeNull();
+  });
+
+  it('binding a missing account throws', () => {
+    expect(() => store.bindAccountSecretRef(newId(), 'OPENAI_API_KEY')).toThrow(/no such account/);
+  });
+
+  it('clears a secret ref', () => {
+    const { accountId } = connectedAccount();
+    store.bindAccountSecretRef(accountId, 'OPENAI_API_KEY');
+    store.clearAccountSecretRef(accountId);
+    expect(store.getAccountSecretRef(accountId)).toBeNull();
+  });
+
+  it('getProviderConfigStatus reflects secret-ref binding and health', () => {
+    const { projectId, conversationId, accountId } = connectedAccount();
+    expect(store.getProviderConfigStatus(accountId)).toBe('missing_secret_ref');
+    store.bindAccountSecretRef(accountId, 'ANTHROPIC_API_KEY');
+    expect(store.getProviderConfigStatus(accountId)).toBe('healthy'); // bound + connected
+    store.markProviderDegraded({
+      projectId,
+      conversationId,
+      provider: 'anthropic',
+      accountId,
+      reason: 'credit exhausted',
+    });
+    expect(store.getProviderConfigStatus(accountId)).toBe('degraded');
+    expect(store.getProviderConfigStatus(newId())).toBeUndefined();
+
+    // bound but no positive/negative health yet → secret_ref_bound
+    const ts = new Date().toISOString();
+    const bare = newId();
+    store.db
+      .prepare(
+        'INSERT INTO accounts (id, provider, auth_mode, secret_ref, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+      )
+      .run(bare, 'openai', 'api_key', 'OPENAI_API_KEY', ts, ts);
+    expect(store.getProviderConfigStatus(bare)).toBe('secret_ref_bound');
+  });
+
+  it('provider events still never carry or mutate a secret value', () => {
+    const { projectId, conversationId, accountId } = connectedAccount();
+    store.bindAccountSecretRef(accountId, 'ANTHROPIC_API_KEY');
+    // a health event must not disturb secret_ref
+    store.markProviderRestored({ projectId, conversationId, provider: 'anthropic', accountId });
+    expect(store.getAccountSecretRef(accountId)).toBe('ANTHROPIC_API_KEY');
+    // and no event in the log carries a secret_ref field
+    for (const e of store.getEvents(conversationId)) {
+      expect(JSON.stringify(e.payload)).not.toMatch(/secret_ref|secretRef/);
+    }
+  });
+
+  it('memory FTS finds content and re-indexes after edit/consolidation', () => {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    const { entryId } = store.putMemoryEntry({
+      projectId,
+      conversationId,
+      scope: 'project',
+      content: 'the renderer handles RTL bidi text',
+    });
+    expect(store.searchMemory('bidi').map((h) => h.id)).toContain(entryId);
+    expect(store.searchMemory('renderer')).toHaveLength(1);
+
+    // edit content → FTS reflects the new content, drops the old
+    store.putMemoryEntry({
+      projectId,
+      conversationId,
+      scope: 'project',
+      content: 'now about pagination',
+      entryId,
+    });
+    expect(store.searchMemory('bidi')).toHaveLength(0);
+    expect(store.searchMemory('pagination').map((h) => h.id)).toContain(entryId);
+
+    // consolidation result is searchable
+    const { resultEntryId } = store.consolidateMemoryEntries({
+      projectId,
+      conversationId,
+      scope: 'project',
+      content: 'merged summary of layout',
+      sourceEntryIds: [entryId],
+    });
+    expect(store.searchMemory('layout').map((h) => h.id)).toContain(resultEntryId);
+  });
+
+  it('memory FTS honours scope/project filters and an empty query', () => {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    store.putMemoryEntry({
+      projectId,
+      conversationId,
+      scope: 'project',
+      content: 'project note alpha',
+    });
+    store.putMemoryEntry({ projectId, conversationId, scope: 'user', content: 'user note alpha' });
+    expect(store.searchMemory('alpha')).toHaveLength(2);
+    expect(store.searchMemory('alpha', { scope: 'user' })).toHaveLength(1);
+    expect(store.searchMemory('alpha', { projectId })).toHaveLength(1); // user entry has no project
+    expect(store.searchMemory('!!!')).toHaveLength(0); // all-punctuation → []
+  });
+
+  it('memory FTS rebuilds deterministically after a 0002 down/up', () => {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    store.putMemoryEntry({
+      projectId,
+      conversationId,
+      scope: 'project',
+      content: 'persistent knowledge base entry',
+    });
+    expect(store.searchMemory('persistent')).toHaveLength(1);
+
+    migrateDown(store.db, 1); // revert 0002 (drop the FTS table)
+    expect(tableNames(store.db)).not.toContain('memory_entries_fts');
+    migrateUp(store.db); // re-apply 0002; its up runs 'rebuild' over existing rows
+    expect(store.searchMemory('persistent')).toHaveLength(1);
   });
 });
 

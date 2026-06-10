@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   type AmritaEvent,
   type EventType,
   STREAM_ONLY_TYPES,
   eventPayloads,
+  isSafeEnvSecretRefName,
   isStreamOnly,
   laneMandateSchema,
   mergeReportSchema,
@@ -12,6 +14,13 @@ import {
   parseEvent,
   parseUnsealedEvent,
 } from '../src/index.ts';
+
+/** Object-shape keys of a payload schema, unwrapping `.refine`/`.transform`. */
+function objectShapeKeys(schema: z.ZodTypeAny): string[] {
+  let s: z.ZodTypeAny = schema;
+  while (s instanceof z.ZodEffects) s = s.innerType();
+  return s instanceof z.ZodObject ? Object.keys(s.shape as Record<string, unknown>) : [];
+}
 
 function sealed<T extends keyof typeof eventPayloads>(
   type: T,
@@ -152,6 +161,41 @@ describe('rpc', () => {
 
   it('rejects an unknown client message kind', () => {
     expect(() => parseClientMessage({ t: 'nope' })).toThrow();
+  });
+});
+
+describe('secret-ref safety (WO#1.5)', () => {
+  it('isSafeEnvSecretRefName accepts env-NAMEs and rejects everything else', () => {
+    for (const ok of [
+      'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'XAI_API_KEY',
+      'AMRITA_PROVIDER_X_KEY',
+      'A_B',
+    ]) {
+      expect(isSafeEnvSecretRefName(ok)).toBe(true);
+    }
+    for (const bad of [
+      'lowercase_key', // lowercase
+      'NOUNDERSCORE', // no underscore (rejects all-caps secret-value shapes)
+      'X', // too short
+      '_LEADING', // must start with a letter
+      'HAS SPACE',
+      'HAS-DASH',
+      '',
+    ]) {
+      expect(isSafeEnvSecretRefName(bad)).toBe(false);
+    }
+  });
+
+  it('no event payload defines a secret-bearing field name', () => {
+    const forbidden = new Set(['secret', 'apikey', 'token', 'password', 'keyvalue']);
+    for (const [type, schema] of Object.entries(eventPayloads)) {
+      for (const key of objectShapeKeys(schema as z.ZodTypeAny)) {
+        const norm = key.toLowerCase().replace(/_/g, '');
+        expect(forbidden.has(norm), `${type}.${key} looks secret-bearing`).toBe(false);
+      }
+    }
   });
 });
 

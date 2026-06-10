@@ -25,7 +25,11 @@ function load(version: number, name: string): Migration {
 }
 
 /** Ordered list of migrations. Append-only — never edit a shipped migration. */
-export const MIGRATIONS: readonly Migration[] = [load(0, 'init'), load(1, 'full_store_schema')];
+export const MIGRATIONS: readonly Migration[] = [
+  load(0, 'init'),
+  load(1, 'full_store_schema'),
+  load(2, 'memory_fts'),
+];
 
 function ensureMigrationsTable(db: DB): void {
   db.exec(

@@ -16,9 +16,10 @@ import {
  * store (store.ts) drives better-sqlite3 directly for fine-grained control over
  * per-conversation `seq` assignment, the FTS5 virtual table, and the hybrid
  * append transaction — none of which an ORM expresses cleanly. Triggers,
- * GENERATED columns, and GLOB/LIKE CHECKs live only in the SQL migration, which
- * is the source of truth; this schema must stay in lock-step with it (enforced
- * by an ADR when either changes — see ADR-0003/0005).
+ * GENERATED columns, GLOB/LIKE CHECKs, and the FTS5 virtual tables
+ * (`messages_fts`, `memory_entries_fts`) live only in the SQL migrations, which
+ * are the source of truth; this schema must stay in lock-step with them
+ * (enforced by an ADR when either changes — see ADR-0003/0005/0008).
  */
 
 export const projects = sqliteTable('projects', {

@@ -9,6 +9,7 @@ import {
   type MessageRow,
   type ProjectRow,
   type UnsealedEvent,
+  isSafeEnvSecretRefName,
   isStreamOnly,
   newId,
   parseEvent,
@@ -62,6 +63,11 @@ export type MemoryScope = 'user' | 'project';
 export type ConnectorStatus = 'needs_setup' | 'ready' | 'error' | 'disabled';
 export type AuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
 export type LaneStatus = 'spawned' | 'running' | 'merging' | 'completed' | 'aborted';
+export type ProviderConfigStatus =
+  | 'missing_secret_ref'
+  | 'secret_ref_bound'
+  | 'degraded'
+  | 'healthy';
 
 export interface TaskRow {
   id: string;
@@ -767,6 +773,61 @@ export class Store {
     };
   }
 
+  // ── secure config binding (DIRECT update — NOT event-sourced; ADR-0008) ───
+  //
+  // `secret_ref` is local secure configuration (the NAME of an env var holding a
+  // secret), not domain state, and must never enter the event log. These three
+  // methods are the *only* sanctioned direct writes to a domain table; they touch
+  // `secret_ref` and nothing else. The value is validated as a safe env-NAME and
+  // the column's CHECK is the last line of defence. No secret value is ever stored.
+
+  /** Bind an account to the NAME of an env var holding its secret. Never the value. */
+  bindAccountSecretRef(accountId: string, envName: string): void {
+    if (!isSafeEnvSecretRefName(envName)) {
+      throw new Error(
+        `refusing to bind: ${JSON.stringify(envName)} is not a safe env-var name (expected UPPER_SNAKE_CASE with an underscore, e.g. OPENAI_API_KEY)`,
+      );
+    }
+    const res = this.db
+      .prepare('UPDATE accounts SET secret_ref = ?, updated_at = ? WHERE id = ?')
+      .run(envName, now(), accountId);
+    if (res.changes === 0) throw new Error(`no such account: ${accountId}`);
+  }
+
+  /** Remove an account's secret reference. */
+  clearAccountSecretRef(accountId: string): void {
+    const res = this.db
+      .prepare('UPDATE accounts SET secret_ref = NULL, updated_at = ? WHERE id = ?')
+      .run(now(), accountId);
+    if (res.changes === 0) throw new Error(`no such account: ${accountId}`);
+  }
+
+  /** The bound env-var NAME for an account (never a secret value), or null. */
+  getAccountSecretRef(accountId: string): string | null {
+    const row = this.db
+      .prepare('SELECT secret_ref AS r FROM accounts WHERE id = ?')
+      .get(accountId) as { r: string | null } | undefined;
+    return row?.r ?? null;
+  }
+
+  /**
+   * Provider readiness, derived from secret-ref binding + health metadata.
+   * Never returns a secret value. `undefined` if the account doesn't exist.
+   */
+  getProviderConfigStatus(accountId: string): ProviderConfigStatus | undefined {
+    const row = this.db
+      .prepare('SELECT secret_ref AS r, metadata_json AS m FROM accounts WHERE id = ?')
+      .get(accountId) as { r: string | null; m: string | null } | undefined;
+    if (!row) return undefined;
+    if (!row.r) return 'missing_secret_ref';
+    const health = (row.m ? (JSON.parse(row.m) as Record<string, unknown>).health : undefined) as
+      | string
+      | undefined;
+    if (health === 'degraded') return 'degraded';
+    if (health === 'connected' || health === 'restored') return 'healthy';
+    return 'secret_ref_bound';
+  }
+
   // ── public read / query API ──────────────────────────────────────────────
 
   /** A conversation and all its descendants via `parent_id` lineage. */
@@ -846,46 +907,55 @@ export class Store {
   getDecisionHistory(decisionId: string): DecisionRow[] {
     return this.db
       .prepare(
-        `WITH RECURSIVE chain(id) AS (
-           SELECT id FROM decisions WHERE id = ?
+        `WITH RECURSIVE chain(id, depth) AS (
+           SELECT id, 0 FROM decisions WHERE id = ?
            UNION ALL
-           SELECT d.supersedes_id FROM decisions d JOIN chain c ON d.id = c.id
+           SELECT d.supersedes_id, c.depth + 1 FROM decisions d JOIN chain c ON d.id = c.id
            WHERE d.supersedes_id IS NOT NULL
          )
-         SELECT id, project_id AS projectId, conversation_id AS conversationId,
-                source_message_id AS sourceMessageId, supersedes_id AS supersedesId, text,
-                created_at AS createdAt
-         FROM decisions WHERE id IN (SELECT id FROM chain)
-         ORDER BY created_at ASC`,
+         SELECT d.id, d.project_id AS projectId, d.conversation_id AS conversationId,
+                d.source_message_id AS sourceMessageId, d.supersedes_id AS supersedesId, d.text,
+                d.created_at AS createdAt
+         FROM decisions d JOIN chain c ON d.id = c.id
+         ORDER BY c.depth DESC`,
       )
       .all(decisionId) as DecisionRow[];
   }
 
   /**
-   * Substring search over memory content. A `LIKE` fallback — there is no FTS
-   * index on `memory_entries` yet (a `memory_fts` migration is deferred, ADR-0007).
+   * Full-text search over memory content (FTS5 `memory_entries_fts`, ADR-0008).
+   * The query is tokenized to alphanumeric terms, each matched as a prefix, and
+   * results are ranked best-first by bm25. Returns `[]` for an all-punctuation
+   * query. Optional `scope`/`projectId` filters narrow the rows.
    */
   searchMemory(
     query: string,
     opts: { scope?: MemoryScope; projectId?: string; limit?: number } = {},
   ): MemoryEntryRow[] {
-    const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
-    const where = ["content LIKE ? ESCAPE '\\'"];
-    const vals: (string | number)[] = [`%${escaped}%`];
+    const terms = query.toLowerCase().match(/[a-z0-9]+/g);
+    if (!terms || terms.length === 0) return [];
+    const match = terms.map((t) => `${t}*`).join(' '); // prefix-match each term (implicit AND)
+    const where = ['memory_entries_fts MATCH ?'];
+    const vals: (string | number)[] = [match];
     if (opts.scope) {
-      where.push('scope = ?');
+      where.push('m.scope = ?');
       vals.push(opts.scope);
     }
     if (opts.projectId) {
-      where.push('project_id = ?');
+      where.push('m.project_id = ?');
       vals.push(opts.projectId);
     }
     vals.push(opts.limit ?? 20);
     return this.db
       .prepare(
-        `SELECT id, scope, project_id AS projectId, content, char_count AS charCount,
-                source, source_message_id AS sourceMessageId, created_at AS createdAt, updated_at AS updatedAt
-         FROM memory_entries WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`,
+        `SELECT m.id AS id, m.scope AS scope, m.project_id AS projectId, m.content AS content,
+                m.char_count AS charCount, m.source AS source, m.source_message_id AS sourceMessageId,
+                m.created_at AS createdAt, m.updated_at AS updatedAt
+         FROM memory_entries_fts
+         JOIN memory_entries m ON m.rowid = memory_entries_fts.rowid
+         WHERE ${where.join(' AND ')}
+         ORDER BY bm25(memory_entries_fts)
+         LIMIT ?`,
       )
       .all(...vals) as MemoryEntryRow[];
   }

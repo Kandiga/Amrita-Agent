@@ -39,7 +39,8 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - **memory_entries** `(id, scope[user|project], project_id?→projects CASCADE, content,
   char_count*, source?, source_message_id?→messages SET NULL, created_at, updated_at)` —
   `char_count` is generated `length(content)`; CHECKs enforce scope/`project_id` consistency and a
-  ≤4000-char budget.
+  ≤4000-char budget. Full-text searched via **`memory_entries_fts`** (FTS5 external content, migration
+  `0002`).
 - **lanes** `(id, project_id→projects CASCADE, conversation_id→conversations CASCADE, kind,
   status[spawned|running|merging|completed|aborted], mandate_json, budget_json?, merge_json?,
   created_at, updated_at)`.
@@ -57,9 +58,11 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - `migrateUp(db)` applies every unrecorded migration in a transaction, recording its version.
 - `migrateDown(db, toVersion?)` reverts highest-first using the paired `.down.sql`.
 - `currentVersion(db)` reports the highest applied version (or -1).
-- **Acceptance:** up → down → up across both migrations leaves an identical schema and an idempotent
-  second `up` applies 0; a targeted `migrateDown(db, 0)` reverts only `0001` (spine intact, lineage
-  column dropped).
+- Migrations: `0000_init` (spine), `0001_full_store_schema` (entity baseline), `0002_memory_fts`
+  (memory FTS5).
+- **Acceptance:** up → down → up across all migrations leaves an identical schema and an idempotent
+  second `up` applies 0; targeted `migrateDown(db, N)` reverts only versions above `N` (e.g. down to 1
+  drops `memory_entries_fts` but keeps `memory_entries`).
 
 ## The store API (`store.ts`)
 
@@ -119,15 +122,34 @@ mapped camelCase rows.
 
 **Read APIs:** `getConversationTree` (recursive `parent_id` walk), `listTasks`, `listDecisions`
 (`includeSuperseded?`), `getDecisionHistory` (recursive `supersedes_id` chain), `searchMemory`
-(LIKE — no memory FTS yet, deferred), `getSetting`, `listConnectors`/`getConnector`,
-`listAccounts`/`getAccountHealth`, `listLanes`. Plus the lower-level `appendEvent`, `recordUserMessage`,
+(FTS5, see below), `getSetting`, `listConnectors`/`getConnector`, `listAccounts`/`getAccountHealth`,
+`getProviderConfigStatus`, `listLanes`. Plus the lower-level `appendEvent`, `recordUserMessage`,
 `getEvents`, `searchMessages`.
+
+### Secure config binding (DIRECT write — the one exception, ADR-0008)
+
+`secret_ref` is **local secure configuration, not domain state**, so it is *not* event-sourced (that
+would put the binding into the log). Three methods write `accounts.secret_ref` **directly** — the only
+sanctioned direct domain-table write — and touch nothing else: `bindAccountSecretRef(accountId,
+envName)`, `clearAccountSecretRef(accountId)`, `getAccountSecretRef(accountId)`. `envName` is validated
+by `isSafeEnvSecretRefName` (UPPER_SNAKE_CASE, 3..64, ≥1 underscore); the value is never stored.
+`getProviderConfigStatus(accountId)` reports `missing_secret_ref | secret_ref_bound | degraded |
+healthy` without exposing a value.
+
+### Memory full-text search (`memory_entries_fts`, migration `0002`, ADR-0008)
+
+External-content FTS5 over `memory_entries.content`, synced by `memory_entries_ai/ad/au` triggers; the
+migration's `up` runs a `'rebuild'` so existing rows are indexed (down→up re-indexes deterministically).
+`searchMemory(query, {scope?, projectId?, limit?})` tokenizes the query to alphanumeric **prefix**
+terms (implicit AND), returns `[]` for an all-punctuation query, and **orders by `bm25` (best first)**.
 
 ### Secret boundary
 
-- **`accounts`:** the API never sets `secret_ref` (it stays `NULL`); events never carry a secret
-  value. `secret_ref` is an env-NAME reference, bound through a separate secure path (not WO#1.4).
+- **`accounts`:** events never set or carry `secret_ref`; only the secure binding API sets it, to an
+  env-NAME (never a value), double-guarded by `isSafeEnvSecretRefName` + the table CHECK.
 - **`settings`:** secret-ish keys (`secret`/`api_key`/`apikey`/`token`/`password`) are rejected by the
   event schema's `.refine` **and** the table CHECK — neither weakened.
 - **`memory`:** content is the user's own data (bounded ≤4000) and is stored as written; it is *not*
   a credential surface and is not key-tripwired (ADR-0007). The API never copies a secret into it.
+- **events:** an invariant test asserts no event payload schema defines a `secret`/`apiKey`/`token`/
+  `password`/`keyValue` field.
