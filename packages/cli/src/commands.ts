@@ -49,6 +49,28 @@ interface HealthLite {
   dbPath: string;
   counts: { projects: number; conversations: number; messages: number; events: number };
 }
+interface LaneLite {
+  id: string;
+  status: string;
+  kind: string;
+  mandateJson: string;
+}
+interface LaneStartLite {
+  laneId: string;
+  status: string;
+  dryRun: boolean;
+  report: { exit: string } | null;
+  error?: string;
+}
+
+function laneGoal(lane: LaneLite): string {
+  try {
+    const goal = (JSON.parse(lane.mandateJson) as { goal?: string }).goal;
+    return goal ? `“${goal.slice(0, 60)}”` : '';
+  } catch {
+    return '';
+  }
+}
 
 export const COMMANDS: Record<string, Command> = {
   health: {
@@ -385,6 +407,56 @@ export const COMMANDS: Record<string, Command> = {
           ? ps.map((p) => `${p.code}\t${p.channel}\t${p.claimedBy ?? '(unclaimed)'}`).join('\n')
           : '(no pairings)',
       };
+    },
+  },
+
+  'lane list': {
+    describe: 'list lanes (optionally by --project / --conversation / --status)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const conversation = strFlag(flags, 'conversation');
+      const status = strFlag(flags, 'status');
+      const params: Record<string, unknown> = {};
+      if (project) params.projectId = await resolveProjectId(client, project);
+      if (conversation) params.conversationId = conversation;
+      if (status) params.status = status;
+      const ls = await client.call<LaneLite[]>('lanes.list', params);
+      return {
+        result: ls,
+        summary: ls.length
+          ? ls.map((l) => `[${l.status}] ${l.kind} ${laneGoal(l)}  ${l.id}`).join('\n')
+          : '(no lanes)',
+      };
+    },
+  },
+  'lane start': {
+    describe: 'start a lane (--dry-run records the mandate without running Claude Code)',
+    async run(client, { flags }) {
+      const goal = strFlag(flags, 'goal');
+      if (!goal) {
+        throw new CliError(
+          'usage: amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run]',
+        );
+      }
+      const ctx = await resolveWriteContext(client, {
+        project: strFlag(flags, 'project'),
+        conversation: strFlag(flags, 'conversation'),
+      });
+      const kind = strFlag(flags, 'kind');
+      const r = await client.call<LaneStartLite>('lanes.start', {
+        conversationId: ctx.conversationId,
+        goal,
+        dryRun: flags['dry-run'] === true,
+        ...(kind ? { kind } : {}),
+      });
+      const meta = r.dryRun
+        ? 'dry-run · mandate recorded'
+        : r.error
+          ? `aborted · ${r.error}`
+          : r.report
+            ? `exit ${r.report.exit}`
+            : r.status;
+      return { result: r, summary: `lane ${r.laneId} · ${r.status} · ${meta}` };
     },
   },
 };

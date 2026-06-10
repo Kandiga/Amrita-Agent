@@ -1,8 +1,12 @@
+import { ClaudeCodeLaneRunner, type LaneRunner } from '@amrita/lanes';
 import {
   type AmritaEvent,
   type ConversationRow,
+  type MergeReport,
   type ProjectRow,
   type UnsealedEvent,
+  laneMandateSchema,
+  mergeReportSchema,
   newId,
 } from '@amrita/protocol';
 import {
@@ -83,6 +87,30 @@ export interface KernelOptions {
   spillDir?: string;
   /** Injectable fetch for real provider adapters (tests pass a fake; defaults to global fetch). */
   fetchImpl?: FetchLike;
+  /** Injectable lane runner (tests pass a fake; defaults to a safe, exec-disabled Claude Code runner). */
+  laneRunner?: LaneRunner;
+}
+
+/** Start a lane (delegated unit of work). Secret-free; nested fields are zod-validated upstream. */
+export interface LaneStartInput {
+  conversationId: string;
+  goal: string;
+  kind?: string;
+  scope?: unknown;
+  budget?: unknown;
+  contextPack?: unknown;
+  approvals?: 'forward' | 'auto-safe' | 'sandboxed';
+  deliverables?: string[];
+  /** Record `lane.spawned`/`lane.mandate` and stop before running the lane. */
+  dryRun?: boolean;
+}
+
+export interface LaneStartResult {
+  laneId: string;
+  status: LaneStatus;
+  dryRun: boolean;
+  report: MergeReport | null;
+  error?: string;
 }
 
 /**
@@ -97,12 +125,20 @@ export class AmritaKernel {
   readonly startedAt: string;
   private readonly mock = new MockProvider();
   private readonly fetchImpl: FetchLike;
+  private readonly laneRunner: LaneRunner;
 
-  private constructor(store: Store, dbPath: string, startedAt: string, fetchImpl: FetchLike) {
+  private constructor(
+    store: Store,
+    dbPath: string,
+    startedAt: string,
+    fetchImpl: FetchLike,
+    laneRunner: LaneRunner,
+  ) {
     this.store = store;
     this.dbPath = dbPath;
     this.startedAt = startedAt;
     this.fetchImpl = fetchImpl;
+    this.laneRunner = laneRunner;
   }
 
   /** Open (creating + migrating) the store and start the kernel. */
@@ -116,6 +152,8 @@ export class AmritaKernel {
       opts.dbPath,
       new Date().toISOString(),
       opts.fetchImpl ?? defaultFetch,
+      // Default runner refuses real Claude Code execution (ADR-0014); tests inject a fake.
+      opts.laneRunner ?? new ClaudeCodeLaneRunner(),
     );
   }
 
@@ -520,6 +558,99 @@ export class AmritaKernel {
     status?: LaneStatus;
   }): LaneRow[] {
     return this.store.listLanes(filters);
+  }
+
+  getLane(laneId: string): LaneRow | undefined {
+    return this.store.getLane(laneId);
+  }
+
+  /** Append a lane lifecycle event (laneId on the envelope, so the projection keys on it). */
+  private emitLaneEvent(
+    projectId: string,
+    conversationId: string,
+    laneId: string,
+    type: string,
+    payload: unknown,
+  ): AmritaEvent {
+    return this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId,
+      conversationId,
+      laneId,
+      origin: 'lane',
+      type,
+      payload,
+    } as UnsealedEvent);
+  }
+
+  /**
+   * Start a lane: emit `lane.spawned` + `lane.mandate`, then (unless `dryRun`)
+   * run it through the injected `LaneRunner`, streaming `lane.progress` events
+   * and finishing with `lane.merge_report` + `lane.completed`/`lane.aborted`.
+   * The default runner refuses real Claude Code execution, so a non-dry start
+   * with no injected runner ends safely as `aborted` (ADR-0014). Secret-free.
+   */
+  async startLane(input: LaneStartInput): Promise<LaneStartResult> {
+    const conv = this.store.getConversation(input.conversationId);
+    if (!conv) throw new Error(`no such conversation: ${input.conversationId}`);
+    const projectId = conv.projectId;
+    const conversationId = input.conversationId;
+    const laneId = newId();
+    const kind = input.kind ?? 'claude-code';
+
+    const mandate = laneMandateSchema.parse({
+      laneId,
+      goal: input.goal,
+      contextPack: input.contextPack ?? {},
+      scope: input.scope ?? {},
+      budget: input.budget ?? {},
+      ...(input.approvals ? { approvals: input.approvals } : {}),
+      deliverables: input.deliverables ?? [],
+    });
+
+    this.emitLaneEvent(projectId, conversationId, laneId, 'lane.spawned', { laneId, kind });
+    this.emitLaneEvent(projectId, conversationId, laneId, 'lane.mandate', mandate);
+
+    if (input.dryRun) {
+      return { laneId, status: 'spawned', dryRun: true, report: null };
+    }
+
+    try {
+      const report = await this.laneRunner.run(mandate, {
+        onProgress: (note, pct) => {
+          try {
+            this.emitLaneEvent(
+              projectId,
+              conversationId,
+              laneId,
+              'lane.progress',
+              clean({ note, pct }),
+            );
+          } catch {
+            // a progress-projection hiccup must never abort the lane run
+          }
+        },
+      });
+      const sealed = mergeReportSchema.parse({ ...report, laneId });
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.merge_report', sealed);
+      if (sealed.exit === 'aborted') {
+        this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', {
+          laneId,
+          reason: sealed.summary || 'aborted',
+        });
+        return { laneId, status: 'aborted', dryRun: false, report: sealed };
+      }
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.completed', {
+        laneId,
+        exit: sealed.exit,
+      });
+      return { laneId, status: 'completed', dryRun: false, report: sealed };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', { laneId, reason });
+      return { laneId, status: 'aborted', dryRun: false, report: null, error: reason };
+    }
   }
 
   // ── channel pairings (delegated; ADR-0013) ────────────────────────────────

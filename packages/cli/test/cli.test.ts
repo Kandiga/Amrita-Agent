@@ -194,6 +194,38 @@ describe('amrita CLI', () => {
     expect(`${pair.code}${pairings.out}`).not.toMatch(/sk-[a-z]/i);
   });
 
+  it('lane start --dry-run records a mandate and lane list shows it', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const started = json<{ laneId: string; status: string; dryRun: boolean }>(
+      await cli([
+        'lane',
+        'start',
+        '--project',
+        'crm',
+        '--goal',
+        'tidy the repo',
+        '--dry-run',
+        '--json',
+      ]),
+    );
+    expect(started.dryRun).toBe(true);
+    expect(started.status).toBe('spawned');
+    const list = await cli(['lane', 'list', '--project', 'crm']);
+    expect(list.code).toBe(0);
+    expect(list.out).toContain('spawned');
+    expect(list.out).toContain('tidy the repo');
+    expect(list.out).toContain(started.laneId);
+  });
+
+  it('lane start without --dry-run ends safely as aborted (no real exec)', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const r = json<{ status: string; error?: string }>(
+      await cli(['lane', 'start', '--project', 'crm', '--goal', 'do real work', '--json']),
+    );
+    expect(r.status).toBe('aborted');
+    expect(r.error).toMatch(/disabled/);
+  });
+
   it('usage errors exit non-zero', async () => {
     expect((await cli(['task', 'create', '--project', 'crm'])).code).toBe(2); // missing --title
     // missing --db entirely

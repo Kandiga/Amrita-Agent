@@ -50,7 +50,17 @@ amrita account status <ACCOUNT_ID> --db PATH
 
 amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--model MODEL] --db PATH
 amrita provider list --db PATH
+
+amrita lane list [--project ID_OR_SLUG] [--conversation ID] [--status STATUS] --db PATH
+amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run] --db PATH
 ```
+
+`amrita lane start` records a lane mandate and (unless `--dry-run`) runs it through the kernel's lane
+runner. The default runner **refuses real Claude Code execution** (ADR-0014), so a non-dry start ends
+as `aborted` until real execution is explicitly enabled in a future WO; `--dry-run` records the
+`lane.spawned`/`lane.mandate` events and returns the lane id without running anything. `amrita lane
+list` shows each lane's status, kind, and goal. No lane command reads or prints a secret value, and no
+secret (including `ANTHROPIC_API_KEY`) is ever forwarded into a lane.
 
 `amrita chat` runs one turn through the kernel: it records your message, calls the provider boundary
 (default **`mock`**, deterministic), and prints the assistant reply plus a `(provider · model · in/out

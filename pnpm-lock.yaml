@@ -66,6 +66,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@amrita/lanes':
+        specifier: workspace:*
+        version: link:../lanes
       '@amrita/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -82,6 +85,12 @@ importers:
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.1
+
+  packages/lanes:
+    dependencies:
+      '@amrita/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/protocol:
     dependencies:

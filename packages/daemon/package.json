@@ -11,6 +11,7 @@
     "amritad": "./src/bin/amritad.ts"
   },
   "dependencies": {
+    "@amrita/lanes": "workspace:*",
     "@amrita/protocol": "workspace:*",
     "@amrita/store": "workspace:*",
     "ws": "^8.18.0",

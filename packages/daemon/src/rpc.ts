@@ -214,6 +214,40 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
     (k, p) => k.listLanes(clean(p)),
   ),
+  'lanes.start': def(
+    z.object({
+      conversationId: z.string(),
+      goal: z.string().min(1).max(4000),
+      kind: z.string().optional(),
+      dryRun: z.boolean().optional(),
+      scope: z
+        .object({
+          paths: z.array(z.string()).optional(),
+          repos: z.array(z.string()).optional(),
+          network: z.enum(['none', 'allowlist', 'open']).optional(),
+        })
+        .optional(),
+      budget: z
+        .object({
+          maxTurns: z.number().int().positive().optional(),
+          maxTokens: z.number().int().positive().optional(),
+          maxUsd: z.number().positive().optional(),
+          maxMinutes: z.number().positive().optional(),
+        })
+        .optional(),
+      contextPack: z
+        .object({
+          memory: z.array(z.string()).optional(),
+          files: z.array(z.string()).optional(),
+          decisions: z.array(z.string()).optional(),
+        })
+        .optional(),
+      approvals: z.enum(['forward', 'auto-safe', 'sandboxed']).optional(),
+      deliverables: z.array(z.string()).optional(),
+    }),
+    (k, p) => k.startLane(clean(p)),
+  ),
+  'lanes.get': def(z.object({ laneId: z.string() }), (k, p) => k.getLane(p.laneId) ?? null),
 
   'chat.turn': def(
     z.object({

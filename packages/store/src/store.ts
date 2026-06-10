@@ -1226,6 +1226,18 @@ export class Store {
     };
   }
 
+  /** A single lane by id (with its mandate/budget/merge JSON), or `undefined`. */
+  getLane(id: string): LaneRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId, kind, status,
+                mandate_json AS mandateJson, budget_json AS budgetJson, merge_json AS mergeJson,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM lanes WHERE id = ?`,
+      )
+      .get(id) as LaneRow | undefined;
+  }
+
   listLanes(
     filters: { projectId?: string; conversationId?: string; status?: LaneStatus } = {},
   ): LaneRow[] {

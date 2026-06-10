@@ -63,6 +63,8 @@ deterministic and free of provider/tool/lane execution.
 | `accounts.configStatus` | `{accountId}` | `{status}` |
 | `connectors.list` | — | connector rows |
 | `lanes.list` | `{projectId?, conversationId?, status?}` | lane rows |
+| `lanes.start` | `{conversationId, goal, kind?, dryRun?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, report?, error?}` |
+| `lanes.get` | `{laneId}` | lane row or `null` |
 | `chat.turn` | `{conversationId, text, provider?, model?, accountId?, dryRun?, channel?}` | turn result (secret-free) |
 | `providers.list` | — | provider availability (no secret values) |
 

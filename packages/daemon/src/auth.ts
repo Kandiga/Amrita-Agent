@@ -9,7 +9,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
  * or written into events/DB/logs.
  *
  * Browsers cannot set request headers on a `WebSocket` handshake, so the WS
- * route also accepts the token as a `?token=` query parameter (see ADR-0014).
+ * route also accepts the token as a `?token=` query parameter (see
+ * docs/specs/runtime.md → "Auth guard").
  */
 
 /** Generate an ephemeral, URL-safe dev token (192 bits). */

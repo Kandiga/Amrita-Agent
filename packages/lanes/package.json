@@ -1,0 +1,13 @@
+{
+  "name": "@amrita/lanes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Amrita lane runners: the LaneRunner boundary + a safe Claude Code lane foundation (env-scrubbed, budget-guarded, no real exec by default)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@amrita/protocol": "workspace:*"
+  }
+}
