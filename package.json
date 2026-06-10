@@ -1,0 +1,29 @@
+{
+  "name": "amrita-agent",
+  "version": "0.1.0",
+  "description": "Amrita Agent — a chat-first, project-aware, multi-channel agent operating system. Talk to it from the web or Telegram; it remembers, plans, delegates to tools like Claude Code, and ships.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nethanel Kol",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kandiga/Amrita-Agent"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "bin": {
+    "amrita": "./bin/amrita.js"
+  },
+  "scripts": {
+    "start": "node src/cli/main.ts daemon",
+    "chat": "node src/cli/main.ts chat",
+    "doctor": "node src/cli/main.ts doctor",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

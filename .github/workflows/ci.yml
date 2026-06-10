@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - name: Secret scan (no keys in repo)
+        run: |
+          ! grep -rEn 'sk-(ant|or)?-?[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{30,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}' \
+            --include='*.ts' --include='*.js' --include='*.json' --include='*.md' \
+            --exclude-dir=node_modules . \
+            || (echo 'Possible secret committed!' && exit 1)

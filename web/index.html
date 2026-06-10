@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Amrita</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%23b4654a'/%3E%3Ctext x='50' y='66' font-size='48' text-anchor='middle' fill='white' font-family='Georgia'%3E%E0%A4%85%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <!-- Login (shown when unauthorized) -->
+  <div id="login" class="login hidden">
+    <div class="login-card">
+      <div class="logo">Amrita</div>
+      <p>Your session isn't authenticated.</p>
+      <p class="dim">Run <code>amrita login-link</code> on the server and open the link it prints.</p>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div id="app" class="app hidden">
+    <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Menu">☰</button>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="brand">Amrita</div>
+
+      <button id="ctx-main" class="ctx-item">⌂ Main</button>
+
+      <div class="section-label">Projects <button id="new-project" class="mini-btn" title="New project">+</button></div>
+      <nav id="project-list" class="project-list"></nav>
+
+      <div class="section-label">Sessions <button id="new-session" class="mini-btn" title="New session">+</button></div>
+      <nav id="session-list" class="session-list"></nav>
+
+      <div class="sidebar-footer">
+        <button id="open-settings" class="ctx-item">⚙ Settings</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <span id="context-name" class="context-name">Main</span>
+        <span id="run-indicator" class="run-indicator hidden">working…</span>
+      </header>
+
+      <div id="messages" class="messages">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-logo">अ</div>
+          <h2 id="empty-title">Talk to Amrita</h2>
+          <p class="dim">Projects, memory, code, design — one conversation.</p>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <form id="composer" class="composer">
+          <textarea id="input" rows="1" placeholder="Message Amrita…" dir="auto"></textarea>
+          <button id="send" type="submit" aria-label="Send">↑</button>
+        </form>
+      </div>
+    </main>
+
+    <!-- Lane: connector console/preview -->
+    <aside id="lane" class="lane hidden">
+      <header class="lane-header">
+        <span id="lane-title">Lane</span>
+        <button id="lane-close" class="mini-btn" aria-label="Close lane">✕</button>
+      </header>
+      <div id="lane-status" class="lane-status"></div>
+      <pre id="lane-console" class="lane-console"></pre>
+      <iframe id="lane-frame" class="lane-frame hidden" title="Preview"></iframe>
+    </aside>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-backdrop" class="backdrop hidden">
+    <div class="modal" role="dialog" aria-label="Settings">
+      <header class="modal-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="mini-btn">✕</button>
+      </header>
+      <div id="settings-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

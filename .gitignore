@@ -6,3 +6,8 @@ dist/
 build/
 .tmp/
 .DS_Store
+*.db
+*.db-shm
+*.db-wal
+ruvector.db
+package-lock.json

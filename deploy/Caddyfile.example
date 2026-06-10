@@ -1,0 +1,11 @@
+# Amrita behind Caddy (Hostinger/VPS deployment).
+# The daemon binds to 127.0.0.1:7460 — Caddy is the only public surface.
+
+amrita.example.com {
+    reverse_proxy 127.0.0.1:7460
+
+    # Optional second auth layer during alpha:
+    # basic_auth {
+    #     netanel $2a$14$...   # caddy hash-password
+    # }
+}

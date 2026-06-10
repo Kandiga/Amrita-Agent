@@ -1,0 +1,16 @@
+[Unit]
+Description=Amrita Agent daemon (web UI, channels, scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__NODE__ __DIR__/src/cli/main.ts daemon
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+# Secrets live in ~/.amrita/secrets.env (0600), loaded by Amrita itself — not here.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
