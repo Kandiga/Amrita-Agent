@@ -179,9 +179,16 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         // secret_ref (NULL) — secret binding is a separate secure path (ADR-0007).
         if (ev.type !== 'provider.connected') return;
         db.prepare(
-          `INSERT INTO accounts (id, provider, auth_mode, secret_ref, metadata_json, created_at, updated_at)
-           VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
-        ).run(p.accountId, ev.payload.provider, ev.payload.authMode, ev.ts, ev.ts);
+          `INSERT INTO accounts (id, provider, label, auth_mode, secret_ref, metadata_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`,
+        ).run(
+          p.accountId,
+          ev.payload.provider,
+          ev.payload.label ?? null,
+          ev.payload.authMode,
+          ev.ts,
+          ev.ts,
+        );
         row = { metadata_json: null };
       }
       const meta = (row.metadata_json ? JSON.parse(row.metadata_json) : {}) as Record<

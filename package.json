@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "amritad": "node packages/daemon/src/bin/amritad.ts"
+    "amritad": "node packages/daemon/src/bin/amritad.ts",
+    "amrita": "node packages/cli/src/bin/amrita.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

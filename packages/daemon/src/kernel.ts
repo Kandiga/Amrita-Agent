@@ -113,6 +113,14 @@ export class AmritaKernel {
     return this.store.getConversationTree(conversationId);
   }
 
+  getConversation(conversationId: string): ConversationNode | undefined {
+    return this.store.getConversation(conversationId);
+  }
+
+  listConversations(projectId: string): ConversationNode[] {
+    return this.store.listConversations(projectId);
+  }
+
   recordUserMessage(input: {
     projectId: string;
     conversationId: string;
@@ -221,6 +229,7 @@ export class AmritaKernel {
       conversationId: string;
       provider: string;
       authMode: AuthMode;
+      label?: string;
     } & EntityWriteOpts,
   ): { accountId: string } {
     return { accountId: this.store.connectProviderAccount(input).accountId };

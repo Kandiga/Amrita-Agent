@@ -97,6 +97,13 @@ export const METHODS: Record<string, RpcMethod> = {
   'conversation.tree': def(z.object({ conversationId: z.string() }), (k, p) =>
     k.getConversationTree(p.conversationId),
   ),
+  'conversation.get': def(
+    z.object({ conversationId: z.string() }),
+    (k, p) => k.getConversation(p.conversationId) ?? null,
+  ),
+  'conversation.list': def(z.object({ projectId: z.string() }), (k, p) =>
+    k.listConversations(p.projectId),
+  ),
 
   'message.user.record': def(
     z.object({
@@ -180,6 +187,7 @@ export const METHODS: Record<string, RpcMethod> = {
       ...writeOpts,
       provider: z.string().min(1),
       authMode: z.enum(['api_key', 'subscription_cli', 'local_endpoint', 'oauth']),
+      label: z.string().min(1).max(200).optional(),
     }),
     (k, p) => k.connectProviderAccount(clean(p)),
   ),

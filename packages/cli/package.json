@@ -1,0 +1,16 @@
+{
+  "name": "@amrita/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "amrita — a local CLI client for the amritad kernel/RPC (no provider/tool execution yet)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "amrita": "./src/bin/amrita.ts"
+  },
+  "dependencies": {
+    "@amrita/daemon": "workspace:*"
+  }
+}

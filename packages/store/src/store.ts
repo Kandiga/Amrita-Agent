@@ -721,6 +721,7 @@ export class Store {
       provider: string;
       authMode: AuthMode;
       accountId?: string;
+      label?: string;
     } & EntityWriteOpts,
   ): { accountId: string; event: AmritaEvent } {
     const accountId = input.accountId ?? newId();
@@ -728,7 +729,12 @@ export class Store {
       'provider.connected',
       input.projectId,
       input.conversationId,
-      { provider: input.provider, accountId, authMode: input.authMode },
+      {
+        provider: input.provider,
+        accountId,
+        authMode: input.authMode,
+        ...(input.label ? { label: input.label } : {}),
+      },
       input,
     );
     return { accountId, event };
@@ -876,6 +882,16 @@ export class Store {
          FROM conversations WHERE id = ?`,
       )
       .get(id) as ConversationNode | undefined;
+  }
+
+  listConversations(projectId: string): ConversationNode[] {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, title, parent_id AS parentId,
+                created_at AS createdAt, updated_at AS updatedAt, archived_at AS archivedAt
+         FROM conversations WHERE project_id = ? ORDER BY created_at ASC`,
+      )
+      .all(projectId) as ConversationNode[];
   }
 
   /** Row counts for diagnostics (health). No secret data. */

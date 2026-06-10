@@ -44,6 +44,8 @@ deterministic and free of provider/tool/lane execution.
 | `project.list` | — | project rows |
 | `conversation.create` | `{projectId, title?, parentId?}` | conversation row |
 | `conversation.tree` | `{conversationId}` | subtree via `parent_id` |
+| `conversation.get` | `{conversationId}` | conversation node or `null` |
+| `conversation.list` | `{projectId}` | conversations in a project |
 | `message.user.record` | `{projectId, conversationId, text, channel?}` | `{messageId, event}` |
 | `events.list` | `{conversationId, sinceSeq?}` | events |
 | `tasks.create` | `{projectId, conversationId, title, status?, origin?}` | `{taskId}` |
@@ -55,7 +57,7 @@ deterministic and free of provider/tool/lane execution.
 | `memory.search` | `{query, scope?, projectId?, limit?}` | memory rows (FTS, bm25-ranked) |
 | `settings.update` | `{projectId, conversationId, key, value, origin?}` | `{ok}` |
 | `settings.get` | `{key}` | `{value}` (or `{value:null}`) |
-| `accounts.connect` | `{projectId, conversationId, provider, authMode, origin?}` | `{accountId}` |
+| `accounts.connect` | `{projectId, conversationId, provider, authMode, label?, origin?}` | `{accountId}` |
 | `accounts.list` | — | account rows (`secretRef` is an env-NAME) |
 | `accounts.bindSecretRef` | `{accountId, envName}` | `{ok}` |
 | `accounts.configStatus` | `{accountId}` | `{status}` |
@@ -79,6 +81,10 @@ echo '{"id":1,"method":"ping"}' | pnpm amritad -- --db :memory:
 It serves until stdin closes, then closes the kernel and exits. Tests drive the same server in-process
 with `PassThrough` streams (deterministic, no subprocess); one test also spawns the executable to prove
 it runs end-to-end.
+
+The `amrita` CLI (`@amrita/cli`, [cli.md](cli.md)) is a higher-level client that dispatches the same
+RPC **in process** against a `--db`, with human/`--json` output — the ergonomic way to operate Amrita
+locally.
 
 ## Security
 

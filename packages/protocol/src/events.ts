@@ -218,7 +218,12 @@ export const eventPayloads = {
 
   // providers (account + runtime health transitions)
   'provider.connected': z
-    .object({ provider: z.string(), accountId: idSchema.optional(), authMode: authModeSchema })
+    .object({
+      provider: z.string(),
+      accountId: idSchema.optional(),
+      authMode: authModeSchema,
+      label: z.string().min(1).max(200).optional(),
+    })
     .strict(),
   'provider.degraded': z
     .object({ provider: z.string(), accountId: idSchema.optional(), reason: z.string() })
