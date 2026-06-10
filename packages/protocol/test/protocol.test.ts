@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   type AmritaEvent,
+  type EventType,
   STREAM_ONLY_TYPES,
-  type eventPayloads,
+  eventPayloads,
   isStreamOnly,
   laneMandateSchema,
   mergeReportSchema,
@@ -151,5 +152,104 @@ describe('rpc', () => {
 
   it('rejects an unknown client message kind', () => {
     expect(() => parseClientMessage({ t: 'nope' })).toThrow();
+  });
+});
+
+describe('entity event taxonomy (WO#1.2)', () => {
+  const valid: Record<string, unknown> = {
+    'task.created': {
+      taskId: newId(),
+      projectId: newId(),
+      conversationId: newId(),
+      title: 'fix the PDF export bug',
+      status: 'now',
+    },
+    'decision.recorded': {
+      decisionId: newId(),
+      projectId: newId(),
+      sourceMessageId: newId(),
+      text: 'use SQLite + WAL',
+    },
+    'memory.consolidated': {
+      resultEntryId: newId(),
+      sourceEntryIds: [newId(), newId()],
+      scope: 'project',
+      projectId: newId(),
+    },
+    'provider.degraded': { provider: 'anthropic', reason: 'credit exhausted' },
+    'connector.installed': { connectorId: newId(), slug: 'claude-code', kind: 'cli' },
+    'settings.updated': { key: 'theme', value: 'dark' },
+  };
+
+  for (const [type, payload] of Object.entries(valid)) {
+    it(`round-trips ${type}`, () => {
+      const ev = parseEvent(sealed(type as keyof typeof eventPayloads, payload));
+      expect(ev.type).toBe(type);
+      const again = parseEvent(JSON.parse(JSON.stringify(ev)));
+      expect(again).toEqual(ev);
+    });
+  }
+
+  it('rejects an invalid task.created (missing title, bad status, unknown key)', () => {
+    expect(() =>
+      parseEvent(sealed('task.created', { taskId: newId(), projectId: newId() })),
+    ).toThrow();
+    expect(() =>
+      parseEvent(
+        sealed('task.created', {
+          taskId: newId(),
+          projectId: newId(),
+          title: 'x',
+          status: 'bogus',
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseEvent(
+        sealed('task.created', { taskId: newId(), projectId: newId(), title: 'x', extra: 1 }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects an invalid decision.superseded (missing supersedesId)', () => {
+    expect(() =>
+      parseEvent(
+        sealed('decision.superseded', { decisionId: newId(), projectId: newId(), text: 'x' }),
+      ),
+    ).toThrow();
+  });
+
+  it('rejects an invalid settings.updated (secret-ish key, missing key)', () => {
+    expect(() =>
+      parseEvent(sealed('settings.updated', { key: 'openai_api_key', value: 'x' })),
+    ).toThrow();
+    expect(() =>
+      parseEvent(sealed('settings.updated', { key: 'TELEGRAM_BOT_TOKEN', value: 'x' })),
+    ).toThrow();
+    expect(() => parseEvent(sealed('settings.updated', { value: 'x' }))).toThrow();
+  });
+
+  it('accepts a non-secret settings key', () => {
+    expect(() =>
+      parseEvent(sealed('settings.updated', { key: 'public_url', value: 'https://x' })),
+    ).not.toThrow();
+  });
+
+  it('keeps model.delta the only stream-only event across the whole taxonomy', () => {
+    expect([...STREAM_ONLY_TYPES]).toEqual(['model.delta']);
+    for (const t of Object.keys(eventPayloads) as EventType[]) {
+      expect(STREAM_ONLY_TYPES.has(t)).toBe(t === 'model.delta');
+      expect(isStreamOnly(t)).toBe(t === 'model.delta');
+    }
+  });
+
+  it('rejects unknown keys on every new entity payload (strict)', () => {
+    for (const [type, payload] of Object.entries(valid)) {
+      expect(() =>
+        parseEvent(
+          sealed(type as keyof typeof eventPayloads, { ...(payload as object), bogusKey: 1 }),
+        ),
+      ).toThrow();
+    }
   });
 });

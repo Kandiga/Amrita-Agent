@@ -61,6 +61,14 @@ const toolResultSchema = z
   })
   .strict();
 
+// Entity sub-schemas (mirror the store enums added in WO#1.1 / ADR-0003).
+const taskStatusSchema = z.enum(['now', 'later', 'done', 'dropped']);
+const memoryScopeSchema = z.enum(['user', 'project']);
+const connectorStatusSchema = z.enum(['needs_setup', 'ready', 'error', 'disabled']);
+const authModeSchema = z.enum(['api_key', 'subscription_cli', 'local_endpoint', 'oauth']);
+/** Keys that must never appear in `settings` (mirrors the store CHECK, ADR-0003). */
+const SECRET_KEY_RE = /secret|api[_-]?key|apikey|token|password/i;
+
 /**
  * The canonical map: event type -> payload schema. The keys are the closed set
  * of legal event types. This object IS the protocol surface.
@@ -127,8 +135,29 @@ export const eventPayloads = {
     .strict(),
 
   // memory & artifacts
+  // memory.written is the markdown-vault file-export signal (path-based), kept
+  // distinct from the row-level memory_entries events below. See ADR-0004.
   'memory.written': z.object({ path: z.string(), bytes: z.number().int().nonnegative() }).strict(),
-  'memory.updated': z.object({ path: z.string() }).strict(),
+  // RECONCILED in WO#1.2: a row-level upsert of a memory_entries row (create or
+  // update), carrying entry provenance for projection. (Was path-based.)
+  'memory.updated': z
+    .object({
+      entryId: idSchema,
+      scope: memoryScopeSchema,
+      projectId: idSchema.optional(),
+      charCount: z.number().int().nonnegative().optional(),
+      source: z.string().optional(),
+      sourceMessageId: idSchema.optional(),
+    })
+    .strict(),
+  'memory.consolidated': z
+    .object({
+      resultEntryId: idSchema,
+      sourceEntryIds: z.array(idSchema).min(1),
+      scope: memoryScopeSchema,
+      projectId: idSchema.optional(),
+    })
+    .strict(),
   'artifact.created': z
     .object({ artifactId: idSchema, kind: z.string(), bytes: z.number().int().nonnegative() })
     .strict(),
@@ -141,6 +170,80 @@ export const eventPayloads = {
   'channel.connected': z.object({ channel: eventChannelSchema }).strict(),
   'channel.message_in': z.object({ channel: eventChannelSchema, externalId: z.string() }).strict(),
   'channel.message_out': z.object({ channel: eventChannelSchema }).strict(),
+
+  // tasks
+  'task.created': z
+    .object({
+      taskId: idSchema,
+      projectId: idSchema,
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+      laneId: idSchema.optional(),
+      title: z.string().min(1),
+      status: taskStatusSchema.optional(),
+    })
+    .strict(),
+  'task.updated': z
+    .object({
+      taskId: idSchema,
+      status: taskStatusSchema.optional(),
+      title: z.string().min(1).optional(),
+      body: z.string().optional(),
+    })
+    .strict(),
+  'task.completed': z.object({ taskId: idSchema }).strict(),
+
+  // decisions (append-only log)
+  'decision.recorded': z
+    .object({
+      decisionId: idSchema,
+      projectId: idSchema,
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+      text: z.string().min(1),
+    })
+    .strict(),
+  'decision.superseded': z
+    .object({
+      decisionId: idSchema,
+      supersedesId: idSchema,
+      projectId: idSchema,
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+      text: z.string().min(1),
+    })
+    .strict(),
+
+  // providers (account + runtime health transitions)
+  'provider.connected': z
+    .object({ provider: z.string(), accountId: idSchema.optional(), authMode: authModeSchema })
+    .strict(),
+  'provider.degraded': z
+    .object({ provider: z.string(), accountId: idSchema.optional(), reason: z.string() })
+    .strict(),
+  'provider.restored': z.object({ provider: z.string(), accountId: idSchema.optional() }).strict(),
+
+  // connectors
+  'connector.installed': z
+    .object({ connectorId: idSchema, slug: z.string(), kind: z.string() })
+    .strict(),
+  'connector.updated': z
+    .object({
+      connectorId: idSchema,
+      slug: z.string(),
+      status: connectorStatusSchema.optional(),
+      fields: z.array(z.string()).optional(),
+    })
+    .strict(),
+  'connector.removed': z.object({ connectorId: idSchema, slug: z.string() }).strict(),
+
+  // settings (non-secret config; secret-ish keys rejected, mirroring the store)
+  'settings.updated': z
+    .object({ key: z.string().min(1), value: z.unknown() })
+    .strict()
+    .refine((p) => !SECRET_KEY_RE.test(p.key), {
+      message: 'settings keys must not look like secrets (use accounts.secret_ref)',
+    }),
 
   // diagnostics
   'error.raised': z.object({ message: z.string(), code: z.string().optional() }).strict(),

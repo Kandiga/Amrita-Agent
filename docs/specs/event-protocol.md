@@ -34,16 +34,41 @@ The `eventPayloads` map is the **closed set** of legal types — its keys are th
 - **tool.** `requested`, `approved`, `denied`, `started`, `output`, `completed`, `failed`
 - **lane.** `spawned`, `mandate`, `progress`, `merge_report`, `completed`, `aborted`
 - **approval.** `requested`, `resolved`
-- **memory.** `written`, `updated`
+- **memory.** `written` *(vault file export)*, `updated` *(memory_entries upsert)*, `consolidated`
 - **artifact.** `created`
 - **project.** `created`, `updated`
 - **channel.** `connected`, `message_in`, `message_out`
+- **task.** `created`, `updated`, `completed`
+- **decision.** `recorded`, `superseded`
+- **provider.** `connected`, `degraded`, `restored`
+- **connector.** `installed`, `updated`, `removed`
+- **settings.** `updated`
 - **error.** `raised`
 - **audit.** `logged`
 
 Every payload schema is `.strict()`. `tool.completed` carries a `toolResult` that is *either* an
 inline `result` *or* a `{spilledArtifactId, preview}` pointer (the store rewrites it on spill — see
 the store spec, D9).
+
+### Entity events (WO#1.2, ADR-0004)
+
+These produce the WO#1.1 entity rows; the WO#1.3 reducer projects them. All are **persisted** (none
+stream-only) and carry provenance ids (ULIDs):
+
+- **task.** `created {taskId, projectId, conversationId?, sourceMessageId?, laneId?, title, status?}`,
+  `updated {taskId, status?, title?, body?}`, `completed {taskId}`.
+- **decision.** `recorded {decisionId, projectId, conversationId?, sourceMessageId?, text}`,
+  `superseded {…recorded fields, supersedesId}` — append a row that supersedes a prior decision.
+- **memory.** `updated {entryId, scope, projectId?, charCount?, source?, sourceMessageId?}` (upsert a
+  `memory_entries` row — *reconciled from the former path-based payload, ADR-0004*); `consolidated
+  {resultEntryId, sourceEntryIds[], scope, projectId?}`. `written {path, bytes}` is unchanged and
+  remains the markdown-vault file signal, **not** a `memory_entries` event.
+- **provider.** `connected {provider, accountId?, authMode}`, `degraded {provider, accountId?,
+  reason}`, `restored {provider, accountId?}`.
+- **connector.** `installed {connectorId, slug, kind}`, `updated {connectorId, slug, status?,
+  fields?}`, `removed {connectorId, slug}`.
+- **settings.** `updated {key, value}` — `key` is rejected by a Zod `.refine` if it looks secret-ish
+  (`secret`/`api_key`/`apikey`/`token`/`password`), mirroring the store CHECK. No secrets on the wire.
 
 ## Stream-only types
 

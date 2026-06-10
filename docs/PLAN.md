@@ -59,9 +59,12 @@ Every event shares the envelope: `id` (ULID), `seq` (per-conversation, store-ass
 
 ### 3.2 Event types
 
-~40 namespaced types across: `conversation.*`, `message.*`, `turn.*`, `model.*`, `tool.*`,
-`lane.*`, `approval.*`, `memory.*`, `artifact.*`, `project.*`, `channel.*`, `error.*`, `audit.*`.
-The canonical list is the `eventPayloads` map in `@amrita/protocol`. `model.delta` is the only
+~54 namespaced types across: `conversation.*`, `message.*`, `turn.*`, `model.*`, `tool.*`,
+`lane.*`, `approval.*`, `memory.*`, `artifact.*`, `project.*`, `channel.*`, `task.*`, `decision.*`,
+`provider.*`, `connector.*`, `settings.*`, `error.*`, `audit.*`. The entity namespaces (`task.*`,
+`decision.*`, `provider.*`, `connector.*`, `settings.*`, and the row-level `memory.*`) were added in
+WO#1.2 for the WO#1.1 entity tables — see [ADR-0004](adr/0004-entity-event-taxonomy.md). The
+canonical list is the `eventPayloads` map in `@amrita/protocol`. `model.delta` is the only
 stream-only type. Full detail: [`specs/event-protocol.md`](specs/event-protocol.md).
 
 ### 3.3 Store
