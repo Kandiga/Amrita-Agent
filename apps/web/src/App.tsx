@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { type AmritaEventLite, RpcClient } from './api.ts';
+import { type ChatMessage, formatUsage, safeErrorMessage, textDir } from './lib.ts';
 import {
-  type ChatMessage,
-  formatUsage,
-  messagesFromEvents,
-  safeErrorMessage,
-  textDir,
-} from './lib.ts';
+  type TranscriptState,
+  emptyTranscript,
+  foldEvents,
+  reduceEvent,
+  transcriptMessages,
+} from './live-transcript.ts';
+import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
 
 type Project = { id: string; slug: string; name: string };
 type Conversation = { id: string; projectId: string; title?: string | null; createdAt?: string };
@@ -28,6 +30,14 @@ type ChatResult = {
 
 const client = new RpcClient();
 
+const STREAM_LABELS: Record<StreamState, string> = {
+  connecting: 'Connecting…',
+  open: 'Live',
+  reconnecting: 'Reconnecting…',
+  error: 'Offline',
+  closed: 'Disconnected',
+};
+
 function extractArray<T>(value: unknown, keys: string[]): T[] {
   if (Array.isArray(value)) return value as T[];
   if (value && typeof value === 'object') {
@@ -45,17 +55,24 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [events, setEvents] = useState<AmritaEventLite[]>([]);
+  const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript());
+  const [pending, setPending] = useState<ChatMessage[]>([]);
+  const [streamState, setStreamState] = useState<StreamState>('connecting');
   const [projectSlug, setProjectSlug] = useState('system');
   const [conversationId, setConversationId] = useState('');
   const [provider, setProvider] = useState('mock');
   const [draft, setDraft] = useState('');
+  const [lastTurn, setLastTurn] = useState('');
   const [memoryQuery, setMemoryQuery] = useState('');
   const [memory, setMemory] = useState<Memory[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // The reducer is the single source of truth for the transcript; the stream and
+  // any manual replay both feed it, de-duped by event id.
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.slug === projectSlug),
@@ -65,6 +82,32 @@ export function App() {
     () => providers.find((p) => p.id === provider),
     [providers, provider],
   );
+
+  // The visible transcript: committed messages + any optimistic user bubble not
+  // yet echoed back by a real `message.user` event.
+  const messages = useMemo(() => {
+    const committed = transcriptMessages(transcript);
+    const echoed = (text: string) => committed.some((m) => m.role === 'user' && m.text === text);
+    return [...committed, ...pending.filter((p) => !echoed(p.text))];
+  }, [transcript, pending]);
+
+  // Live subscription: (re)open whenever the selected conversation changes.
+  useEffect(() => {
+    if (!conversationId) return;
+    setTranscript(emptyTranscript());
+    setPending([]);
+    setStreamState('connecting');
+    let handle: EventStreamHandle | null = null;
+    handle = openEventStream(
+      conversationId,
+      {
+        onEvent: (ev) => setTranscript((s) => reduceEvent(s, ev)),
+        onState: (s) => setStreamState(s),
+      },
+      { sinceSeq: 0 },
+    );
+    return () => handle?.close();
+  }, [conversationId]);
 
   async function refreshBase() {
     setError('');
@@ -92,7 +135,7 @@ export function App() {
       const listResult = await client.call('conversation.list', { projectId: project.id });
       const list = extractArray<Conversation>(listResult, ['conversations']);
       setConversations(list);
-      if (list[0]) await openConversation(list[0].id);
+      if (list[0]) openConversation(list[0].id);
       else await createConversation(project.id);
       await loadTasks(project.id);
     } catch (e) {
@@ -111,17 +154,24 @@ export function App() {
       'conversation' in result && result.conversation
         ? result.conversation
         : (result as Conversation);
-    setConversationId(c.id);
     setConversations((old) => [c, ...old.filter((x) => x.id !== c.id)]);
-    setMessages([]);
-    setEvents([]);
+    openConversation(c.id);
   }
 
-  async function openConversation(id: string) {
+  function openConversation(id: string) {
+    // Switching the id resets the transcript and reopens the stream (effect above).
     setConversationId(id);
-    const replay = await client.events(id, 0);
-    setEvents(replay);
-    setMessages(messagesFromEvents(replay));
+  }
+
+  /** Manual replay fallback — folds `GET /events` into the reducer (de-duped). */
+  async function refreshTranscript() {
+    if (!conversationId) return;
+    try {
+      const replay = await client.events(conversationId, 0);
+      setTranscript(foldEvents(emptyTranscript(), replay));
+    } catch (e) {
+      setError(safeErrorMessage(e));
+    }
   }
 
   async function loadTasks(projectId = selectedProject?.id) {
@@ -145,32 +195,24 @@ export function App() {
   }
 
   async function send() {
-    if (!draft.trim() || busy) return;
+    if (!draft.trim() || busy || !conversationId) return;
     setBusy(true);
     setError('');
     const text = draft.trim();
     setDraft('');
     const optimistic: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text };
-    setMessages((old) => [...old, optimistic]);
+    setPending((old) => [...old, optimistic]);
     try {
       const result = await client.call<ChatResult>('chat.turn', {
         text,
-        project: projectSlug,
-        conversationId: conversationId || undefined,
+        conversationId,
         provider,
       });
-      if (result.conversationId && result.conversationId !== conversationId)
-        setConversationId(result.conversationId);
-      const assistant: ChatMessage = {
-        id: `agent-${Date.now()}`,
-        role: 'agent',
-        text: `${result.text}\n\n_${result.provider} · ${result.model} · ${formatUsage(result.usage)}_`,
-      };
-      setMessages((old) => [...old.filter((m) => m.id !== optimistic.id), optimistic, assistant]);
-      if (result.conversationId) {
-        const replay = await client.events(result.conversationId, events.at(-1)?.seq ?? 0);
-        setEvents((old) => [...old, ...replay]);
-      }
+      setLastTurn(`${result.provider} · ${result.model} · ${formatUsage(result.usage)}`);
+      // Fallback replay: if the live socket is offline, this still lands the turn;
+      // when it is live, the reducer de-dupes the overlap by event id.
+      const replay = await client.events(result.conversationId, transcriptRef.current.lastSeq);
+      setTranscript((s) => foldEvents(s, replay));
     } catch (e) {
       setError(safeErrorMessage(e));
     } finally {
@@ -252,32 +294,49 @@ export function App() {
               {conversationId ? `conversation ${conversationId.slice(0, 12)}` : 'ready'}
             </small>
           </div>
-          <label>
-            Provider
-            <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.id}
-                  {p.available === false ? ' (unavailable)' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="topbar-controls">
+            <button
+              type="button"
+              className={`conn conn-${streamState}`}
+              onClick={refreshTranscript}
+              title="Connection state — click to replay from the daemon"
+            >
+              <span className="dot" />
+              {STREAM_LABELS[streamState]}
+            </button>
+            <label>
+              Provider
+              <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id}
+                    {p.available === false ? ' (unavailable)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </header>
         <div className="messages" aria-live="polite">
           {messages.length === 0 ? (
             <div className="empty">
               <span>अ</span>
               <h1>Talk to Amrita</h1>
-              <p>HTTP/RPC runtime, providers, memory and channel foundation are now connected.</p>
+              <p>The transcript now streams live from the runtime over a WebSocket.</p>
             </div>
           ) : null}
           {messages.map((m) => (
-            <article key={m.id} className={`bubble ${m.role}`} dir={textDir(m.text)}>
+            <article
+              key={m.id}
+              className={`bubble ${m.role}${m.pending ? ' pending' : ''}`}
+              dir={textDir(m.text)}
+            >
               {m.text}
+              {m.pending ? <span className="caret" /> : null}
             </article>
           ))}
         </div>
+        {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
         {error ? (
           <div className="error" role="alert">
             {error}

@@ -175,6 +175,70 @@ section h2,
   color: var(--muted);
   font-size: 13px;
 }
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: transparent;
+}
+.conn .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.conn-open {
+  color: #1f8f5f;
+}
+.conn-open .dot {
+  background: #2bbd7e;
+  box-shadow: 0 0 0 3px rgba(43, 189, 126, 0.2);
+}
+.conn-connecting .dot,
+.conn-reconnecting .dot {
+  background: var(--accent);
+  animation: conn-pulse 1.1s ease-in-out infinite;
+}
+.conn-error {
+  color: #b83f2e;
+}
+.conn-error .dot {
+  background: #d1503a;
+}
+@keyframes conn-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.turn-meta {
+  margin: 0 clamp(16px, 4vw, 62px) 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+.bubble.pending {
+  opacity: 0.85;
+}
+.bubble .caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.1em;
+  margin-inline-start: 3px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: conn-pulse 1s steps(2) infinite;
+}
 .messages {
   padding: 28px clamp(16px, 4vw, 62px);
   overflow: auto;

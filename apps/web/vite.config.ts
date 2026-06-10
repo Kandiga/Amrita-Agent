@@ -8,7 +8,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/rpc': 'http://127.0.0.1:7460',
-      '/events': 'http://127.0.0.1:7460',
+      // `ws: true` upgrades the `/events/ws` WebSocket through the dev proxy so
+      // the browser only ever opens a same-origin socket.
+      '/events': { target: 'http://127.0.0.1:7460', ws: true },
     },
   },
   test: {

@@ -5,6 +5,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'agent' | 'system';
   text: string;
+  /** True for an in-progress draft assistant bubble (streamed `model.delta`). */
+  pending?: boolean;
 }
 
 /** Predominant text direction, for RTL-aware rendering (Hebrew/Arabic → rtl). */
