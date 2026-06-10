@@ -1,0 +1,14 @@
+{
+  "name": "@amrita/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Amrita's wire constitution: Zod event protocol, lane contract, RPC, and entity row schemas",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "ulid": "^2.3.0",
+    "zod": "^3.24.0"
+  }
+}

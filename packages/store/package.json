@@ -1,0 +1,18 @@
+{
+  "name": "@amrita/store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Amrita's event-sourced store: better-sqlite3 + Drizzle schema, reversible migrations, FTS5",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@amrita/protocol": "workspace:*",
+    "better-sqlite3": "^12.0.0",
+    "drizzle-orm": "^0.44.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11"
+  }
+}
