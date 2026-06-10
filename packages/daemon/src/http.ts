@@ -1,5 +1,6 @@
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
+import { requestToken, tokensMatch } from './auth.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
 
@@ -8,14 +9,20 @@ import { dispatch } from './rpc.ts';
  * by default. No framework — three routes + one WS endpoint. No frame or response
  * ever carries a secret value (the RPC/kernel layer already guarantees that).
  *
- *   GET  /health                                  → kernel health
- *   POST /rpc                                      → async JSON-RPC dispatch
- *   GET  /events?conversationId=&sinceSeq=         → replay persisted events
- *   WS   /events/ws?conversationId=&sinceSeq=      → replay + live fan-out
+ *   GET  /health                                  → kernel health (always public)
+ *   POST /rpc                                      → async JSON-RPC dispatch        [auth]
+ *   GET  /events?conversationId=&sinceSeq=         → replay persisted events        [auth]
+ *   WS   /events/ws?conversationId=&sinceSeq=      → replay + live fan-out          [auth]
+ *
+ * When `authToken` is set, every route except `GET /health` requires a matching
+ * bearer token (`Authorization: Bearer …`, or `?token=` for the browser WS that
+ * cannot set headers). When it is empty, the surface is open (localhost dev).
  */
 export interface HttpServerOptions {
   port?: number;
   host?: string;
+  /** Bearer token required for non-health routes. Empty/undefined → no auth. */
+  authToken?: string;
 }
 export interface RunningHttpServer {
   server: Server;
@@ -54,13 +61,27 @@ async function handleHttp(
   kernel: AmritaKernel,
   req: IncomingMessage,
   res: ServerResponse,
+  authToken: string,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
 
+  // `/health` is always public (liveness probes, dashboards).
   if (method === 'GET' && url.pathname === '/health') {
     sendJson(res, 200, kernel.health());
     return;
+  }
+
+  // Everything else is gated when a token is configured. Gate before route
+  // matching so an unauthenticated caller cannot probe which routes exist.
+  if (authToken) {
+    const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
+    if (!tokensMatch(authToken, provided)) {
+      sendJson(res, 401, {
+        error: { code: 'unauthorized', message: 'missing or invalid bearer token' },
+      });
+      return;
+    }
   }
 
   if (method === 'POST' && url.pathname === '/rpc') {
@@ -99,8 +120,9 @@ export function startHttpServer(
   opts: HttpServerOptions = {},
 ): Promise<RunningHttpServer> {
   const host = opts.host ?? '127.0.0.1';
+  const authToken = opts.authToken ?? '';
   const server = createServer((req, res) => {
-    handleHttp(kernel, req, res).catch(() => {
+    handleHttp(kernel, req, res, authToken).catch(() => {
       if (!res.headersSent)
         sendJson(res, 500, { error: { code: 'internal', message: 'internal error' } });
     });
@@ -112,6 +134,16 @@ export function startHttpServer(
     if (url.pathname !== '/events/ws') {
       socket.destroy();
       return;
+    }
+    // Auth the handshake before upgrading. A browser WebSocket cannot set an
+    // Authorization header, so a `?token=` query parameter is accepted too.
+    if (authToken) {
+      const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
+      if (!tokensMatch(authToken, provided)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const conversationId = url.searchParams.get('conversationId');

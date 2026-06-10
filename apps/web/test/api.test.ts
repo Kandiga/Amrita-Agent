@@ -53,4 +53,36 @@ describe('RpcClient', () => {
 
     await expect(client.events('c1', 7)).resolves.toHaveLength(1);
   });
+
+  it('sends an Authorization header only once a token is set', async () => {
+    const headers: Array<Record<string, string>> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        headers.push((init?.headers ?? {}) as Record<string, string>);
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    await client.call('health'); // no token yet
+    expect(client.hasAuthToken()).toBe(false);
+    client.setAuthToken('tok-123');
+    await client.call('health'); // token set
+    expect(headers[0]?.authorization).toBeUndefined();
+    expect(headers[1]?.authorization).toBe('Bearer tok-123');
+  });
+
+  it('throws a value-free unauthorized error on 401', async () => {
+    const client = new RpcClient({
+      fetchImpl: (async () => ({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: { code: 'unauthorized', message: 'no' } }),
+      })) as unknown as typeof fetch,
+    });
+    await expect(client.call('health')).rejects.toMatchObject({ code: 'unauthorized' });
+    try {
+      await client.call('health');
+    } catch (e) {
+      expect(String(e)).not.toMatch(/tok-|Bearer/);
+    }
+  });
 });

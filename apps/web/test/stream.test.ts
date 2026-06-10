@@ -139,6 +139,26 @@ describe('event stream client', () => {
     expect(h.handle.state()).toBe('error');
   });
 
+  it('appends an encoded token to the ws url when provided', () => {
+    const urls: string[] = [];
+    const handle = openEventStream(
+      'c1',
+      { onEvent: () => {} },
+      {
+        baseUrl: 'http://127.0.0.1:7460',
+        token: 'a b/c',
+        webSocketFactory: (url) => {
+          urls.push(url);
+          return new FakeSocket(url);
+        },
+        setTimeoutImpl: () => 1,
+        clearTimeoutImpl: () => {},
+      },
+    );
+    expect(urls[0]).toContain('token=a+b%2Fc'); // URLSearchParams encodes ' '→'+', '/'→'%2F'
+    handle.close();
+  });
+
   it('close() disposes the socket and stops reconnecting', () => {
     const h = harness();
     h.sockets[0]?.open();

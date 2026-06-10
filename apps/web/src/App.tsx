@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type AmritaEventLite, RpcClient } from './api.ts';
+import { type AmritaEventLite, RpcClient, RpcError } from './api.ts';
+import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import { type ChatMessage, formatUsage, safeErrorMessage, textDir } from './lib.ts';
 import {
   type TranscriptState,
@@ -68,11 +69,29 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [authToken, setAuthToken] = useState<string | undefined>(() => loadToken());
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [unauthorized, setUnauthorized] = useState(false);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
+
+  // A 401/403 surfaces the auth panel instead of a raw error line.
+  function reportError(e: unknown): void {
+    if (e instanceof RpcError && e.code === 'unauthorized') {
+      setUnauthorized(true);
+      setError('');
+    } else {
+      setError(safeErrorMessage(e));
+    }
+  }
+
+  // Keep the shared client's bearer token in sync with UI state (never logged).
+  useEffect(() => {
+    client.setAuthToken(authToken);
+  }, [authToken]);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.slug === projectSlug),
@@ -104,10 +123,10 @@ export function App() {
         onEvent: (ev) => setTranscript((s) => reduceEvent(s, ev)),
         onState: (s) => setStreamState(s),
       },
-      { sinceSeq: 0 },
+      { sinceSeq: 0, ...(authToken ? { token: authToken } : {}) },
     );
     return () => handle?.close();
-  }, [conversationId]);
+  }, [conversationId, authToken]);
 
   async function refreshBase() {
     setError('');
@@ -118,6 +137,7 @@ export function App() {
     const nextProjects = extractArray<Project>(projectResult, ['projects']);
     setProjects(nextProjects);
     setProviders(extractArray<Provider>(providerResult, ['providers']));
+    setUnauthorized(false); // a successful load means the token (if any) is accepted
     if (nextProjects.length > 0 && !nextProjects.some((p) => p.slug === projectSlug))
       setProjectSlug(nextProjects[0]?.slug ?? 'system');
   }
@@ -139,7 +159,7 @@ export function App() {
       else await createConversation(project.id);
       await loadTasks(project.id);
     } catch (e) {
-      setError(safeErrorMessage(e));
+      reportError(e);
     } finally {
       setBusy(false);
     }
@@ -170,7 +190,7 @@ export function App() {
       const replay = await client.events(conversationId, 0);
       setTranscript(foldEvents(emptyTranscript(), replay));
     } catch (e) {
-      setError(safeErrorMessage(e));
+      reportError(e);
     }
   }
 
@@ -190,8 +210,22 @@ export function App() {
       });
       setMemory(extractArray<Memory>(result, ['entries', 'memory', 'results']));
     } catch (e) {
-      setError(safeErrorMessage(e));
+      reportError(e);
     }
+  }
+
+  function applyToken(): void {
+    const next = tokenDraft.trim() || undefined;
+    saveToken(next ?? '');
+    setAuthToken(next);
+    setTokenDraft('');
+    setUnauthorized(false);
+  }
+
+  function forgetToken(): void {
+    clearToken();
+    setAuthToken(undefined);
+    setTokenDraft('');
   }
 
   async function send() {
@@ -214,18 +248,18 @@ export function App() {
       const replay = await client.events(result.conversationId, transcriptRef.current.lastSeq);
       setTranscript((s) => foldEvents(s, replay));
     } catch (e) {
-      setError(safeErrorMessage(e));
+      reportError(e);
     } finally {
       setBusy(false);
     }
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: boot once; project switching is handled by explicit UI actions.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: boot + reload when the token changes; project switching is handled by explicit UI actions.
   useEffect(() => {
     refreshBase()
       .then(() => ensureProjectAndLoad(projectSlug))
-      .catch((e) => setError(safeErrorMessage(e)));
-  }, []);
+      .catch((e) => reportError(e));
+  }, [authToken]);
 
   return (
     <main className="app-shell">
@@ -337,6 +371,11 @@ export function App() {
           ))}
         </div>
         {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
+        {unauthorized ? (
+          <div className="error" role="alert">
+            Unauthorized — set a valid access token in the panel on the right to reach the runtime.
+          </div>
+        ) : null}
         {error ? (
           <div className="error" role="alert">
             {error}
@@ -363,6 +402,31 @@ export function App() {
       </section>
 
       <aside className="inspector">
+        <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
+          <h2>Access token</h2>
+          <p className={authToken ? 'token-set' : ''}>
+            {authToken
+              ? `token set · ${maskToken(authToken)}`
+              : 'No token set — the runtime may require one.'}
+          </p>
+          <div className="search">
+            <input
+              type="password"
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+              placeholder="Paste bearer token"
+              autoComplete="off"
+            />
+            <button type="button" onClick={applyToken} disabled={!tokenDraft.trim()}>
+              Save
+            </button>
+          </div>
+          {authToken ? (
+            <button type="button" onClick={forgetToken}>
+              Clear token
+            </button>
+          ) : null}
+        </section>
         <section className="card">
           <h2>Provider status</h2>
           <div className="provider-row">

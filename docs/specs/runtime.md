@@ -100,6 +100,27 @@ Live fan-out is driven by `store.subscribe(listener)` — a **post-commit** noti
 event (a bad subscriber can never break a write). A WS connection without `conversationId` is closed
 with code 1008. Request bodies are capped at 1 MB.
 
+### Auth guard (WO#4.3)
+
+The HTTP/WS surface is protected by a single local **bearer token** (`packages/daemon/src/auth.ts`,
+ADR-0014). This token is *local session config*, **not** a provider secret: it is read from
+`AMRITA_AUTH_TOKEN`, or — when unset — generated ephemerally at startup and printed **once** to stdout
+(never to a file, an event, the DB, or a log).
+
+- **`GET /health` is always public.** Every other route requires `Authorization: Bearer <token>`.
+- The gate runs **before route matching**, so an unauthenticated caller cannot probe which routes
+  exist; a failure is `401 { error: { code: "unauthorized" } }` with no echoed token.
+- **WebSocket:** browsers cannot set headers on the `WebSocket` handshake, so `WS /events/ws` also
+  accepts the token as a **`?token=`** query parameter (an `Authorization` header is honoured too, for
+  non-browser clients). A bad handshake is answered `401` and the socket destroyed.
+- Comparison is constant-time (`timingSafeEqual`) and never throws on a length mismatch.
+- `startHttpServer(kernel, { authToken })` enables the guard; an empty/omitted `authToken` leaves the
+  surface open (used by in-process tests). The `amritad --http` bin always enables it (env or
+  generated).
+
+The `amrita` CLI speaks RPC **in process** (no HTTP), so it needs no token. An HTTP client (the web UI)
+must send the bearer token on `/rpc` and `/events`, and the `?token=` query on the WS.
+
 ## Transport & CLI
 
 JSON-lines over stdio: one request object per input line, one response per output line. The `amritad`

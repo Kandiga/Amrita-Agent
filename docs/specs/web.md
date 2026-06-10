@@ -56,10 +56,22 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 
 The UI uses `dir="auto"`-style helpers for Hebrew/English mixed text and keeps raw protocol/debug details out of the primary chat flow.
 
+## Access token (WO#4.3)
+
+The daemon's control surface requires a bearer token (see [runtime.md](runtime.md#auth-guard-wo43)).
+`src/auth.ts` keeps the token in `localStorage` only; `App.tsx` exposes an **Access token** panel:
+
+- the token is entered in a masked (`type="password"`) field and stored locally — it is **never logged**
+  to the console and **never rendered in full** (the panel shows a fixed bullet mask, `maskToken`);
+- `RpcClient` sends it as `Authorization: Bearer …` on `/rpc` and `/events`; the WS client passes it as
+  the `?token=` query parameter (browsers cannot set WS headers);
+- a `401/403` is mapped to a value-free `unauthorized` error that surfaces the panel (and an
+  “Unauthorized” banner) instead of a raw error line; a successful load clears it;
+- saving an empty token clears it. The token is *local control-surface config*, not a provider secret.
+
 ## Deferred
 
 - Real token streaming (`model.delta` emission from the daemon; the client renders it already).
 - Tool-call/lane UI.
 - Telegram pairing screens.
-- Auth/session management.
 - Production reverse-proxy and static asset deployment.
