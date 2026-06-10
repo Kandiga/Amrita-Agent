@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import '../core/tools/index.ts';
 import '../connectors/index.ts';
 import { loadConfig, setConfigValue, setSecret, getSecret, redactSecret } from '../shared/config.ts';
-import { listProfiles } from '../core/providers/registry.ts';
+import { listProfiles, providerStateLabel } from '../core/providers/registry.ts';
 import { runAgent } from '../core/agent/loop.ts';
 import { createSession, getMessages, listSessions } from '../core/store/sessions.ts';
 import { listProjects, getProject, createProject } from '../projects/manager.ts';
@@ -184,7 +184,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           label: p.label,
           authMode: p.authMode,
           keyEnv: p.keyEnv,
-          state: p.authMode === 'local_endpoint' ? 'local' : key ? 'configured' : 'needs-setup',
+          state: providerStateLabel(p),
           keyPreview: key ? redactSecret(key) : null,
         };
       });

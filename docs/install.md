@@ -21,12 +21,25 @@ What it does (read it first — it's short):
 Then:
 
 ```bash
-amrita setup    # provider → key → model → telegram, guided
-amrita doctor   # 10 checks with suggested fixes
+amrita setup    # choose a brain, then model → telegram, guided
+amrita doctor   # checks with suggested fixes (incl. live login status)
 amrita daemon   # web UI on 127.0.0.1:7460 + telegram + scheduler
 ```
 
 `amrita daemon` prints a one-time login link for the web UI. Need another later? `amrita login-link`.
+
+### Choosing Amrita's brain
+
+`amrita setup` offers three groups:
+
+- **A) Local subscription / login** — **Claude Code local login**. If you already use a Claude Pro/Max subscription, pick this: **no API key**. Amrita drives your installed `claude` CLI under your own login and never sees your credentials. First make sure you're signed in:
+  ```bash
+  claude auth login     # one-time, in your own terminal
+  claude auth status    # should show "loggedIn": true
+  ```
+  Then `amrita doctor` will report `Model provider … logged in`. *(This is a conversational brain — for tool-using/coding work Amrita uses the Claude Code connector instead.)*
+- **B) API key / aggregator** — Anthropic, OpenAI, OpenRouter, Gemini, xAI. Setup asks for the relevant key and stores it in `~/.amrita/secrets.env` (0600). *(Grok/xAI is API-key only.)*
+- **C) Local model** — Ollama or any OpenAI-compatible localhost server; no key, just a running endpoint.
 
 ## Lifecycle commands
 

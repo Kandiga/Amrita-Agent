@@ -1,7 +1,8 @@
 import type { Provider, ProviderProfile } from '../../shared/types.ts';
-import { loadConfig } from '../../shared/config.ts';
+import { loadConfig, getSecret } from '../../shared/config.ts';
 import { anthropicProvider } from './anthropic.ts';
 import { openAiCompatProvider } from './openai-compat.ts';
+import { claudeCliProvider } from './claude-cli.ts';
 import { mockProvider } from './mock.ts';
 
 /**
@@ -10,6 +11,15 @@ import { mockProvider } from './mock.ts';
  * CLI-passthrough providers (Claude Code, Codex) are connectors, not providers.
  */
 export const builtinProfiles: Record<string, ProviderProfile> = {
+  'claude-code': {
+    id: 'claude-code',
+    label: 'Claude Code local login (subscription / Agent SDK credit)',
+    api: 'claude-cli',
+    baseUrl: 'cli://claude',
+    keyEnv: null,
+    authMode: 'local_cli_login',
+    defaultModel: 'default',
+  },
   anthropic: {
     id: 'anthropic',
     label: 'Anthropic (Claude)',
@@ -94,10 +104,28 @@ export function resolveProfile(providerId: string): ProviderProfile {
 export function getProvider(providerId: string): Provider {
   const profile = resolveProfile(providerId);
   if (providerId === 'mock') return mockProvider(profile);
+  if (profile.api === 'claude-cli') return claudeCliProvider(profile);
   if (profile.api === 'anthropic') return anthropicProvider(profile);
   return openAiCompatProvider(profile);
 }
 
 export function listProfiles(): ProviderProfile[] {
   return Object.values(builtinProfiles).filter((p) => p.id !== 'mock');
+}
+
+/** Does this provider require Amrita to hold an API key? (false for login/local modes.) */
+export function providerNeedsApiKey(profile: ProviderProfile): boolean {
+  return profile.authMode === 'api_key' && Boolean(profile.keyEnv);
+}
+
+export type ProviderState = 'configured' | 'needs-setup' | 'local' | 'local-login';
+
+/**
+ * Static, honest state for a provider. For `local-login` this reports only
+ * that the mode is login-based — `amrita doctor` performs the live CLI probe.
+ */
+export function providerStateLabel(profile: ProviderProfile): ProviderState {
+  if (profile.authMode === 'local_endpoint') return 'local';
+  if (profile.authMode === 'local_cli_login') return 'local-login';
+  return profile.keyEnv && getSecret(profile.keyEnv) ? 'configured' : 'needs-setup';
 }

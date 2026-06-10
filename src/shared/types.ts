@@ -86,12 +86,19 @@ export interface RegisteredTool extends ToolSpec {
 export interface ProviderProfile {
   id: string;
   label: string;
-  /** 'anthropic' | 'openai-compat' wire format. */
-  api: 'anthropic' | 'openai-compat';
+  /** Wire format used to talk to the provider. */
+  api: 'anthropic' | 'openai-compat' | 'claude-cli';
   baseUrl: string;
-  /** Name of the env var holding the key (looked up in secrets). */
+  /** Name of the env var holding the key (looked up in secrets). null for keyless modes. */
   keyEnv: string | null;
-  authMode: 'api_key' | 'local_endpoint';
+  /**
+   * How Amrita authenticates this provider:
+   * - `api_key`        — you bring a key; Amrita calls the official API
+   * - `local_endpoint` — an OpenAI-compatible server on your machine
+   * - `local_cli_login`— Amrita drives a locally-installed CLI you logged into;
+   *                      the CLI owns the credentials, Amrita never reads them
+   */
+  authMode: 'api_key' | 'local_endpoint' | 'local_cli_login';
   defaultModel: string;
 }
 

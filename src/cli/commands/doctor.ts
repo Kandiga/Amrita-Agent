@@ -4,6 +4,7 @@ import { loadConfig, getSecret, redactSecret } from '../../shared/config.ts';
 import { paths } from '../../shared/paths.ts';
 import { getDb, hasFts } from '../../core/store/db.ts';
 import { listProfiles, resolveProfile } from '../../core/providers/registry.ts';
+import { claudeAuthStatus } from '../../core/providers/claude-cli.ts';
 import { listProjects } from '../../projects/manager.ts';
 
 const OK = '\x1b[32m✓\x1b[0m';
@@ -69,6 +70,17 @@ const checks: Check[] = [
         const profile = resolveProfile(config.model.provider);
         if (profile.authMode === 'local_endpoint') {
           return { status: 'ok', detail: `${profile.id} (local endpoint ${profile.baseUrl})` };
+        }
+        if (profile.authMode === 'local_cli_login') {
+          const st = claudeAuthStatus();
+          if (!st.installed) {
+            return { status: 'warn', detail: `${profile.id}: claude CLI not installed`, fix: 'install Claude Code, or `amrita setup` → API provider' };
+          }
+          if (!st.loggedIn) {
+            return { status: 'warn', detail: `${profile.id}: installed but not logged in`, fix: 'claude auth login' };
+          }
+          const sub = st.subscriptionType ? `, ${st.subscriptionType}` : '';
+          return { status: 'ok', detail: `${profile.id} (logged in${sub}) / ${config.model.model}` };
         }
         const key = profile.keyEnv ? getSecret(profile.keyEnv) : null;
         return key

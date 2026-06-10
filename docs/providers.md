@@ -1,26 +1,34 @@
 # Providers & auth — the honest map
 
-Amrita distinguishes four auth modes and refuses to blur them. Verified against official documentation, June 2026.
+Amrita distinguishes its auth modes and refuses to blur them. Verified against the installed CLIs and official documentation.
 
 ## Modes
 
 | Mode | What it means | Examples |
 |---|---|---|
 | `api_key` | You bring a key; Amrita calls the official API | Anthropic, OpenAI, OpenRouter, Gemini, xAI |
+| `local_cli_login` | Amrita drives a CLI *you* logged into; the CLI owns the credentials, Amrita never reads them | **Claude Code local login** (brain), Claude Code connector |
 | `local_endpoint` | OpenAI-compatible server on your machine | Ollama, llama.cpp, vLLM |
-| CLI passthrough | Amrita drives a CLI agent *you* logged into; the CLI owns auth | Claude Code connector |
 | OAuth | Only where officially offered to third parties | (none currently shipped) |
+
+`amrita setup` groups these as **A) local subscription / login**, **B) API key / aggregator**, **C) local model**, and shows each option's cost, what it needs, and whether it's ready right now.
 
 ## Per provider
 
-### Anthropic / Claude Code
-- **Amrita's brain**: `ANTHROPIC_API_KEY` → official Messages API. ✅
-- **Claude Code connector**: officially documented headless mode (`claude -p --output-format stream-json`) under your own login. Since June 15, 2026, Pro/Max subscriptions meter this through a monthly Agent SDK credit — when it runs out, Amrita tells you instead of pretending.
+### Claude Code local login (`local_cli_login`) — use your subscription as Amrita's brain
+- Pick **Claude Code local login (subscription / Agent SDK credit)** in `amrita setup`. **No API key is requested.**
+- Amrita drives the installed `claude` CLI in headless mode (`claude -p --output-format stream-json`) under whatever login you already have — a Pro/Max subscription or the Agent SDK credit. Amrita **never reads or stores** your Claude credentials.
+- Login status is probed with the official read-only command `claude auth status --json` (returns `loggedIn` / `subscriptionType`, **no token**). `amrita doctor` reports: CLI missing · installed-but-not-logged-in · logged in (plan) · credit/usage exhausted (when detectable).
+- **Scope (honest):** this is a *conversational* brain. Claude Code runs its own agent internally, so Amrita disables its tools and does **not** bridge Amrita's native tool-calling through it — it answers in text. For tool-using / coding work, use the Claude Code **connector** (`claude_code_run`), which is a separate, tool-capable path.
+- Set up the login itself with Claude Code's own command: `claude auth login` (and `claude auth status` to check). Amrita does not wrap or intercept it.
+
+### Anthropic API (`api_key`)
+- **Amrita's brain via key**: `ANTHROPIC_API_KEY` → official Messages API, full native tool-calling. ✅
 - **What we don't do**: harvest `sk-ant-oat…` OAuth tokens for raw API calls (ToS violation), or offer "sign in with claude.ai" to other users (requires Anthropic approval).
 
 ### OpenAI / Codex
 - `OPENAI_API_KEY` → official API. ✅
-- A Codex connector (via the official `@openai/codex-sdk` / `codex exec`) is planned — it's the cleanest "program drives a CLI agent" SDK in the industry.
+- **Codex local login**: planned, **not yet a selectable Amrita brain provider**. It will authenticate through Codex's own CLI (`codex login`) via the official `@openai/codex-sdk` / `codex exec`, not by reusing your ChatGPT web session. `amrita setup` lists it under group A as "planned" and does not pretend it works yet. (The `codex` CLI is not assumed installed; Amrita won't invent its commands.)
 
 ### Google Gemini
 - `GEMINI_API_KEY` → official OpenAI-compatible endpoint. ✅
@@ -28,7 +36,7 @@ Amrita distinguishes four auth modes and refuses to blur them. Verified against 
 
 ### xAI / Grok
 - `XAI_API_KEY` → official OpenAI-compatible API. ✅
-- Subscription OAuth is partner-gated (not generally available); we don't clone partner flows.
+- **Grok currently requires the xAI API key in Amrita; subscription login is not supported by an official local connector yet.** Subscription OAuth is partner-gated (not generally available); we don't clone partner flows. `amrita setup` labels Grok "API key only (no subscription login)".
 
 ### OpenRouter & friends
 - One OpenAI-compatible adapter covers OpenRouter, Groq, Together, DeepSeek, Mistral, and any custom `baseUrl` you set in `config.json → providers`.
