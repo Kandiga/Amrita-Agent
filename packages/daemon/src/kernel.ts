@@ -8,6 +8,7 @@ import {
 import {
   type AccountRow,
   type AuthMode,
+  type ChannelLink,
   type ConnectorRow,
   type ConversationNode,
   type DecisionRow,
@@ -16,6 +17,7 @@ import {
   type LaneStatus,
   type MemoryEntryRow,
   type MemoryScope,
+  type PairingRow,
   type ProviderConfigStatus,
   type Store,
   type TaskRow,
@@ -518,5 +520,27 @@ export class AmritaKernel {
     status?: LaneStatus;
   }): LaneRow[] {
     return this.store.listLanes(filters);
+  }
+
+  // ── channel pairings (delegated; ADR-0013) ────────────────────────────────
+
+  createPairing(input: {
+    channel: string;
+    projectId: string;
+    conversationId?: string;
+  }): PairingRow {
+    return this.store.createPairing(input);
+  }
+
+  consumePairing(input: { channel: string; code: string; externalUserId: string }): ChannelLink {
+    return this.store.consumePairing(input);
+  }
+
+  getChannelLink(channel: string, externalUserId: string): ChannelLink | undefined {
+    return this.store.getChannelLink(channel, externalUserId);
+  }
+
+  listPairings(channel?: string): PairingRow[] {
+    return this.store.listPairings(channel);
   }
 }

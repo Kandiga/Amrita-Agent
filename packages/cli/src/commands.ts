@@ -343,6 +343,50 @@ export const COMMANDS: Record<string, Command> = {
       return { result: ps, summary };
     },
   },
+
+  'channel list': {
+    describe: 'list channel surfaces',
+    async run(client) {
+      const cs = await client.call<{ id: string; kind: string }[]>('channels.list');
+      return { result: cs, summary: cs.map((c) => `${c.id}\t${c.kind}`).join('\n') };
+    },
+  },
+  'channel pair': {
+    describe: 'create a pairing code linking a channel to a project',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) {
+        throw new CliError(
+          'usage: amrita channel pair --project <ID_OR_SLUG> [--conversation ID] [--channel telegram]',
+        );
+      }
+      const projectId = await resolveProjectId(client, project);
+      const channel = strFlag(flags, 'channel') ?? 'telegram';
+      const conversation = strFlag(flags, 'conversation');
+      const r = await client.call<{ code: string }>('channels.pairing.create', {
+        channel,
+        projectId,
+        ...(conversation ? { conversationId: conversation } : {}),
+      });
+      return { result: r, summary: `pairing code: ${r.code}  (channel ${channel})` };
+    },
+  },
+  'channel pairings': {
+    describe: 'list pairing codes',
+    async run(client, { flags }) {
+      const channel = strFlag(flags, 'channel');
+      const ps = await client.call<{ code: string; channel: string; claimedBy: string | null }[]>(
+        'channels.pairing.list',
+        channel ? { channel } : {},
+      );
+      return {
+        result: ps,
+        summary: ps.length
+          ? ps.map((p) => `${p.code}\t${p.channel}\t${p.claimedBy ?? '(unclaimed)'}`).join('\n')
+          : '(no pairings)',
+      };
+    },
+  },
 };
 
 export const COMMAND_NAMES: readonly string[] = Object.keys(COMMANDS);

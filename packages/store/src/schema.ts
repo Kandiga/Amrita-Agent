@@ -259,3 +259,18 @@ export const settings = sqliteTable(
     ),
   }),
 );
+
+// ── 0003: channel pairings (links external identities → project/conversation) ──
+export const channelPairings = sqliteTable(
+  'channel_pairings',
+  {
+    code: text('code').primaryKey(),
+    channel: text('channel').notNull(),
+    projectId: text('project_id').notNull(),
+    conversationId: text('conversation_id'),
+    claimedBy: text('claimed_by'),
+    createdAt: text('created_at').notNull(),
+    claimedAt: text('claimed_at'),
+  },
+  (t) => ({ byClaim: index('idx_channel_pairings_claim').on(t.channel, t.claimedBy) }),
+);

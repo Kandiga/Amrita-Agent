@@ -40,6 +40,7 @@ const REQUIRED_TABLES = [
   'accounts',
   'connectors',
   'settings',
+  'channel_pairings',
 ];
 
 function tableNames(db: Database.Database): string[] {
@@ -55,34 +56,36 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000, 0001, 0002 all apply
-    expect(migrateUp(db)).toBe(3);
-    expect(currentVersion(db)).toBe(2);
+    // up: 0000..0003 all apply
+    expect(migrateUp(db)).toBe(4);
+    expect(currentVersion(db)).toBe(3);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
     // full down: all revert; even the lineage column is gone
-    expect(migrateDown(db)).toBe(3);
+    expect(migrateDown(db)).toBe(4);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
     expect(tableNames(db)).not.toContain('memory_entries_fts');
+    expect(tableNames(db)).not.toContain('channel_pairings');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(3);
-    expect(currentVersion(db)).toBe(2);
+    expect(migrateUp(db)).toBe(4);
+    expect(currentVersion(db)).toBe(3);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
 
-  it('targets migrations with toVersion (step down 0002 then 0001)', () => {
+  it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → just 0002 (memory FTS)
-    expect(migrateDown(db, 1)).toBe(1);
+    // revert only above version 1 → 0002 (memory FTS) + 0003 (channel pairings)
+    expect(migrateDown(db, 1)).toBe(2);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
+    expect(tableNames(db)).not.toContain('channel_pairings');
     expect(tableNames(db)).toContain('memory_entries'); // 0001 intact
 
     // revert above version 0 → just 0001
@@ -1205,6 +1208,34 @@ describe('agent messages + context (WO#2.3)', () => {
     store.recordAgentMessage({ projectId, conversationId: c, text: 'second' });
     expect(store.listMessages(c).map((m) => m.text)).toEqual(['first', 'second']);
     expect(store.listMessages(c, { limit: 1 }).map((m) => m.text)).toEqual(['first']);
+  });
+});
+
+describe('channel pairings (WO#3.1)', () => {
+  it('creates, claims, and links a channel identity; rejects double-claim', () => {
+    const projectId = project();
+    const c = store.createConversation({ projectId }).id;
+    const { code } = store.createPairing({ channel: 'telegram', projectId, conversationId: c });
+    expect(code).toBeTypeOf('string');
+
+    expect(store.getChannelLink('telegram', '555')).toBeUndefined();
+    const link = store.consumePairing({ channel: 'telegram', code, externalUserId: '555' });
+    expect(link).toEqual({ projectId, conversationId: c });
+    expect(store.getChannelLink('telegram', '555')).toEqual({ projectId, conversationId: c });
+
+    // already claimed / unknown
+    expect(() =>
+      store.consumePairing({ channel: 'telegram', code, externalUserId: '777' }),
+    ).toThrow(/already claimed/);
+    expect(() =>
+      store.consumePairing({ channel: 'telegram', code: 'NOPE', externalUserId: '777' }),
+    ).toThrow(/unknown pairing code/);
+
+    const list = store.listPairings('telegram');
+    expect(list).toHaveLength(1);
+    expect(list[0]?.claimedBy).toBe('555');
+    // pairings carry no secret value
+    expect(JSON.stringify(list)).not.toMatch(/sk-|password/i);
   });
 });
 

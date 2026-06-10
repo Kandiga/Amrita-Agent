@@ -42,7 +42,7 @@ describe('amrita CLI', () => {
     const r = await cli(['health']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('amritad');
-    expect(r.out).toContain('schema v2');
+    expect(r.out).toContain('schema v3');
   });
 
   it('project ensure + list', async () => {
@@ -142,7 +142,7 @@ describe('amrita CLI', () => {
 
   it('--json emits structured output and errors', async () => {
     const h = await cli(['health', '--json']);
-    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(2);
+    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(3);
     const bad = await cli(['bogus', 'command', '--json']);
     expect(bad.code).toBe(2);
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');
@@ -177,6 +177,21 @@ describe('amrita CLI', () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain('no configured account');
     expect(r.err).not.toMatch(/sk-[a-z]/i);
+  });
+
+  it('channel list + pairing create/list', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const list = await cli(['channel', 'list']);
+    expect(list.code).toBe(0);
+    expect(list.out).toContain('telegram');
+    const pair = json<{ code: string }>(
+      await cli(['channel', 'pair', '--project', 'crm', '--channel', 'telegram', '--json']),
+    );
+    expect(pair.code).toBeTypeOf('string');
+    const pairings = await cli(['channel', 'pairings', '--channel', 'telegram']);
+    expect(pairings.out).toContain(pair.code);
+    expect(pairings.out).toContain('unclaimed');
+    expect(`${pair.code}${pairings.out}`).not.toMatch(/sk-[a-z]/i);
   });
 
   it('usage errors exit non-zero', async () => {

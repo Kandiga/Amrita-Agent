@@ -1,0 +1,14 @@
+{
+  "name": "@amrita/channels",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Amrita channel layer: web transport + Telegram owner-gate skeleton (no real network)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@amrita/daemon": "workspace:*",
+    "@amrita/store": "workspace:*"
+  }
+}

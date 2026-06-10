@@ -21,6 +21,15 @@ importers:
         specifier: ^3.0.0
         version: 3.2.6(@types/node@22.19.20)
 
+  packages/channels:
+    dependencies:
+      '@amrita/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      '@amrita/store':
+        specifier: workspace:*
+        version: link:../store
+
   packages/cli:
     dependencies:
       '@amrita/daemon':

@@ -228,6 +228,23 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.runChatTurn(clean(p)),
   ),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
+
+  'channels.list': def(z.object({}).optional(), () => [
+    { id: 'web', kind: 'web' },
+    { id: 'telegram', kind: 'telegram' },
+  ]),
+  'channels.pairing.create': def(
+    z.object({
+      channel: z.enum(['web', 'telegram']).optional(),
+      projectId: z.string(),
+      conversationId: z.string().optional(),
+    }),
+    (k, p) => k.createPairing({ channel: p.channel ?? 'telegram', ...clean(p) }),
+  ),
+  'channels.pairing.list': def(
+    z.object({ channel: z.enum(['web', 'telegram']).optional() }),
+    (k, p) => k.listPairings(p.channel),
+  ),
 };
 
 /** The stable list of supported method names. */

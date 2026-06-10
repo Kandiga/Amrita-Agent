@@ -156,6 +156,20 @@ export interface ConversationNode {
   archivedAt: string | null;
 }
 
+export interface PairingRow {
+  code: string;
+  channel: string;
+  projectId: string;
+  conversationId: string | null;
+  claimedBy: string | null;
+  createdAt: string;
+  claimedAt: string | null;
+}
+export interface ChannelLink {
+  projectId: string;
+  conversationId: string | null;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -962,6 +976,77 @@ export class Store {
          FROM conversations WHERE project_id = ? ORDER BY created_at ASC`,
       )
       .all(projectId) as ConversationNode[];
+  }
+
+  // ── channel pairings (DIRECT writes — local linking config, ADR-0013) ─────
+  //
+  // A pairing links an external channel identity to a project+conversation. Like
+  // secret_ref binding (ADR-0008) this is config, not event-sourced. `code` is a
+  // low-sensitivity pairing token — never a secret/API key/bot token.
+
+  private static readonly PAIRING_COLS =
+    'code, channel, project_id AS projectId, conversation_id AS conversationId, claimed_by AS claimedBy, created_at AS createdAt, claimed_at AS claimedAt';
+
+  /** Create an unclaimed pairing for a channel + project/conversation. Returns the code. */
+  createPairing(input: {
+    channel: string;
+    projectId: string;
+    conversationId?: string;
+    code?: string;
+  }): PairingRow {
+    const code = input.code ?? newId().slice(-8);
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO channel_pairings (code, channel, project_id, conversation_id, claimed_by, created_at, claimed_at)
+         VALUES (?, ?, ?, ?, NULL, ?, NULL)`,
+      )
+      .run(code, input.channel, input.projectId, input.conversationId ?? null, ts);
+    return {
+      code,
+      channel: input.channel,
+      projectId: input.projectId,
+      conversationId: input.conversationId ?? null,
+      claimedBy: null,
+      createdAt: ts,
+      claimedAt: null,
+    };
+  }
+
+  /** Claim a pairing code for an external user; returns the linked context. */
+  consumePairing(input: { channel: string; code: string; externalUserId: string }): ChannelLink {
+    const row = this.db
+      .prepare(
+        'SELECT project_id AS projectId, conversation_id AS conversationId, claimed_by AS claimedBy FROM channel_pairings WHERE code = ? AND channel = ?',
+      )
+      .get(input.code, input.channel) as
+      | { projectId: string; conversationId: string | null; claimedBy: string | null }
+      | undefined;
+    if (!row) throw new Error(`unknown pairing code: ${input.code}`);
+    if (row.claimedBy) throw new Error(`pairing code already claimed: ${input.code}`);
+    this.db
+      .prepare('UPDATE channel_pairings SET claimed_by = ?, claimed_at = ? WHERE code = ?')
+      .run(input.externalUserId, now(), input.code);
+    return { projectId: row.projectId, conversationId: row.conversationId };
+  }
+
+  /** The most recently claimed link for a channel identity, or undefined. */
+  getChannelLink(channel: string, externalUserId: string): ChannelLink | undefined {
+    return this.db
+      .prepare(
+        `SELECT project_id AS projectId, conversation_id AS conversationId
+         FROM channel_pairings WHERE channel = ? AND claimed_by = ?
+         ORDER BY claimed_at DESC LIMIT 1`,
+      )
+      .get(channel, externalUserId) as ChannelLink | undefined;
+  }
+
+  listPairings(channel?: string): PairingRow[] {
+    const where = channel ? 'WHERE channel = ?' : '';
+    const stmt = this.db.prepare(
+      `SELECT ${Store.PAIRING_COLS} FROM channel_pairings ${where} ORDER BY created_at ASC`,
+    );
+    return (channel ? stmt.all(channel) : stmt.all()) as PairingRow[];
   }
 
   /** Row counts for diagnostics (health). No secret data. */

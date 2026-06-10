@@ -29,6 +29,7 @@ export const MIGRATIONS: readonly Migration[] = [
   load(0, 'init'),
   load(1, 'full_store_schema'),
   load(2, 'memory_fts'),
+  load(3, 'channel_pairings'),
 ];
 
 function ensureMigrationsTable(db: DB): void {
