@@ -6,12 +6,13 @@ Amrita distinguishes its auth modes and refuses to blur them. Verified against t
 
 | Mode | What it means | Examples |
 |---|---|---|
+| `auto` | Resolves at runtime to the best available provider (login → configured key → local). The safe default — a fresh install is never trapped. | (default) |
 | `api_key` | You bring a key; Amrita calls the official API | Anthropic, OpenAI, OpenRouter, Gemini, xAI |
 | `local_cli_login` | Amrita drives a CLI *you* logged into; the CLI owns the credentials, Amrita never reads them | **Claude Code local login** (brain), Claude Code connector |
 | `local_endpoint` | OpenAI-compatible server on your machine | Ollama, llama.cpp, vLLM |
 | OAuth | Only where officially offered to third parties | (none currently shipped) |
 
-`amrita setup` groups these as **A) local subscription / login**, **B) API key / aggregator**, **C) local model**, and shows each option's cost, what it needs, and whether it's ready right now.
+`amrita setup` groups these as **A) local subscription / login**, **B) API key / aggregator**, **C) local model** (plus **Auto**), and shows each option's cost, what it needs, and whether it's ready right now. See [setup.md](setup.md) for the full flow.
 
 ## Per provider
 

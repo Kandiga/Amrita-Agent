@@ -9,6 +9,7 @@ import type {
 } from '../../shared/types.ts';
 import { loadConfig } from '../../shared/config.ts';
 import { getProvider } from '../providers/registry.ts';
+import { resolveActiveProviderId } from '../providers/resolver.ts';
 import { visibleTools, executeTool, type ToolFilter } from '../tools/registry.ts';
 import { buildContext } from './context-builder.ts';
 import { appendMessage, getMessages, touchSession } from '../store/sessions.ts';
@@ -34,10 +35,12 @@ export interface RunOptions {
 export async function* runAgent(opts: RunOptions): AsyncGenerator<AgentEvent> {
   const config = loadConfig();
   const signal = opts.signal ?? new AbortController().signal;
+  // Resolve `auto` (and pass concrete ids through unchanged) before use.
+  const activeProvider = resolveActiveProviderId(config.model.provider);
   const modelChoice = opts.model ??
     (opts.project?.defaultModel
-      ? { provider: config.model.provider, model: opts.project.defaultModel }
-      : { provider: config.model.provider, model: config.model.model });
+      ? { provider: activeProvider, model: opts.project.defaultModel }
+      : { provider: activeProvider, model: config.model.model });
 
   appendMessage(opts.sessionId, { role: 'user', content: opts.userText });
   touchSession(opts.sessionId, opts.userText.slice(0, 60));

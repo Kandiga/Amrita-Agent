@@ -11,7 +11,7 @@ Built from scratch by [Nethanel Kol](https://github.com/Kandiga). Zero runtime d
 
 Early but real — this is the first working implementation checkpoint, not a finished product.
 
-- **Implemented and unit-tested** (42 tests): agent loop with provider failover, tool runtime with per-toolset permissions and a project-directory jail, SQLite + FTS5 memory, the project/session/binding model with markdown vaults, gateway command routing, the daemon HTTP API + magic-link auth, the cron scheduler, the context builder, the web UI, the `amrita` CLI, and the provider system — including **Claude Code local login** as a keyless subscription brain.
+- **Implemented and unit-tested** (58 tests): agent loop with provider failover, tool runtime with per-toolset permissions and a project-directory jail, SQLite + FTS5 memory, the project/session/binding model with markdown vaults, gateway command routing, the daemon HTTP API + magic-link auth, the cron scheduler, the context builder, the web UI, and a Hermes-grade `amrita` CLI — a sectioned `setup` wizard, grouped `doctor`, a systemd-user `service` command, and the provider system with an **`auto`** default plus **Claude Code local login** as a keyless subscription brain.
 - **Implemented, not yet integration-tested** (each needs the external tool present): the Telegram network layer, the Claude Code connector (drives a local `claude` CLI), and the Open Design connector (drives a local Open Design daemon). Each degrades to an honest "not configured / not reachable" message rather than failing.
 - **Not yet built**: the MCP client, a Codex local-login brain provider (planned) and the Codex/Gemini-CLI connectors, GitHub-Releases packaging for `amrita update`, vector retrieval, and multi-user support.
 
@@ -81,8 +81,9 @@ node src/cli/main.ts daemon      # web UI on 127.0.0.1:7460
 
 ## Providers
 
-Amrita's own brain runs on any of these — `amrita setup` groups them as **A) local login · B) API key · C) local model** and shows each one's cost, what it needs, and whether it's ready:
+Amrita's own brain runs on any of these — `amrita setup` (a sectioned wizard; see [docs/setup.md](docs/setup.md)) groups them as **Auto · A) local login · B) API key · C) local model** and shows each one's cost, what it needs, and whether it's ready:
 
+- **Auto** (default): resolves at runtime to the best available provider (login → configured key → local), so a fresh install is never trapped on a broken default.
 - **Local subscription / login**: **Claude Code local login** — use your Claude Pro/Max subscription (or Agent SDK credit) as Amrita's brain. No API key; Amrita drives the `claude` CLI you logged into and never touches its credentials. *(Conversational brain — for tool-using/coding work use the Claude Code connector. Codex local login is planned.)*
 - **API keys**: Anthropic, OpenAI, OpenRouter, Gemini, xAI — plus any OpenAI-compatible endpoint. *(Grok/xAI is API-key only — no official subscription login.)*
 - **Local models**: Ollama, llama.cpp, vLLM (OpenAI-compatible, localhost)

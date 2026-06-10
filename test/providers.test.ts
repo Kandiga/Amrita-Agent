@@ -27,6 +27,7 @@ const {
   providerStateLabel,
   isProviderHealthy,
   recommendProvider,
+  resolveProviderId,
 } = await import('../src/core/providers/registry.ts');
 const { claudeAuthStatus } = await import('../src/core/providers/claude-cli.ts');
 const { checkModelProvider } = await import('../src/cli/commands/doctor.ts');
@@ -109,6 +110,20 @@ test('recommend: falls back to first API provider when nothing is configured', (
     hasKey: () => false,
   });
   assert.equal(rec, 'anthropic'); // first api_key provider, will be flagged as needing a key
+});
+
+test('recommend: prefers a configured API key over an unconfigured one', () => {
+  const rec = recommendProvider('anthropic', listProfiles(), {
+    claudeLoggedIn: false, // no login path
+    hasKey: (k) => k === 'OPENAI_API_KEY', // only OpenAI has a key
+  });
+  assert.equal(rec, 'openai');
+});
+
+test('resolveProviderId: passes concrete ids through, resolves auto by health', () => {
+  assert.equal(resolveProviderId('anthropic', { claudeLoggedIn: true, hasKey: () => false }), 'anthropic');
+  assert.equal(resolveProviderId('auto', { claudeLoggedIn: true, hasKey: () => false }), 'claude-code');
+  assert.equal(resolveProviderId('auto', { claudeLoggedIn: false, hasKey: (k) => k === 'XAI_API_KEY' }), 'xai');
 });
 
 test('isProviderHealthy: api needs key, login needs login, local always configured', () => {

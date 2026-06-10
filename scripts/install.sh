@@ -47,8 +47,16 @@ case ":$PATH:" in
   *) say "NOTE: add $BIN_DIR to your PATH (e.g. echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc)";;
 esac
 
-# --- optional systemd service ---
-if command -v systemctl >/dev/null 2>&1 && [ "${AMRITA_NO_SERVICE:-0}" != "1" ]; then
+# --- environment notes ---
+is_wsl=0
+if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then is_wsl=1; fi
+have_user_systemd=0
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+  have_user_systemd=1
+fi
+
+# --- optional systemd service (only when a user manager actually exists) ---
+if [ "$have_user_systemd" = "1" ] && [ "${AMRITA_NO_SERVICE:-0}" != "1" ]; then
   read -r -p "Install a systemd user service so Amrita runs at boot? [y/N] " yn || yn=n
   if [ "${yn,,}" = "y" ]; then
     mkdir -p "$HOME/.config/systemd/user"
@@ -58,9 +66,17 @@ if command -v systemctl >/dev/null 2>&1 && [ "${AMRITA_NO_SERVICE:-0}" != "1" ];
     systemctl --user enable --now amrita
     say "service installed (journalctl --user -u amrita -f for logs)"
   fi
+elif [ "$is_wsl" = "1" ]; then
+  say "WSL detected without a systemd user manager — run Amrita in the foreground (recommended on WSL):"
+  say "  amrita daemon"
+  say "  (to enable systemd on WSL: add '[boot]\\nsystemd=true' to /etc/wsl.conf, then 'wsl --shutdown')"
 fi
 
 say "done. Next:"
-say "  amrita setup    # provider, model, telegram"
-say "  amrita doctor   # verify"
-say "  amrita daemon   # start (prints a web login link)"
+say "  amrita setup    # choose a brain (Claude Code login / API key / local), model, channels"
+say "  amrita doctor   # verify everything (incl. live login status)"
+if [ "$is_wsl" = "1" ]; then
+  say "  amrita daemon   # start in foreground (recommended on WSL) — prints a web login link"
+else
+  say "  amrita daemon   # start (prints a web login link), or: amrita service install"
+fi

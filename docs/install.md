@@ -46,9 +46,15 @@ amrita daemon   # web UI on 127.0.0.1:7460 + telegram + scheduler
 | Command | What it does |
 |---|---|
 | `amrita status` | daemon up? model? telegram? project count |
-| `amrita doctor` | full diagnostic: node, db/FTS5, provider auth, telegram getMe, connectors, daemon health |
+| `amrita doctor` | grouped diagnostic (node, db/FTS5, provider auth, telegram, connectors, daemon) + a numbered list of exact fixes |
+| `amrita service <cmd>` | systemd **user** service: `install` / `status` / `logs` / `uninstall` |
 | `amrita update` | `git fetch` + fast-forward, then restart the service |
 | `amrita uninstall` | prints exact removal steps — never deletes your data itself |
+
+### Running as a service vs foreground
+
+- **Linux with systemd**: `amrita service install` installs and starts a user service (`amrita service logs` to tail it).
+- **WSL / containers without systemd**: run `amrita daemon` in the foreground — the installer detects WSL and recommends this. (To enable systemd on WSL, add `[boot]\nsystemd=true` to `/etc/wsl.conf`, then `wsl --shutdown` and reopen.)
 
 You can also ask Amrita herself ("run a status check") from any channel — `status`/`doctor` are honest about what they find.
 

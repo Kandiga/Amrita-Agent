@@ -5,6 +5,7 @@ import { paths } from '../../shared/paths.ts';
 import { getDb, hasFts } from '../../core/store/db.ts';
 import { listProfiles, resolveProfile } from '../../core/providers/registry.ts';
 import { claudeAuthStatus } from '../../core/providers/claude-cli.ts';
+import { resolveActiveProviderId } from '../../core/providers/resolver.ts';
 import { listProjects } from '../../projects/manager.ts';
 
 const OK = '\x1b[32m✓\x1b[0m';
@@ -12,9 +13,12 @@ const WARN = '\x1b[33m●\x1b[0m';
 const FAIL = '\x1b[31m✗\x1b[0m';
 
 interface Check {
+  section: string;
   name: string;
   run: () => Promise<{ status: 'ok' | 'warn' | 'fail'; detail: string; fix?: string }>;
 }
+
+const SECTION = '\x1b[1;36m◆\x1b[0m';
 
 function binaryExists(name: string): boolean {
   try {
@@ -34,26 +38,34 @@ export type CheckResult = { status: 'ok' | 'warn' | 'fail'; detail: string; fix?
  */
 export async function checkModelProvider(): Promise<CheckResult> {
   const config = loadConfig();
+  const isAuto = config.model.provider === 'auto';
   try {
-    const profile = resolveProfile(config.model.provider);
+    const activeId = resolveActiveProviderId(config.model.provider);
+    const profile = resolveProfile(activeId);
+    const label = isAuto ? `auto → ${activeId}` : activeId;
     if (profile.authMode === 'local_endpoint') {
-      return { status: 'ok', detail: `${profile.id} (local endpoint ${profile.baseUrl})` };
+      return { status: 'ok', detail: `${label} (local endpoint ${profile.baseUrl})` };
     }
     if (profile.authMode === 'local_cli_login') {
       const st = claudeAuthStatus();
       if (!st.installed) {
-        return { status: 'warn', detail: `${profile.id}: claude CLI not installed`, fix: 'install Claude Code, or `amrita setup` → API provider' };
+        return { status: 'warn', detail: `${label}: claude CLI not installed`, fix: 'install Claude Code, or `amrita setup` → API provider' };
       }
       if (!st.loggedIn) {
-        return { status: 'warn', detail: `${profile.id}: installed but not logged in`, fix: 'claude auth login' };
+        return { status: 'warn', detail: `${label}: installed but not logged in`, fix: 'claude auth login' };
       }
       const sub = st.subscriptionType ? ` (subscription / Agent SDK credit, ${st.subscriptionType})` : ' (subscription / Agent SDK credit)';
-      return { status: 'ok', detail: `${profile.id}: logged in via Claude Code${sub} / ${config.model.model}` };
+      return { status: 'ok', detail: `${label}: logged in via Claude Code${sub} / ${config.model.model}` };
     }
     const key = profile.keyEnv ? getSecret(profile.keyEnv) : null;
-    return key
-      ? { status: 'ok', detail: `${profile.id} / ${config.model.model} (key ${redactSecret(key)})` }
-      : { status: 'fail', detail: `${profile.id}: no ${profile.keyEnv}`, fix: 'amrita setup' };
+    if (key) {
+      return { status: 'ok', detail: `${label} / ${config.model.model} (key ${redactSecret(key)})` };
+    }
+    // No key. `auto` with nothing configured is a WARN (run setup), not a hard
+    // FAIL — only an *explicitly chosen* key provider missing its key fails.
+    return isAuto
+      ? { status: 'warn', detail: `${label}: no provider configured yet`, fix: 'amrita setup' }
+      : { status: 'fail', detail: `${activeId}: no ${profile.keyEnv}`, fix: 'amrita setup' };
   } catch (err) {
     return { status: 'fail', detail: String(err), fix: 'fix model.provider in config' };
   }
@@ -61,6 +73,7 @@ export async function checkModelProvider(): Promise<CheckResult> {
 
 const checks: Check[] = [
   {
+    section: 'Environment',
     name: 'Node version',
     run: async () => {
       const [major, minor] = process.versions.node.split('.').map(Number);
@@ -73,6 +86,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Environment',
     name: 'State directory',
     run: async () => {
       const home = paths.home();
@@ -86,6 +100,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Environment',
     name: 'Database',
     run: async () => {
       try {
@@ -97,10 +112,12 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Model & providers',
     name: 'Model provider',
     run: checkModelProvider,
   },
   {
+    section: 'Model & providers',
     name: 'Provider keys',
     run: async () => {
       const configured = listProfiles().filter((p) => p.keyEnv && getSecret(p.keyEnv));
@@ -113,6 +130,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Channels',
     name: 'Telegram',
     run: async () => {
       const config = loadConfig();
@@ -133,6 +151,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Connectors',
     name: 'Claude Code connector',
     run: async () => {
       const enabled = loadConfig().connectors.claudeCode.enabled;
@@ -143,6 +162,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Connectors',
     name: 'Open Design connector',
     run: async () => {
       const config = loadConfig();
@@ -160,6 +180,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Service',
     name: 'Daemon',
     run: async () => {
       const config = loadConfig();
@@ -176,6 +197,7 @@ const checks: Check[] = [
     },
   },
   {
+    section: 'Workspace',
     name: 'Projects',
     run: async () => {
       const projects = listProjects();
@@ -187,25 +209,40 @@ const checks: Check[] = [
 export async function doctorCommand(): Promise<void> {
   console.log('Amrita doctor\n');
   let failures = 0;
+  let warnings = 0;
+  const issues: { label: string; fix: string }[] = [];
+  let lastSection = '';
+
   for (const check of checks) {
-    let result;
+    if (check.section !== lastSection) {
+      console.log(`${lastSection ? '\n' : ''}${SECTION} ${check.section}`);
+      lastSection = check.section;
+    }
+    let result: CheckResult;
     try {
       result = await check.run();
     } catch (err) {
-      result = { status: 'fail' as const, detail: String(err) };
+      result = { status: 'fail', detail: String(err) };
     }
     const icon = result.status === 'ok' ? OK : result.status === 'warn' ? WARN : FAIL;
     if (result.status === 'fail') failures++;
+    if (result.status === 'warn') warnings++;
     console.log(`  ${icon} ${check.name.padEnd(24)} ${result.detail}`);
-    if (result.fix && result.status !== 'ok') console.log(`      ↳ fix: ${result.fix}`);
+    if (result.fix && result.status !== 'ok') {
+      console.log(`      \x1b[36m→\x1b[0m ${result.fix}`);
+      issues.push({ label: check.name, fix: result.fix });
+    }
   }
+
   console.log();
-  if (failures) {
-    console.log(`${failures} check(s) failing.`);
-    process.exitCode = 1;
-  } else {
-    console.log('All essential checks pass.');
+  if (!issues.length) {
+    console.log('All checks passed. 🎉');
+    return;
   }
+  // Collected, numbered next-steps — the exact commands to run.
+  console.log(`Found ${failures} issue(s) and ${warnings} warning(s) to address:`);
+  issues.forEach((it, i) => console.log(`  ${i + 1}. ${it.label}: ${it.fix}`));
+  if (failures) process.exitCode = 1;
 }
 
 export async function statusCommand(): Promise<void> {
@@ -215,10 +252,13 @@ export async function statusCommand(): Promise<void> {
   })
     .then((r) => r.ok)
     .catch(() => false);
+  const resolved = resolveActiveProviderId(config.model.provider);
+  const providerLabel = config.model.provider === 'auto' ? `auto → ${resolved}` : resolved;
   console.log(`amrita status
   daemon:    ${daemonUp ? `running (http://${config.daemon.host}:${config.daemon.port})` : 'not running'}
-  model:     ${config.model.provider}:${config.model.model}
+  model:     ${providerLabel} / ${config.model.model}
   telegram:  ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}
   projects:  ${listProjects().length}
-  state dir: ${paths.home()}`);
+  state dir: ${paths.home()}
+${daemonUp ? '' : '\n  Run `amrita daemon` to start, or `amrita doctor` for diagnostics.'}`);
 }

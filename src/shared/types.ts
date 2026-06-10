@@ -183,6 +183,8 @@ export interface ChannelAdapter {
 // ---------- Config ----------
 
 export interface AmritaConfig {
+  /** Config schema version, for forward-compatible migrations. */
+  _version: number;
   model: { provider: string; model: string; maxTokens: number };
   auxiliary: { provider: string; model: string } | null;
   fallback: { provider: string; model: string }[];

@@ -13,10 +13,12 @@ Conversation
 Service
   daemon                    Run the daemon in the foreground (web UI + channels + cron)
   gateway                   Alias of daemon
+  service <cmd>             systemd user service: install | status | logs | uninstall
   login-link                Print a one-time web login link
 
 Lifecycle
-  setup                     Interactive setup wizard (provider, model, telegram)
+  setup [section]           Setup wizard; sections: model, credentials, telegram,
+                            connectors, endpoint, webui, review
   status                    Show daemon/config status
   doctor                    Diagnose installation and configuration
   update                    Update Amrita from GitHub
@@ -48,6 +50,10 @@ async function main(): Promise<void> {
     case 'gateway': {
       const { startDaemon } = await import('../daemon/server.ts');
       return startDaemon();
+    }
+    case 'service': {
+      const { serviceCommand } = await import('./commands/service.ts');
+      return serviceCommand(args);
     }
     case 'login-link': {
       const { printLoginLink } = await import('../daemon/auth.ts');

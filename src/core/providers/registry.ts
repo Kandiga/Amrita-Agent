@@ -173,6 +173,18 @@ export function recommendProvider(
   const claude = profiles.find((p) => p.id === 'claude-code');
   if (claude && input.claudeLoggedIn) return claude.id;
   if (current && current.authMode !== 'api_key') return current.id;
+  const configuredApi = profiles.find((p) => p.authMode === 'api_key' && input.hasKey(p.keyEnv));
+  if (configuredApi) return configuredApi.id;
   const firstApi = profiles.find((p) => p.authMode === 'api_key');
   return (firstApi ?? profiles[0]!).id;
+}
+
+/**
+ * Resolve a possibly-`auto` provider id to a concrete one. `auto` (the safe
+ * default) is never itself a profile — it resolves to the recommended healthy
+ * provider so a fresh install is never trapped on a broken API-key default.
+ */
+export function resolveProviderId(providerId: string, input: ProviderHealthInput): string {
+  if (providerId !== 'auto') return providerId;
+  return recommendProvider('auto', listProfiles(), input);
 }
