@@ -847,6 +847,49 @@ export class Store {
       .all(conversationId) as ConversationNode[];
   }
 
+  private static readonly PROJECT_COLS =
+    'id, slug, name, root, created_at AS createdAt, updated_at AS updatedAt';
+
+  getProject(id: string): ProjectRow | undefined {
+    return this.db.prepare(`SELECT ${Store.PROJECT_COLS} FROM projects WHERE id = ?`).get(id) as
+      | ProjectRow
+      | undefined;
+  }
+
+  getProjectBySlug(slug: string): ProjectRow | undefined {
+    return this.db.prepare(`SELECT ${Store.PROJECT_COLS} FROM projects WHERE slug = ?`).get(slug) as
+      | ProjectRow
+      | undefined;
+  }
+
+  listProjects(): ProjectRow[] {
+    return this.db
+      .prepare(`SELECT ${Store.PROJECT_COLS} FROM projects ORDER BY created_at ASC`)
+      .all() as ProjectRow[];
+  }
+
+  getConversation(id: string): ConversationNode | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, title, parent_id AS parentId,
+                created_at AS createdAt, updated_at AS updatedAt, archived_at AS archivedAt
+         FROM conversations WHERE id = ?`,
+      )
+      .get(id) as ConversationNode | undefined;
+  }
+
+  /** Row counts for diagnostics (health). No secret data. */
+  stats(): { projects: number; conversations: number; messages: number; events: number } {
+    const count = (table: string): number =>
+      (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    return {
+      projects: count('projects'),
+      conversations: count('conversations'),
+      messages: count('messages'),
+      events: count('events'),
+    };
+  }
+
   listTasks(
     filters: { projectId?: string; conversationId?: string; status?: TaskStatus } = {},
   ): TaskRow[] {

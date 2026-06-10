@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@amrita/protocol": ["packages/protocol/src/index.ts"],
+      "@amrita/store": ["packages/store/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

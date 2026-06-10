@@ -1,0 +1,18 @@
+{
+  "name": "@amrita/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "amritad — Amrita's local kernel and JSON-RPC control daemon (no provider/tool execution yet)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "amritad": "./src/bin/amritad.ts"
+  },
+  "dependencies": {
+    "@amrita/protocol": "workspace:*",
+    "@amrita/store": "workspace:*",
+    "zod": "^3.24.0"
+  }
+}

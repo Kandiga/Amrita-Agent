@@ -21,6 +21,18 @@ importers:
         specifier: ^3.0.0
         version: 3.2.6(@types/node@22.19.20)
 
+  packages/daemon:
+    dependencies:
+      '@amrita/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@amrita/store':
+        specifier: workspace:*
+        version: link:../store
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   packages/protocol:
     dependencies:
       ulid:
