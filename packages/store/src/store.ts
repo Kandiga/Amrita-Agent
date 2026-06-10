@@ -14,6 +14,7 @@ import {
 } from '@amrita/protocol';
 import Database from 'better-sqlite3';
 import { migrateUp } from './migrate.ts';
+import { applyEventProjection } from './project.ts';
 
 type DB = Database.Database;
 
@@ -195,9 +196,12 @@ export class Store {
   }
 
   /**
-   * Validate an unsealed event, assign a per-conversation monotonic `seq`, spill
-   * an oversized tool result if needed, and persist — all in one transaction.
-   * Stream-only events (model.delta) are rejected: they live only on the wire.
+   * The central write path. Validate an unsealed event, assign a per-conversation
+   * monotonic `seq`, spill an oversized tool result if needed, insert the event
+   * row, then run the read-model projection (`applyEventProjection`) — all in ONE
+   * transaction. If projection fails (FK / CHECK / append-only trigger), the event
+   * insert rolls back too. Stream-only events (model.delta) are rejected before the
+   * transaction: they live only on the wire.
    */
   appendEvent(input: UnsealedEvent): AmritaEvent {
     const unsealed = parseUnsealedEvent(input);
@@ -209,6 +213,7 @@ export class Store {
       const payload = this.maybeSpill(unsealed);
       const sealed = parseEvent({ ...unsealed, seq, payload });
       this.insertEventRow(sealed);
+      applyEventProjection(this.db, sealed); // same-transaction read-model projection
       this.touchConversation(unsealed.conversationId);
       return sealed;
     });
@@ -216,52 +221,33 @@ export class Store {
   }
 
   /**
-   * The hybrid model: a user message becomes BOTH a materialized message row and
-   * a `message.user` event, written in the same transaction so a reader can never
-   * observe one without the other.
+   * The hybrid model, now expressed through the generalized path: a user message
+   * is a `message.user` event whose projection materializes the `messages` row
+   * (id == event id) in the same transaction — so a reader can never observe one
+   * without the other. This is a thin convenience over `appendEvent`.
    */
   recordUserMessage(input: RecordUserMessageInput): { message: MessageRow; event: AmritaEvent } {
-    const tx = this.db.transaction((): { message: MessageRow; event: AmritaEvent } => {
-      const ts = now();
-      const message: MessageRow = {
-        id: newId(),
-        conversationId: input.conversationId,
-        turnId: input.turnId ?? null,
-        role: 'user',
-        text: input.text,
-        createdAt: ts,
-      };
-      this.db
-        .prepare(
-          `INSERT INTO messages (id, conversation_id, turn_id, role, content_json, created_at)
-           VALUES (@id, @conversationId, @turnId, 'user', @contentJson, @createdAt)`,
-        )
-        .run({
-          id: message.id,
-          conversationId: message.conversationId,
-          turnId: message.turnId,
-          contentJson: JSON.stringify({ text: input.text }),
-          createdAt: ts,
-        });
-
-      const seq = this.nextSeq(input.conversationId);
-      const event = parseEvent({
-        id: newId(),
-        seq,
-        ts,
-        projectId: input.projectId,
-        conversationId: input.conversationId,
-        ...(input.turnId ? { turnId: input.turnId } : {}),
-        ...(input.channel ? { channel: input.channel } : {}),
-        origin: 'user',
-        type: 'message.user',
-        payload: { text: input.text },
-      });
-      this.insertEventRow(event);
-      this.touchConversation(input.conversationId);
-      return { message, event };
+    const event = this.appendEvent({
+      id: newId(),
+      ts: now(),
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.channel ? { channel: input.channel } : {}),
+      origin: 'user',
+      type: 'message.user',
+      payload: { text: input.text },
     });
-    return tx();
+    // The message row inserted by the projection is deterministic from the event.
+    const message: MessageRow = {
+      id: event.id,
+      conversationId: input.conversationId,
+      turnId: input.turnId ?? null,
+      role: 'user',
+      text: input.text,
+      createdAt: event.ts,
+    };
+    return { message, event };
   }
 
   private touchConversation(conversationId: string): void {

@@ -378,6 +378,350 @@ describe('lanes persistence', () => {
   });
 });
 
+describe('event projection (WO#1.3)', () => {
+  function setup(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    return { projectId, conversationId };
+  }
+  function evt(
+    projectId: string,
+    conversationId: string,
+    type: string,
+    payload: unknown,
+    over: Record<string, unknown> = {},
+  ): Parameters<Store['appendEvent']>[0] {
+    return {
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId,
+      conversationId,
+      origin: 'agent',
+      type,
+      payload,
+      ...over,
+    } as Parameters<Store['appendEvent']>[0];
+  }
+
+  it('rolls back the event when projection fails (atomicity)', () => {
+    const { projectId, conversationId } = setup();
+    const before = store.getEvents(conversationId).length;
+    // tasks.project_id FK → a non-existent project violates the FK inside the tx
+    expect(() =>
+      store.appendEvent(
+        evt(projectId, conversationId, 'task.created', {
+          taskId: newId(),
+          projectId: newId(),
+          title: 'orphan',
+        }),
+      ),
+    ).toThrow();
+    expect(store.getEvents(conversationId).length).toBe(before); // event not persisted
+    const taskCount = store.db.prepare('SELECT COUNT(*) AS n FROM tasks').get() as { n: number };
+    expect(taskCount.n).toBe(0);
+  });
+
+  it('projects task.created / task.updated / task.completed', () => {
+    const { projectId, conversationId } = setup();
+    const taskId = newId();
+    store.appendEvent(
+      evt(projectId, conversationId, 'task.created', {
+        taskId,
+        projectId,
+        conversationId,
+        title: 'fix bug',
+        status: 'now',
+      }),
+    );
+    let row = store.db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId) as {
+      status: string;
+      title: string;
+    };
+    expect(row.status).toBe('now');
+    expect(row.title).toBe('fix bug');
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'task.updated', {
+        taskId,
+        status: 'later',
+        title: 'fix the PDF bug',
+      }),
+    );
+    row = store.db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId) as {
+      status: string;
+      title: string;
+    };
+    expect(row.status).toBe('later');
+    expect(row.title).toBe('fix the PDF bug');
+
+    store.appendEvent(evt(projectId, conversationId, 'task.completed', { taskId }));
+    row = store.db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId) as {
+      status: string;
+      title: string;
+    };
+    expect(row.status).toBe('done');
+  });
+
+  it('projects decisions append-only (recorded + superseded); triggers still hold', () => {
+    const { projectId, conversationId } = setup();
+    const first = newId();
+    store.appendEvent(
+      evt(projectId, conversationId, 'decision.recorded', {
+        decisionId: first,
+        projectId,
+        text: 'use SQLite',
+      }),
+    );
+    const second = newId();
+    store.appendEvent(
+      evt(projectId, conversationId, 'decision.superseded', {
+        decisionId: second,
+        supersedesId: first,
+        projectId,
+        text: 'use SQLite + WAL',
+      }),
+    );
+    const rows = store.db
+      .prepare('SELECT id, supersedes_id AS s FROM decisions ORDER BY created_at')
+      .all() as { id: string; s: string | null }[];
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.id === second)?.s).toBe(first);
+    // append-only invariant still enforced after projection
+    expect(() =>
+      store.db.prepare('UPDATE decisions SET text = ? WHERE id = ?').run('x', first),
+    ).toThrow(/append-only/);
+    expect(() => store.db.prepare('DELETE FROM decisions WHERE id = ?').run(first)).toThrow(
+      /append-only/,
+    );
+  });
+
+  it('projects memory.updated and memory.consolidated as metadata (content untouched)', () => {
+    const { projectId, conversationId } = setup();
+    const ts = new Date().toISOString();
+    const entryId = newId();
+    store.db
+      .prepare(
+        'INSERT INTO memory_entries (id, scope, project_id, content, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+      )
+      .run(entryId, 'project', projectId, 'remember the brief', ts, ts);
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'memory.updated', {
+        entryId,
+        scope: 'project',
+        projectId,
+        source: 'curated',
+      }),
+    );
+    let row = store.db
+      .prepare('SELECT source, char_count AS cc FROM memory_entries WHERE id = ?')
+      .get(entryId) as { source: string; cc: number };
+    expect(row.source).toBe('curated');
+    expect(row.cc).toBe('remember the brief'.length); // content (and its generated count) untouched
+
+    const resultId = newId();
+    store.db
+      .prepare(
+        'INSERT INTO memory_entries (id, scope, project_id, content, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+      )
+      .run(resultId, 'project', projectId, 'merged note', ts, ts);
+    store.appendEvent(
+      evt(projectId, conversationId, 'memory.consolidated', {
+        resultEntryId: resultId,
+        sourceEntryIds: [entryId],
+        scope: 'project',
+        projectId,
+      }),
+    );
+    row = store.db
+      .prepare('SELECT source, char_count AS cc FROM memory_entries WHERE id = ?')
+      .get(resultId) as { source: string; cc: number };
+    expect(row.source).toBe('consolidated');
+  });
+
+  it('projects provider health into metadata_json without touching secret_ref', () => {
+    const { projectId, conversationId } = setup();
+    const ts = new Date().toISOString();
+    const accountId = newId();
+    store.db
+      .prepare(
+        'INSERT INTO accounts (id, provider, label, auth_mode, secret_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+      )
+      .run(accountId, 'anthropic', 'work', 'api_key', 'ANTHROPIC_API_KEY', ts, ts);
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'provider.degraded', {
+        provider: 'anthropic',
+        accountId,
+        reason: 'credit exhausted',
+      }),
+    );
+    let row = store.db
+      .prepare('SELECT secret_ref AS s, metadata_json AS m FROM accounts WHERE id = ?')
+      .get(accountId) as { s: string; m: string };
+    expect(row.s).toBe('ANTHROPIC_API_KEY'); // secret_ref never touched
+    expect(JSON.parse(row.m).health).toBe('degraded');
+    expect(JSON.parse(row.m).healthReason).toBe('credit exhausted');
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'provider.restored', { provider: 'anthropic', accountId }),
+    );
+    row = store.db
+      .prepare('SELECT secret_ref AS s, metadata_json AS m FROM accounts WHERE id = ?')
+      .get(accountId) as { s: string; m: string };
+    expect(JSON.parse(row.m).health).toBe('restored');
+    expect(JSON.parse(row.m).healthReason ?? null).toBeNull();
+    expect(row.s).toBe('ANTHROPIC_API_KEY');
+  });
+
+  it('projects connector install / update / remove', () => {
+    const { projectId, conversationId } = setup();
+    const connectorId = newId();
+    store.appendEvent(
+      evt(projectId, conversationId, 'connector.installed', {
+        connectorId,
+        slug: 'claude-code',
+        kind: 'cli',
+      }),
+    );
+    let row = store.db.prepare('SELECT status FROM connectors WHERE id = ?').get(connectorId) as {
+      status: string;
+    };
+    expect(row.status).toBe('needs_setup');
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'connector.updated', {
+        connectorId,
+        slug: 'claude-code',
+        status: 'ready',
+        fields: ['status'],
+      }),
+    );
+    row = store.db.prepare('SELECT status FROM connectors WHERE id = ?').get(connectorId) as {
+      status: string;
+    };
+    expect(row.status).toBe('ready');
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'connector.removed', { connectorId, slug: 'claude-code' }),
+    );
+    const gone = store.db
+      .prepare('SELECT COUNT(*) AS n FROM connectors WHERE id = ?')
+      .get(connectorId) as { n: number };
+    expect(gone.n).toBe(0);
+  });
+
+  it('projects settings.updated (upsert) and respects the secret tripwire', () => {
+    const { projectId, conversationId } = setup();
+    store.appendEvent(
+      evt(projectId, conversationId, 'settings.updated', { key: 'theme', value: 'dark' }),
+    );
+    let row = store.db
+      .prepare('SELECT value_json AS v FROM settings WHERE key = ?')
+      .get('theme') as {
+      v: string;
+    };
+    expect(JSON.parse(row.v)).toBe('dark');
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'settings.updated', { key: 'theme', value: 'light' }),
+    );
+    row = store.db.prepare('SELECT value_json AS v FROM settings WHERE key = ?').get('theme') as {
+      v: string;
+    };
+    expect(JSON.parse(row.v)).toBe('light'); // upsert
+
+    // a secret-ish key is rejected by the event schema → the event never persists
+    const before = store.getEvents(conversationId).length;
+    expect(() =>
+      store.appendEvent(
+        evt(projectId, conversationId, 'settings.updated', { key: 'openai_api_key', value: 'x' }),
+      ),
+    ).toThrow();
+    expect(store.getEvents(conversationId).length).toBe(before);
+  });
+
+  it('recordUserMessage still works through the generalized atomic path', () => {
+    const { projectId, conversationId } = setup();
+    const { message, event } = store.recordUserMessage({
+      projectId,
+      conversationId,
+      text: 'hello amrita',
+    });
+    expect(message.role).toBe('user');
+    expect(message.id).toBe(event.id); // the message row id is the event id
+    const row = store.db
+      .prepare(`SELECT role, json_extract(content_json, '$.text') AS t FROM messages WHERE id = ?`)
+      .get(event.id) as { role: string; t: string };
+    expect(row.role).toBe('user');
+    expect(row.t).toBe('hello amrita');
+    expect(store.searchMessages('amrita').length).toBeGreaterThanOrEqual(1); // searchable
+  });
+
+  it('projects the lane lifecycle into the lanes table', () => {
+    const { projectId, conversationId } = setup();
+    const laneId = newId();
+    store.appendEvent(
+      evt(projectId, conversationId, 'lane.spawned', { laneId, kind: 'claude-code' }),
+    );
+    const row = store.db
+      .prepare('SELECT status, project_id AS p FROM lanes WHERE id = ?')
+      .get(laneId) as {
+      status: string;
+      p: string;
+    };
+    expect(row.status).toBe('spawned');
+    expect(row.p).toBe(projectId); // project/conversation taken from the envelope
+
+    const mandate = {
+      laneId,
+      goal: 'fix bug',
+      contextPack: { memory: [], files: [], decisions: [] },
+      scope: { network: 'none' },
+      budget: { maxTurns: 5 },
+      approvals: 'forward',
+      deliverables: [],
+    };
+    store.appendEvent(evt(projectId, conversationId, 'lane.mandate', mandate));
+    const mrow = store.db
+      .prepare('SELECT mandate_json AS m, budget_json AS b FROM lanes WHERE id = ?')
+      .get(laneId) as { m: string; b: string };
+    expect(JSON.parse(mrow.m).goal).toBe('fix bug');
+    expect(JSON.parse(mrow.b).maxTurns).toBe(5);
+
+    store.appendEvent(
+      evt(projectId, conversationId, 'lane.progress', { note: 'working' }, { laneId }),
+    );
+    expect(
+      (store.db.prepare('SELECT status FROM lanes WHERE id = ?').get(laneId) as { status: string })
+        .status,
+    ).toBe('running');
+
+    const report = {
+      laneId,
+      summary: 'done',
+      artifacts: [],
+      decisions: [],
+      tasks: [],
+      followUps: [],
+      usage: { inputTokens: 1, outputTokens: 1 },
+      exit: 'done',
+    };
+    store.appendEvent(evt(projectId, conversationId, 'lane.merge_report', report));
+    const merged = store.db
+      .prepare('SELECT status, merge_json AS m FROM lanes WHERE id = ?')
+      .get(laneId) as { status: string; m: string };
+    expect(merged.status).toBe('merging');
+    expect(JSON.parse(merged.m).summary).toBe('done');
+
+    store.appendEvent(evt(projectId, conversationId, 'lane.completed', { laneId, exit: 'done' }));
+    expect(
+      (store.db.prepare('SELECT status FROM lanes WHERE id = ?').get(laneId) as { status: string })
+        .status,
+    ).toBe('completed');
+  });
+});
+
 // ── helper ──────────────────────────────────────────────────────────────────
 function unsealed(
   projectId: string,

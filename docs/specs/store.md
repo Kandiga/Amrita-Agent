@@ -65,12 +65,14 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 
 - `openStore({path, spillDir?})` — opens SQLite, sets `journal_mode=WAL`, `foreign_keys=ON`,
   `busy_timeout`, and runs `migrateUp`.
-- `appendEvent(unsealed)` — validates (`parseUnsealedEvent`), rejects stream-only types, then in one
-  transaction: assigns `seq = COALESCE(MAX(seq),0)+1` for the conversation, spills an oversized tool
-  result, inserts the row, touches `conversations.updated_at`, and returns the sealed `AmritaEvent`.
-- `recordUserMessage({projectId, conversationId, text, turnId?, channel?})` — the **hybrid model**:
-  writes a `messages` row *and* a `message.user` event in the same transaction, so a reader can never
-  see one without the other.
+- `appendEvent(unsealed)` — the **central write path**. Validates (`parseUnsealedEvent`), rejects
+  stream-only types, then in one transaction: assigns `seq = COALESCE(MAX(seq),0)+1`, spills an
+  oversized tool result, inserts the event row, runs `applyEventProjection` (read-model projection),
+  touches `conversations.updated_at`, and returns the sealed `AmritaEvent`. If projection fails, the
+  event insert rolls back too — there is no event without its projection.
+- `recordUserMessage({projectId, conversationId, text, turnId?, channel?})` — a thin convenience over
+  `appendEvent`: emits a `message.user` event whose projection materializes the `messages` row (id ==
+  event id) in the same transaction. (Formerly a bespoke two-write method; now the generalized path.)
 - `getEvents(conversationId, sinceSeq?)` — ordered replay; reconstructs events through `parseEvent`
   (null columns dropped so the strict envelope accepts them).
 - `searchMessages(query, {limit?, conversationId?})` — FTS5 `MATCH`, `ORDER BY rank` (bm25, lower =
@@ -83,3 +85,21 @@ serialized result to `<spillDir>/<artifactId>.json`, inserts an `artifacts` row,
 event payload to `{spilledArtifactId, preview (≤500 chars), isError}`. Small results stay inline and
 create no artifact. This keeps the event log compact and replayable while preserving a pointer to the
 full payload.
+
+## Projection reducer (`project.ts`, ADR-0006)
+
+`applyEventProjection(db, event)` runs inside `appendEvent`'s transaction and materializes read-model
+rows. It is pure-except-SQLite, deterministic (timestamps come from `event.ts`), fails closed (a
+constraint violation rolls back the event), and never writes a secret. Mapping:
+
+| Event namespace | Table | Behaviour |
+|---|---|---|
+| `message.*` | `messages` (+FTS) | insert one row, `id == event.id`; `content_json` is the full payload |
+| `task.created/updated/completed` | `tasks` | insert / patch mutable fields / `status='done'` |
+| `decision.recorded/superseded` | `decisions` | **INSERT only** (`supersedes_id` on the new row); append-only triggers honored |
+| `memory.updated/consolidated` | `memory_entries` | metadata update of an existing row (content never from events); no-op if absent |
+| `provider.connected/degraded/restored` | `accounts` | `metadata_json.health` only — never `secret_ref` |
+| `connector.installed/updated/removed` | `connectors` | insert / status patch / delete |
+| `settings.updated` | `settings` | upsert; secret-ish keys already blocked by the event schema + CHECK |
+| `lane.spawned/mandate/progress/merge_report/completed/aborted` | `lanes` | state machine; project/conversation from the envelope |
+| everything else | — | log-only (no projection) |
