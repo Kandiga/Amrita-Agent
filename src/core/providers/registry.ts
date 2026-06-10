@@ -129,3 +129,50 @@ export function providerStateLabel(profile: ProviderProfile): ProviderState {
   if (profile.authMode === 'local_cli_login') return 'local-login';
   return profile.keyEnv && getSecret(profile.keyEnv) ? 'configured' : 'needs-setup';
 }
+
+/**
+ * Inputs needed to judge provider health without doing I/O inside the pure
+ * helpers — the caller supplies the live facts (CLI login state, key presence)
+ * so recommendation/health logic stays deterministic and unit-testable.
+ */
+export interface ProviderHealthInput {
+  /** Result of probing `claude auth status` — is the local Claude login usable? */
+  claudeLoggedIn: boolean;
+  /** Whether a secret is present for a given env var. */
+  hasKey: (keyEnv: string | null) => boolean;
+}
+
+/**
+ * Is this provider usable right now?
+ * - api_key         → a key is present
+ * - local_cli_login → the CLI reports logged in
+ * - local_endpoint  → treated as configured (the user set the endpoint; live
+ *                     reachability is `amrita doctor`'s job, not setup's)
+ */
+export function isProviderHealthy(profile: ProviderProfile, input: ProviderHealthInput): boolean {
+  if (profile.authMode === 'api_key') return input.hasKey(profile.keyEnv);
+  if (profile.authMode === 'local_cli_login') return input.claudeLoggedIn;
+  return true;
+}
+
+/**
+ * Deterministic recommendation for the setup default — never traps the user on
+ * a broken API-key provider:
+ *   1. keep the current provider if it is healthy / configured
+ *   2. else prefer Claude Code local login when it is logged in
+ *   3. else keep an explicitly-chosen login/local provider
+ *   4. else fall back to the first API-key provider (which will need a key)
+ */
+export function recommendProvider(
+  currentId: string,
+  profiles: ProviderProfile[],
+  input: ProviderHealthInput,
+): string {
+  const current = profiles.find((p) => p.id === currentId);
+  if (current && isProviderHealthy(current, input)) return current.id;
+  const claude = profiles.find((p) => p.id === 'claude-code');
+  if (claude && input.claudeLoggedIn) return claude.id;
+  if (current && current.authMode !== 'api_key') return current.id;
+  const firstApi = profiles.find((p) => p.authMode === 'api_key');
+  return (firstApi ?? profiles[0]!).id;
+}

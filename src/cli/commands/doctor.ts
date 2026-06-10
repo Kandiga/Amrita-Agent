@@ -25,6 +25,40 @@ function binaryExists(name: string): boolean {
   }
 }
 
+export type CheckResult = { status: 'ok' | 'warn' | 'fail'; detail: string; fix?: string };
+
+/**
+ * Health of the active model provider. Login/local providers are probed
+ * honestly; an api-key provider only FAILs when it is explicitly selected and
+ * its key is missing — never trapping the user on an unfinished setup.
+ */
+export async function checkModelProvider(): Promise<CheckResult> {
+  const config = loadConfig();
+  try {
+    const profile = resolveProfile(config.model.provider);
+    if (profile.authMode === 'local_endpoint') {
+      return { status: 'ok', detail: `${profile.id} (local endpoint ${profile.baseUrl})` };
+    }
+    if (profile.authMode === 'local_cli_login') {
+      const st = claudeAuthStatus();
+      if (!st.installed) {
+        return { status: 'warn', detail: `${profile.id}: claude CLI not installed`, fix: 'install Claude Code, or `amrita setup` → API provider' };
+      }
+      if (!st.loggedIn) {
+        return { status: 'warn', detail: `${profile.id}: installed but not logged in`, fix: 'claude auth login' };
+      }
+      const sub = st.subscriptionType ? ` (subscription / Agent SDK credit, ${st.subscriptionType})` : ' (subscription / Agent SDK credit)';
+      return { status: 'ok', detail: `${profile.id}: logged in via Claude Code${sub} / ${config.model.model}` };
+    }
+    const key = profile.keyEnv ? getSecret(profile.keyEnv) : null;
+    return key
+      ? { status: 'ok', detail: `${profile.id} / ${config.model.model} (key ${redactSecret(key)})` }
+      : { status: 'fail', detail: `${profile.id}: no ${profile.keyEnv}`, fix: 'amrita setup' };
+  } catch (err) {
+    return { status: 'fail', detail: String(err), fix: 'fix model.provider in config' };
+  }
+}
+
 const checks: Check[] = [
   {
     name: 'Node version',
@@ -64,32 +98,7 @@ const checks: Check[] = [
   },
   {
     name: 'Model provider',
-    run: async () => {
-      const config = loadConfig();
-      try {
-        const profile = resolveProfile(config.model.provider);
-        if (profile.authMode === 'local_endpoint') {
-          return { status: 'ok', detail: `${profile.id} (local endpoint ${profile.baseUrl})` };
-        }
-        if (profile.authMode === 'local_cli_login') {
-          const st = claudeAuthStatus();
-          if (!st.installed) {
-            return { status: 'warn', detail: `${profile.id}: claude CLI not installed`, fix: 'install Claude Code, or `amrita setup` → API provider' };
-          }
-          if (!st.loggedIn) {
-            return { status: 'warn', detail: `${profile.id}: installed but not logged in`, fix: 'claude auth login' };
-          }
-          const sub = st.subscriptionType ? `, ${st.subscriptionType}` : '';
-          return { status: 'ok', detail: `${profile.id} (logged in${sub}) / ${config.model.model}` };
-        }
-        const key = profile.keyEnv ? getSecret(profile.keyEnv) : null;
-        return key
-          ? { status: 'ok', detail: `${profile.id} / ${config.model.model} (key ${redactSecret(key)})` }
-          : { status: 'fail', detail: `${profile.id}: no ${profile.keyEnv}`, fix: 'amrita setup' };
-      } catch (err) {
-        return { status: 'fail', detail: String(err), fix: 'fix model.provider in config' };
-      }
-    },
+    run: checkModelProvider,
   },
   {
     name: 'Provider keys',
