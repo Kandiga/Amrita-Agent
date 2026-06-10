@@ -384,6 +384,51 @@ export class Store {
     return { message, event };
   }
 
+  /**
+   * Record an assistant message — a `message.agent` event whose projection
+   * materializes the `messages` row (role `agent`, id == event id) atomically,
+   * exactly like {@link recordUserMessage}. Used by the chat turn runtime.
+   */
+  recordAgentMessage(input: {
+    projectId: string;
+    conversationId: string;
+    text: string;
+    turnId?: string;
+    channel?: EventChannel;
+  }): { message: MessageRow; event: AmritaEvent } {
+    const event = this.appendEvent({
+      id: newId(),
+      ts: now(),
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.channel ? { channel: input.channel } : {}),
+      origin: 'agent',
+      type: 'message.agent',
+      payload: { text: input.text },
+    });
+    const message: MessageRow = {
+      id: event.id,
+      conversationId: input.conversationId,
+      turnId: input.turnId ?? null,
+      role: 'agent',
+      text: input.text,
+      createdAt: event.ts,
+    };
+    return { message, event };
+  }
+
+  /** Recent messages in a conversation (oldest-first), for context assembly. */
+  listMessages(conversationId: string, opts: { limit?: number } = {}): MessageRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, conversation_id AS conversationId, turn_id AS turnId, role,
+                json_extract(content_json, '$.text') AS text, created_at AS createdAt
+         FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+      )
+      .all(conversationId, opts.limit ?? 200) as MessageRow[];
+  }
+
   private touchConversation(conversationId: string): void {
     this.db
       .prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')

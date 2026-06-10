@@ -47,7 +47,17 @@ amrita memory search <QUERY> [--scope user|project] [--project ID_OR_SLUG] --db 
 amrita account connect --provider PROVIDER [--label LABEL] [--auth-mode MODE] --db PATH
 amrita account bind-secret <ACCOUNT_ID> <ENV_NAME> --db PATH
 amrita account status <ACCOUNT_ID> --db PATH
+
+amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--model MODEL] --db PATH
+amrita provider list --db PATH
 ```
+
+`amrita chat` runs one turn through the kernel: it records your message, calls the provider boundary
+(default **`mock`**, deterministic), and prints the assistant reply plus a `(provider · model · in/out
+tok)` metadata line (or the full result with `--json`). With no `--conversation`, it uses the project's
+default conversation (WO#2.2). Requesting a real provider (e.g. `--provider anthropic`) returns a safe
+error — real adapters are not implemented yet. `amrita provider list` shows each provider's
+availability and which env var a real one would need (a NAME, never a value).
 
 ## Project & conversation resolution
 
@@ -69,6 +79,6 @@ your environment.
 
 ## Not implemented yet
 
-Chat with a model, streaming responses, provider runtime, Telegram, web UI, lanes/tools, and
-installer/update are future work — the CLI today is for operating projects, memory, tasks, decisions,
-and provider config locally.
+Real model providers (only the deterministic `mock` runs today), streaming responses, Telegram, web
+UI, lanes/tools, and installer/update are future work. `amrita chat` exercises the full turn path
+against the mock provider; wiring real (async) adapters is a later WO (ADR-0011).

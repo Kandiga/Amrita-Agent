@@ -1,4 +1,10 @@
-import type { AmritaEvent, ConversationRow, ProjectRow } from '@amrita/protocol';
+import {
+  type AmritaEvent,
+  type ConversationRow,
+  type ProjectRow,
+  type UnsealedEvent,
+  newId,
+} from '@amrita/protocol';
 import {
   type AccountRow,
   type AuthMode,
@@ -16,7 +22,36 @@ import {
   type TaskStatus,
   openStore,
 } from '@amrita/store';
+import { type ChatUsage, ProviderError, type ProviderInfo, ProviderRegistry } from './provider.ts';
 import { clean } from './util.ts';
+
+/** A non-streaming chat turn request. */
+export interface ChatTurnInput {
+  conversationId: string;
+  text: string;
+  provider?: string;
+  model?: string;
+  /** Request a real provider account — currently returns a safe "not implemented" error. */
+  accountId?: string;
+  /** Record the user message and stop before invoking the provider. */
+  dryRun?: boolean;
+  channel?: EntityWriteOpts['channel'];
+}
+
+/** The result of a chat turn. Secret-free by construction. */
+export interface ChatTurnResult {
+  turnId: string;
+  provider: string;
+  model: string;
+  userMessageId: string;
+  userEvent: AmritaEvent;
+  dryRun: boolean;
+  assistantMessageId: string | null;
+  assistantEvent: AmritaEvent | null;
+  text: string | null;
+  finishReason: string | null;
+  usage: ChatUsage | null;
+}
 
 /** What `amritad` reports for `health`. Contains no secrets. */
 export interface KernelHealth {
@@ -44,6 +79,7 @@ export class AmritaKernel {
   readonly store: Store;
   readonly dbPath: string;
   readonly startedAt: string;
+  private readonly providers = new ProviderRegistry();
 
   private constructor(store: Store, dbPath: string, startedAt: string) {
     this.store = store;
@@ -133,6 +169,130 @@ export class AmritaKernel {
 
   listEvents(conversationId: string, sinceSeq?: number): AmritaEvent[] {
     return this.store.getEvents(conversationId, sinceSeq ?? 0);
+  }
+
+  // ── chat turn + providers ────────────────────────────────────────────────
+
+  listProviders(): ProviderInfo[] {
+    return this.providers.list();
+  }
+
+  /** Append a turn-scoped event (turn/model namespaces) via the Store API. */
+  private emitTurnEvent(
+    projectId: string,
+    conversationId: string,
+    turnId: string,
+    type: string,
+    payload: unknown,
+  ): AmritaEvent {
+    return this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId,
+      conversationId,
+      turnId,
+      origin: 'agent',
+      type,
+      payload,
+    } as UnsealedEvent);
+  }
+
+  /**
+   * Run one non-streaming chat turn: record the user message, invoke the provider
+   * boundary (a side effect, OUTSIDE any store transaction), then persist the
+   * assistant message + turn/model events. Defaults to the deterministic `mock`
+   * provider. Requesting a real provider/account returns a safe structured error.
+   * The result contains no secret values.
+   */
+  runChatTurn(input: ChatTurnInput): ChatTurnResult {
+    const conv = this.store.getConversation(input.conversationId);
+    if (!conv)
+      throw new ProviderError('not_found', `no such conversation: ${input.conversationId}`);
+    const projectId = conv.projectId;
+
+    // Requesting a real account is not runnable yet — fail safely (no secret read).
+    if (input.accountId) {
+      const status = this.store.getProviderConfigStatus(input.accountId);
+      if (!status) throw new ProviderError('not_found', `no such account: ${input.accountId}`);
+      throw new ProviderError(
+        'provider_unavailable',
+        `real provider execution is not implemented yet (account status: ${status})`,
+      );
+    }
+
+    const providerId = input.provider ?? 'mock';
+    const provider = this.providers.resolveChat(providerId); // throws ProviderError if unavailable
+    const model = input.model ?? (providerId === 'mock' ? 'mock-default' : 'default');
+    const turnId = newId();
+    const channel = input.channel;
+
+    const user = this.store.recordUserMessage({
+      projectId,
+      conversationId: input.conversationId,
+      text: input.text,
+      turnId,
+      ...(channel ? { channel } : {}),
+    });
+
+    if (input.dryRun) {
+      return {
+        turnId,
+        provider: providerId,
+        model,
+        userMessageId: user.message.id,
+        userEvent: user.event,
+        dryRun: true,
+        assistantMessageId: null,
+        assistantEvent: null,
+        text: null,
+        finishReason: null,
+        usage: null,
+      };
+    }
+
+    this.emitTurnEvent(projectId, input.conversationId, turnId, 'turn.started', {
+      trigger: 'user',
+    });
+    this.emitTurnEvent(projectId, input.conversationId, turnId, 'model.request', {
+      provider: providerId,
+      model,
+      role: 'main',
+    });
+
+    // Provider call — pure side effect, outside any store transaction.
+    const messages = this.store
+      .listMessages(input.conversationId)
+      .map((m) => ({ role: m.role, text: m.text }));
+    const resp = provider.generate({ messages, model });
+
+    this.emitTurnEvent(projectId, input.conversationId, turnId, 'model.response', {
+      text: resp.text,
+      finishReason: resp.finishReason,
+    });
+    this.emitTurnEvent(projectId, input.conversationId, turnId, 'model.usage', resp.usage);
+    const assistant = this.store.recordAgentMessage({
+      projectId,
+      conversationId: input.conversationId,
+      text: resp.text,
+      turnId,
+    });
+    this.emitTurnEvent(projectId, input.conversationId, turnId, 'turn.completed', {
+      usage: resp.usage,
+    });
+
+    return {
+      turnId,
+      provider: providerId,
+      model,
+      userMessageId: user.message.id,
+      userEvent: user.event,
+      dryRun: false,
+      assistantMessageId: assistant.message.id,
+      assistantEvent: assistant.event,
+      text: resp.text,
+      finishReason: resp.finishReason,
+      usage: resp.usage,
+    };
   }
 
   // ── tasks ───────────────────────────────────────────────────────────────────

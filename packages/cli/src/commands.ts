@@ -31,6 +31,18 @@ interface MemLite {
   id: string;
   content: string;
 }
+interface ChatTurnLite {
+  provider: string;
+  model: string;
+  text: string | null;
+  usage: { inputTokens: number; outputTokens: number } | null;
+}
+interface ProviderInfoLite {
+  id: string;
+  available: boolean;
+  requiresEnv: string | null;
+  envPresent: boolean;
+}
 interface HealthLite {
   schemaVersion: number;
   dbPath: string;
@@ -282,6 +294,50 @@ export const COMMANDS: Record<string, Command> = {
       if (!accountId) throw new CliError('usage: amrita account status <ACCOUNT_ID>');
       const r = client.call<{ status: string | null }>('accounts.configStatus', { accountId });
       return { result: r, summary: `status: ${r.status ?? 'unknown'}` };
+    },
+  },
+
+  chat: {
+    describe: 'run a chat turn (mock provider by default)',
+    run(client, { positionals, flags }) {
+      const text = positionals.join(' ');
+      if (!text) {
+        throw new CliError(
+          'usage: amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--model MODEL]',
+        );
+      }
+      const ctx = resolveWriteContext(client, {
+        project: strFlag(flags, 'project'),
+        conversation: strFlag(flags, 'conversation'),
+      });
+      const provider = strFlag(flags, 'provider');
+      const model = strFlag(flags, 'model');
+      const turn = client.call<ChatTurnLite>('chat.turn', {
+        conversationId: ctx.conversationId,
+        text,
+        channel: 'cli',
+        ...(provider ? { provider } : {}),
+        ...(model ? { model } : {}),
+      });
+      const u = turn.usage;
+      const meta = `(${turn.provider} · ${turn.model}${u ? ` · ${u.inputTokens}/${u.outputTokens} tok` : ''})`;
+      return { result: turn, summary: `${turn.text ?? '(no reply)'}\n${meta}` };
+    },
+  },
+
+  'provider list': {
+    describe: 'list chat providers and availability',
+    run(client) {
+      const ps = client.call<ProviderInfoLite[]>('providers.list');
+      const summary = ps
+        .map((p) => {
+          const env = p.requiresEnv
+            ? ` (needs ${p.requiresEnv}: ${p.envPresent ? 'present' : 'missing'})`
+            : '';
+          return `${p.id}\t${p.available ? 'available' : 'unavailable'}${env}`;
+        })
+        .join('\n');
+      return { result: ps, summary };
     },
   },
 };

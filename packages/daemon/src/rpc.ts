@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AmritaKernel } from './kernel.ts';
+import { ProviderError } from './provider.ts';
 import { clean } from './util.ts';
 
 /**
@@ -17,6 +18,7 @@ export const RPC_ERROR_CODES = [
   'invalid_params',
   'not_found',
   'conflict',
+  'provider_unavailable',
   'internal',
 ] as const;
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
@@ -209,6 +211,20 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
     (k, p) => k.listLanes(clean(p)),
   ),
+
+  'chat.turn': def(
+    z.object({
+      conversationId: z.string(),
+      text: z.string().min(1),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+      accountId: z.string().optional(),
+      dryRun: z.boolean().optional(),
+      channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
+    }),
+    (k, p) => k.runChatTurn(clean(p)),
+  ),
+  'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
 };
 
 /** The stable list of supported method names. */
@@ -247,6 +263,10 @@ export function dispatch(kernel: AmritaKernel, raw: unknown): RpcResponse {
     return ok(id, m.run(kernel, params.data));
   } catch (e) {
     // Never leak a stack trace; map the message to a structured code.
+    if (e instanceof ProviderError) {
+      const code = e.code === 'unknown_provider' ? 'invalid_params' : e.code;
+      return err(id, code, e.message);
+    }
     const message = e instanceof Error ? e.message : String(e);
     return err(id, classify(message), message);
   }

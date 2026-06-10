@@ -63,6 +63,13 @@ deterministic and free of provider/tool/lane execution.
 | `accounts.configStatus` | `{accountId}` | `{status}` |
 | `connectors.list` | — | connector rows |
 | `lanes.list` | `{projectId?, conversationId?, status?}` | lane rows |
+| `chat.turn` | `{conversationId, text, provider?, model?, accountId?, dryRun?, channel?}` | turn result (secret-free) |
+| `providers.list` | — | provider availability (no secret values) |
+
+A **chat turn** records the user message, calls the provider boundary (default `mock`), and persists
+the assistant message + `turn.*`/`model.*` events (ADR-0011). The assistant message is a
+`message.agent` (searchable). Requesting a real provider/account returns a `provider_unavailable`
+error — real adapters are deferred, and no secret value is ever read or returned.
 
 Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the originating/system
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to

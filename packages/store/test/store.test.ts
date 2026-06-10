@@ -1169,6 +1169,45 @@ describe('secure config binding + memory FTS (WO#1.5)', () => {
   });
 });
 
+describe('agent messages + context (WO#2.3)', () => {
+  it('recordAgentMessage projects a role-agent row atomically and is searchable', () => {
+    const projectId = project();
+    const c = store.createConversation({ projectId }).id;
+    store.recordUserMessage({ projectId, conversationId: c, text: 'fix the export bug' });
+    const { message, event } = store.recordAgentMessage({
+      projectId,
+      conversationId: c,
+      text: 'I fixed the RTL export rendering',
+    });
+    expect(event.type).toBe('message.agent');
+    expect(message.role).toBe('agent');
+    expect(message.id).toBe(event.id); // deterministic id == event id
+
+    const msgs = store.listMessages(c);
+    expect(msgs.map((m) => m.role)).toEqual(['user', 'agent']);
+    expect(msgs[1]?.text).toContain('RTL');
+    expect(store.searchMessages('RTL').some((h) => h.role === 'agent')).toBe(true);
+
+    // event + message stay atomic: two of each, never one without the other
+    expect(store.getEvents(c)).toHaveLength(2);
+    const n = (
+      store.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(c) as {
+        n: number;
+      }
+    ).n;
+    expect(n).toBe(2);
+  });
+
+  it('listMessages respects a limit and ordering', () => {
+    const projectId = project();
+    const c = store.createConversation({ projectId }).id;
+    store.recordUserMessage({ projectId, conversationId: c, text: 'first' });
+    store.recordAgentMessage({ projectId, conversationId: c, text: 'second' });
+    expect(store.listMessages(c).map((m) => m.text)).toEqual(['first', 'second']);
+    expect(store.listMessages(c, { limit: 1 }).map((m) => m.text)).toEqual(['first']);
+  });
+});
+
 // ── helper ──────────────────────────────────────────────────────────────────
 function unsealed(
   projectId: string,

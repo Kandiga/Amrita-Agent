@@ -144,6 +144,37 @@ describe('amrita CLI', () => {
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');
   });
 
+  it('chat runs a mock turn and prints the assistant reply', () => {
+    cli(['project', 'ensure', 'crm']);
+    const r = cli(['chat', 'fix the PDF export bug', '--project', 'crm']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('[mock:');
+    expect(r.out).toContain('PDF export');
+    expect(r.out).toContain('tok'); // metadata line
+    const j = json<{ provider: string; text: string }>(
+      cli(['chat', 'hello', '--project', 'crm', '--json']),
+    );
+    expect(j.provider).toBe('mock');
+    expect(j.text).toContain('hello');
+  });
+
+  it('provider list shows mock available and scaffolds unavailable (no secrets)', () => {
+    const r = cli(['provider', 'list']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('mock\tavailable');
+    expect(r.out).toContain('anthropic');
+    expect(r.out).toContain('unavailable');
+    expect(r.out).not.toMatch(/sk-[a-z]/i);
+  });
+
+  it('chat with an unavailable provider fails non-zero, safely', () => {
+    cli(['project', 'ensure', 'crm']);
+    const r = cli(['chat', 'hi', '--project', 'crm', '--provider', 'anthropic']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('not implemented');
+    expect(r.err).not.toMatch(/sk-[a-z]/i);
+  });
+
   it('usage errors exit non-zero', () => {
     expect(cli(['task', 'create', '--project', 'crm']).code).toBe(2); // missing --title
     // missing --db entirely
