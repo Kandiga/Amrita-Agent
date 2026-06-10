@@ -3,8 +3,19 @@ import type {
   InboundMessage,
   OutboundMessage,
 } from '../../shared/types.ts';
-import { getSecret } from '../../shared/config.ts';
+import { getSecret, loadConfig } from '../../shared/config.ts';
 import { log } from '../../shared/util.ts';
+
+/**
+ * Authorization: Telegram exposes shell/file tools, so the bot is owner-only.
+ * Deny-by-default — if no allowlist is configured, every user is rejected
+ * (the owner must add their numeric id to channels.telegram.allowedUserIds).
+ */
+export function telegramUserAllowed(userId: number | undefined): boolean {
+  if (userId === undefined) return false;
+  const ids = loadConfig().channels.telegram.allowedUserIds;
+  return ids.length > 0 && ids.includes(userId);
+}
 
 /**
  * Telegram channel via the raw Bot API (long-polling — no inbound ports,
@@ -73,6 +84,12 @@ export function telegramAdapter(): ChannelAdapter {
       // Validate token before looping.
       const me = (await api('getMe', {})) as { username?: string };
       log('telegram', `connected as @${me.username}`);
+      if (loadConfig().channels.telegram.allowedUserIds.length === 0) {
+        log(
+          'telegram',
+          'WARNING: channels.telegram.allowedUserIds is empty — all users are denied. Add your numeric Telegram id to authorize.',
+        );
+      }
       await api('setMyCommands', {
         commands: [
           { command: 'projects', description: 'Switch to a project' },
@@ -96,16 +113,25 @@ export function telegramAdapter(): ChannelAdapter {
             for (const update of updates) {
               offset = Math.max(offset, update.update_id + 1);
               if (update.message?.text) {
+                const fromId = update.message.from?.id;
+                if (!telegramUserAllowed(fromId)) {
+                  log('telegram', `dropped message from unauthorized user ${fromId ?? '?'}`);
+                  continue;
+                }
                 // Handle each message without blocking the poll loop.
                 void onMessage({
                   channel: 'telegram',
                   chatId: String(update.message.chat.id),
-                  userId: String(update.message.from?.id ?? ''),
+                  userId: String(fromId ?? ''),
                   text: update.message.text,
                 }).catch((err) => log('telegram', `handler error: ${err}`));
               } else if (update.callback_query) {
                 const cb = update.callback_query;
                 void api('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
+                if (!telegramUserAllowed(cb.from.id)) {
+                  log('telegram', `dropped callback from unauthorized user ${cb.from.id}`);
+                  continue;
+                }
                 if (cb.data && cb.message) {
                   void onMessage({
                     channel: 'telegram',

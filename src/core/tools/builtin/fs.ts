@@ -1,18 +1,38 @@
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
-import { resolve, dirname, isAbsolute } from 'node:path';
+import { realpathSync, existsSync } from 'node:fs';
+import { resolve, dirname, isAbsolute, sep } from 'node:path';
 import type { ToolContext } from '../../../shared/types.ts';
 import { registerTool } from '../registry.ts';
 
 /**
  * Path policy: project-bound sessions resolve relative paths against the
  * project workingDir and may not escape it. Absolute paths are allowed only
- * for main-Amrita sessions (server owner context).
+ * for main-Amrita sessions (server owner context); inside a project they are
+ * rejected outright. Symlink targets are resolved so a link inside the jail
+ * cannot redirect reads/writes outside it.
  */
+function withinBase(candidate: string, base: string): boolean {
+  return candidate === base || candidate.startsWith(base + sep);
+}
+
 function resolvePath(raw: string, ctx: ToolContext): string {
   if (ctx.workingDir) {
-    const full = isAbsolute(raw) ? raw : resolve(ctx.workingDir, raw);
-    if (!full.startsWith(resolve(ctx.workingDir))) {
+    // Only paths relative to the working directory are permitted in a project.
+    if (isAbsolute(raw)) {
+      throw new Error(`Absolute paths are not allowed in a project: ${raw}`);
+    }
+    const base = realpathSync(resolve(ctx.workingDir));
+    // resolve() collapses `..` segments before the boundary check.
+    const full = resolve(base, raw);
+    if (!withinBase(full, base)) {
       throw new Error(`Path escapes the project working directory: ${raw}`);
+    }
+    // Symlink defense: real-resolve the nearest existing ancestor (the target
+    // itself may not exist yet on a write) and re-check the boundary.
+    let probe = full;
+    while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
+    if (!withinBase(realpathSync(probe), base)) {
+      throw new Error(`Path escapes the project working directory via symlink: ${raw}`);
     }
     return full;
   }

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import '../core/tools/index.ts';
 import '../connectors/index.ts';
@@ -73,8 +73,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         res.end('<h3>Link expired.</h3><p>Run <code>amrita login-link</code> for a fresh one.</p>');
         return;
       }
+      // Mark the cookie Secure when the connection is (or terminates) over TLS,
+      // so the session token is never sent in cleartext.
+      const xfProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+      const encrypted = (req.socket as { encrypted?: boolean }).encrypted === true;
+      const httpsPublic = (loadConfig().daemon.publicUrl ?? '').startsWith('https://');
+      const secure = xfProto === 'https' || encrypted || httpsPublic;
       res.writeHead(302, {
-        'set-cookie': `amrita_session=${session}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+        'set-cookie': `amrita_session=${session}; HttpOnly; ${secure ? 'Secure; ' : ''}SameSite=Lax; Path=/; Max-Age=2592000`,
         location: '/',
       });
       res.end();
@@ -83,15 +89,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     // ---- static web UI (login screen handles unauthenticated state client-side) ----
     if (req.method === 'GET' && !path.startsWith('/api/')) {
-      const file = path === '/' ? '/index.html' : path;
-      const full = join(webRoot, file.replaceAll('..', ''));
-      if (existsSync(full) && !full.endsWith('/')) {
+      // Anchor the request under webRoot and verify containment — never trust
+      // the raw path. Only serve files of a known content type.
+      const base = resolve(webRoot);
+      const full = resolve(base, '.' + (path === '/' ? '/index.html' : path));
+      const contained = full === base || full.startsWith(base + sep);
+      if (contained && existsSync(full) && !full.endsWith('/')) {
         const ext = full.slice(full.lastIndexOf('.'));
-        res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' });
-        res.end(readFileSync(full));
-        return;
+        const mime = MIME[ext];
+        if (mime) {
+          res.writeHead(200, { 'content-type': mime });
+          res.end(readFileSync(full));
+          return;
+        }
       }
-      // SPA fallback
+      // SPA fallback (also covers unknown types and out-of-root requests).
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(join(webRoot, 'index.html')));
       return;
@@ -197,7 +209,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         'model.model',
         'channels.telegram.enabled',
         'connectors.claudeCode.enabled',
-        'connectors.claudeCode.autonomy',
+        // 'connectors.claudeCode.autonomy' is deliberately NOT web-settable:
+        // switching to 'auto' (bypassPermissions) requires a host-side config
+        // edit, keeping that escalation out of band from the web UI.
         'connectors.openDesign.enabled',
         'connectors.openDesign.baseUrl',
         'promptEngineer.enabled',

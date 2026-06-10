@@ -91,6 +91,33 @@ test('daemon: secret POST whitelists names and rejects empties', async () => {
   assert.equal(ok.status, 200);
 });
 
+test('daemon: claudeCode.autonomy is not web-settable', async () => {
+  const res = await post('/api/settings', { key: 'connectors.claudeCode.autonomy', value: 'auto' });
+  assert.equal(res.status, 400);
+  assert.match((await res.json() as { error: string }).error, /not allowed/);
+});
+
+test('daemon: session cookie gets Secure only over TLS', async () => {
+  const r1 = await fetch(`${base}/auth/${createMagicLink()}`, { redirect: 'manual' });
+  assert.equal(r1.status, 302);
+  const c1 = r1.headers.get('set-cookie') ?? '';
+  assert.match(c1, /amrita_session=/);
+  assert.ok(!/Secure/.test(c1), 'no Secure flag over plain http');
+
+  const r2 = await fetch(`${base}/auth/${createMagicLink()}`, {
+    redirect: 'manual',
+    headers: { 'x-forwarded-proto': 'https' },
+  });
+  assert.match(r2.headers.get('set-cookie') ?? '', /Secure/);
+});
+
+test('daemon: static route does not serve files outside web root', async () => {
+  const res = await fetch(`${base}/../package.json`);
+  // Either normalized away by fetch or caught by containment → never the file.
+  const body = await res.text();
+  assert.ok(!body.includes('"amrita-agent"'), 'must not leak repo files');
+});
+
 test('daemon: project creation validates input', async () => {
   const missing = await post('/api/project/new', {});
   assert.equal(missing.status, 400);

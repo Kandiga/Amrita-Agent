@@ -180,7 +180,7 @@ export interface AmritaConfig {
   auxiliary: { provider: string; model: string } | null;
   fallback: { provider: string; model: string }[];
   providers: Record<string, Partial<ProviderProfile>>;
-  channels: { telegram: { enabled: boolean } };
+  channels: { telegram: { enabled: boolean; allowedUserIds: number[] } };
   daemon: { host: string; port: number; publicUrl: string | null };
   agent: { maxTurns: number; contextTokenBudget: number };
   toolsets: { disabled: string[] };

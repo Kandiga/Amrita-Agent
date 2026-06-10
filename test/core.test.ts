@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -124,7 +124,30 @@ test('tools: registry filters toolsets; file tools respect project jail', async 
     { id: 't1', name: 'file_read', arguments: { path: '../../etc/passwd' } },
     ctx,
   );
-  assert.ok(escape.isError, 'path escape must be rejected');
+  assert.ok(escape.isError, 'relative path escape must be rejected');
+
+  // Absolute path whose `..` segments resolve outside the jail: must not slip
+  // past the prefix check by being string-prefixed with the base.
+  const absEscape = await executeTool(
+    { id: 't2', name: 'file_read', arguments: { path: `${home}/../../../etc/passwd` } },
+    ctx,
+  );
+  assert.ok(absEscape.isError, 'absolute ".." escape must be rejected');
+
+  // A sibling directory sharing the base as a string prefix must be rejected.
+  const siblingEscape = await executeTool(
+    { id: 't3', name: 'file_read', arguments: { path: `${home}-evil/secret` } },
+    ctx,
+  );
+  assert.ok(siblingEscape.isError, 'sibling-prefix escape must be rejected');
+
+  // A symlink inside the jail pointing outside it must not redirect reads out.
+  symlinkSync('/etc', join(home, 'etc-link'));
+  const symEscape = await executeTool(
+    { id: 't4', name: 'file_read', arguments: { path: 'etc-link/passwd' } },
+    ctx,
+  );
+  assert.ok(symEscape.isError, 'symlink escape must be rejected');
 });
 
 test('agent loop: mock provider chats and calls tools', async () => {

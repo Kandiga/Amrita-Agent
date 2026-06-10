@@ -122,7 +122,9 @@ The daemon binds to `127.0.0.1:7460`; put Caddy (or any TLS proxy) in front — 
 - Secrets only in `~/.amrita/secrets.env` (0600) — never in the repo, the DB, or the browser
 - Magic-link auth (one-time links, hashed tokens, 30-day sessions)
 - Per-context toolset permissions; cron jobs always run with interactive/connector tools stripped
-- Project file tools are jailed to the project working directory
+- Telegram is **owner-only** — deny-by-default until you allowlist your numeric user id (the bot can run shell/file tools)
+- Project file tools are jailed to the project working directory (absolute paths and symlink escapes rejected)
+- Delegated subprocesses (Claude Code) get a scrubbed environment — Amrita's unrelated secrets are not forwarded
 - Append-only audit log of every tool call, connector launch, and config change
 
 ## Development

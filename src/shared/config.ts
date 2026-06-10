@@ -7,7 +7,7 @@ export const defaultConfig: AmritaConfig = {
   auxiliary: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
   fallback: [],
   providers: {},
-  channels: { telegram: { enabled: false } },
+  channels: { telegram: { enabled: false, allowedUserIds: [] } },
   daemon: { host: '127.0.0.1', port: 7460, publicUrl: null },
   agent: { maxTurns: 24, contextTokenBudget: 24_000 },
   toolsets: { disabled: [] },

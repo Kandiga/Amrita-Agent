@@ -8,7 +8,8 @@ All channels converge on the same gateway, the same projects, and the same memor
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) → copy the token
 2. `amrita setup` → enable Telegram → paste token (or Settings → Channels in the web UI)
-3. Restart the daemon. `amrita doctor` should show `✓ Telegram @yourbot`
+3. **Authorize yourself.** The bot is owner-only and **denies everyone by default** — the agent can run shell and file tools, so an open bot is a server takeover. Add your numeric Telegram id to `channels.telegram.allowedUserIds` in `~/.amrita/config.json`. Don't know your id? Message the bot once and read the daemon log — each rejected message logs the sender's id (`dropped message from unauthorized user <id>`). This is a host-side config edit by design; it is **not** settable from the web UI.
+4. Restart the daemon. `amrita doctor` should show `✓ Telegram @yourbot`
 
 ### How it behaves
 

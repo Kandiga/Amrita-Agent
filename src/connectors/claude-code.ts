@@ -13,6 +13,27 @@ import { id, truncate } from '../shared/util.ts';
  * credit, or ANTHROPIC_API_KEY). Amrita never reads or stores its tokens.
  */
 
+/**
+ * Hand the delegated `claude` process only the environment it legitimately
+ * needs: a basic shell environment plus its own Anthropic/Claude credentials.
+ * Amrita's other secrets (TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, AWS_*, etc.)
+ * are NOT forwarded to the subprocess.
+ */
+const ENV_ALLOW = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TZ', 'TMPDIR',
+]);
+const ENV_ALLOW_PREFIX = ['ANTHROPIC_', 'CLAUDE_'];
+
+function childEnv(): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (ENV_ALLOW.has(key) || ENV_ALLOW_PREFIX.some((p) => key.startsWith(p))) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 interface StreamLine {
   type: string;
   subtype?: string;
@@ -58,7 +79,7 @@ registerTool({
       const child = spawn(
         'claude',
         ['-p', brief, '--output-format', 'stream-json', '--verbose', '--permission-mode', permissionMode],
-        { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env } },
+        { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() },
       );
 
       let buffer = '';
