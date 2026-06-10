@@ -1,38 +1,59 @@
 #!/usr/bin/env node
+import { startHttpServer } from '../http.ts';
 import { AmritaKernel } from '../kernel.ts';
 import { createStdioServer } from '../stdio.ts';
 
 /**
- * `amritad` — start the kernel and serve JSON-lines RPC on stdio until stdin
- * closes. No provider calls, no tool execution (WO#2.1). Usage:
+ * `amritad` — serve the kernel over JSON-lines stdio (default) or HTTP/WS.
  *
- *   amritad --db ~/.amrita/amrita.db
+ *   amritad --db ~/.amrita/amrita.db                 # stdio JSON-RPC
  *   echo '{"id":1,"method":"ping"}' | amritad --db :memory:
+ *   amritad --db ~/.amrita/amrita.db --http --port 7460   # HTTP + WS on localhost
+ *   amritad --http --port 0                          # OS-assigned port (printed)
  */
-function parseArgs(argv: string[]): { dbPath: string } {
-  let dbPath = ':memory:';
+interface Args {
+  dbPath: string;
+  http: boolean;
+  port: number;
+}
+function parseArgs(argv: string[]): Args {
+  const args: Args = { dbPath: ':memory:', http: false, port: 7460 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--db' || a === '-d') {
-      const next = argv[i + 1];
-      if (!next) throw new Error('--db requires a path');
-      dbPath = next;
-      i++;
+    if ((a === '--db' || a === '-d') && argv[i + 1]) {
+      args.dbPath = argv[++i] as string;
     } else if (a?.startsWith('--db=')) {
-      dbPath = a.slice('--db='.length);
+      args.dbPath = a.slice('--db='.length);
+    } else if (a === '--http') {
+      args.http = true;
+    } else if (a === '--port' && argv[i + 1]) {
+      args.port = Number(argv[++i]);
+    } else if (a?.startsWith('--port=')) {
+      args.port = Number(a.slice('--port='.length));
     }
   }
-  return { dbPath };
+  return args;
 }
 
-function main(): void {
-  const { dbPath } = parseArgs(process.argv.slice(2));
+async function main(): Promise<void> {
+  const { dbPath, http, port } = parseArgs(process.argv.slice(2));
   const kernel = AmritaKernel.open({ dbPath });
-  createStdioServer(kernel, {
-    onClose: () => {
-      kernel.close();
-    },
-  });
+
+  if (http) {
+    const running = await startHttpServer(kernel, { port });
+    process.stdout.write(`amritad http listening on http://${running.host}:${running.port}\n`);
+    const shutdown = (): void => {
+      void running.close().then(() => {
+        kernel.close();
+        process.exit(0);
+      });
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return;
+  }
+
+  createStdioServer(kernel, { onClose: () => kernel.close() });
 }
 
-main();
+void main();

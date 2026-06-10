@@ -181,6 +181,7 @@ function rowToEvent(row: Record<string, unknown>): AmritaEvent {
 export class Store {
   readonly db: DB;
   private readonly spillDir: string;
+  private readonly listeners = new Set<(ev: AmritaEvent) => void>();
 
   constructor(opts: OpenStoreOptions) {
     this.db = new Database(opts.path);
@@ -193,7 +194,30 @@ export class Store {
   }
 
   close(): void {
+    this.listeners.clear();
     this.db.close();
+  }
+
+  /**
+   * Subscribe to events as they are appended (called POST-commit with the sealed
+   * event). Returns an unsubscribe function. Listener errors are swallowed so a
+   * bad subscriber can never break a write. Used for live WS fan-out.
+   */
+  subscribe(listener: (ev: AmritaEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emitAppended(ev: AmritaEvent): void {
+    for (const l of this.listeners) {
+      try {
+        l(ev);
+      } catch {
+        // a subscriber must never break the write path
+      }
+    }
   }
 
   // ── projects & conversations ────────────────────────────────────────────
@@ -351,6 +375,7 @@ export class Store {
       mkdirSync(dirname(pending.filePath), { recursive: true });
       writeFileSync(pending.filePath, pending.data);
     }
+    this.emitAppended(sealed); // post-commit notify (live fan-out)
     return sealed;
   }
 

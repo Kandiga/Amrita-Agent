@@ -83,6 +83,23 @@ Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to
 `system`.
 
+## HTTP + WebSocket (WO#2.5)
+
+`startHttpServer(kernel, {port?, host?})` (or `amritad --http --port N`) exposes a localhost HTTP/WS
+surface over the same async dispatch. Default host `127.0.0.1`. No framework — three routes + one WS
+endpoint. No response or frame carries a secret value.
+
+| Route | Behaviour |
+|---|---|
+| `GET /health` | kernel health JSON |
+| `POST /rpc` | body is a JSON-RPC request; response is the `RpcResponse` (HTTP 200 even for RPC errors; HTTP 400 only for non-JSON / oversized body) |
+| `GET /events?conversationId=&sinceSeq=` | `{conversationId, events}` — persisted events with `seq > sinceSeq`; 400 if `conversationId` missing |
+| `WS /events/ws?conversationId=&sinceSeq=` | on connect, replays events after `sinceSeq` then a `{t:'replayed'}` frame; afterwards **live-streams** newly appended events for that conversation as `{t:'event', event}` frames |
+
+Live fan-out is driven by `store.subscribe(listener)` — a **post-commit** notification of each sealed
+event (a bad subscriber can never break a write). A WS connection without `conversationId` is closed
+with code 1008. Request bodies are capped at 1 MB.
+
 ## Transport & CLI
 
 JSON-lines over stdio: one request object per input line, one response per output line. The `amritad`

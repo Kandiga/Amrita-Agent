@@ -13,6 +13,10 @@
   "dependencies": {
     "@amrita/protocol": "workspace:*",
     "@amrita/store": "workspace:*",
+    "ws": "^8.18.0",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
   }
 }
