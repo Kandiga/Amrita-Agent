@@ -167,8 +167,19 @@ One ledger, updated per phase — no scattered notes.
 - **Tests/gates:** final counts in the session report; all green before push attempt. CLI
   `runtime status` has no CLI-layer test by design — the default prober would probe the real
   machine (nondeterministic); the logic is covered at the daemon layer with injected probers.
-- **Live smoke:** see session report (HTTP: health/401/role-set via Hub path/switch-
-  continuity/runtime.status).
+- **Live smoke:** real daemon on temp DB — health 200 public, RPC-no-token 401, turn 1
+  `mock/mock-default`, Hub-path `providers.role.set` (project), turn 2 in the SAME conversation
+  `mock/brain-b`, brief intact, provenance `[(mock-default,auto),(brain-b,project)]`,
+  `runtime.status` reports `main → mock brain-b [project]` and a REAL Claude Code probe
+  (`ready`, v2.1.173) on this machine.
+- **Browser QA (Playwright, real Vite dev + daemon):** port 5173 found occupied by an unrelated
+  app (Boni's Live Voice — left untouched); Amrita served on 5174. Verified: shell renders,
+  token save clears 401s, Settings toggle swaps the inspector to the Hub, role-set round-trips
+  live (`main → mock (qa-brain) [binding]`), Claude Code card shows the real probe, console
+  clean except pre-auth 401s + favicon 404 (cosmetic, pre-existing). **Found and fixed a real
+  mobile defect** (`4b01eb6`): 497px card tracks in a 390px viewport — grid tracks now
+  `minmax(0,1fr)`, items `min-width:0`, topbar wraps; re-verified at 390×844. QA servers/db/
+  snapshots cleaned up afterwards.
 - **Limitations:** review/QA/planning runtime roles are documented-reserved, not selectable;
   no lane/task/session scope keys yet (same resolver, additive); no preview renderer (harness
   only, by design); brand memory B1 deferred → next phase; Hermes bridge remains
