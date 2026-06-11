@@ -43,13 +43,32 @@ export interface MilestoneBoardArtifact extends ArtifactBase {
   unassignedOpenTasks: number;
 }
 
-export type ArtifactSpec = BriefSummaryArtifact | MilestoneBoardArtifact;
+/** A verification receipt for the most recently finished lane (mandate→report). */
+export interface LaneReceiptArtifact extends ArtifactBase {
+  kind: 'lane-receipt';
+  laneId: string;
+  laneKind: string;
+  exit: string;
+  goal?: string;
+  summary?: string;
+}
+
+export type ArtifactSpec = BriefSummaryArtifact | MilestoneBoardArtifact | LaneReceiptArtifact;
 
 export interface SurfaceInputs {
   projectId: string;
   brief: BriefLite | null;
   milestones: MilestoneLite[];
   tasks: { id: string; status?: string; milestoneId?: string | null }[];
+  /** Lane views from the live stream (most-recent first, as lanesList returns). */
+  lanes?: {
+    id: string;
+    kind: string;
+    status: string;
+    goal?: string;
+    exit?: string;
+    summary?: string;
+  }[];
 }
 
 function isOpenTask(t: { status?: string }): boolean {
@@ -89,6 +108,21 @@ export function buildSurfaceArtifacts(inputs: SurfaceInputs): ArtifactSpec[] {
         openTasks: openTasks.filter((t) => t.milestoneId === m.id).length,
       })),
       unassignedOpenTasks: openTasks.filter((t) => !t.milestoneId).length,
+    });
+  }
+
+  // The most recent FINISHED lane becomes a receipt — proof of delegated work.
+  const finished = (inputs.lanes ?? []).find((l) => l.exit);
+  if (finished) {
+    artifacts.push({
+      kind: 'lane-receipt',
+      id: `lane-receipt:${finished.id}`,
+      projectId: inputs.projectId,
+      laneId: finished.id,
+      laneKind: finished.kind,
+      exit: finished.exit ?? 'unknown',
+      ...(finished.goal ? { goal: finished.goal } : {}),
+      ...(finished.summary ? { summary: finished.summary } : {}),
     });
   }
 

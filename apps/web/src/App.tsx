@@ -3,17 +3,22 @@ import {
   type AmritaEventLite,
   type CompanionState,
   type DecisionRowLite,
+  type DoctorReportLite,
   type RoleResolutionLite,
-  RpcClient,
   RpcError,
 } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import { client } from './client.ts';
 import { nextActions } from './companion.ts';
+import { LanesPanel } from './components/LanesPanel.tsx';
+import { NextActionsPanel } from './components/NextActionsPanel.tsx';
+import { RuntimePanel } from './components/RuntimePanel.tsx';
+import { SurfacePanel } from './components/SurfacePanel.tsx';
+import { TimelinePanel } from './components/TimelinePanel.tsx';
 import {
   type LanesState,
   emptyLanes,
   foldLaneEvents,
-  isActive,
   lanesList,
   reduceLaneEvent,
 } from './lanes-state.ts';
@@ -38,13 +43,6 @@ type Provider = {
   streaming?: boolean;
 };
 type Task = { id: string; title: string; status?: string; milestoneId?: string | null };
-type DoctorCheck = { id: string; label: string; status: 'ok' | 'warn' | 'fail'; detail?: string };
-type DoctorReport = {
-  ok: boolean;
-  status: 'ok' | 'warn' | 'fail';
-  sections: { title: string; checks: DoctorCheck[] }[];
-  fixes: string[];
-};
 type Memory = { id: string; content: string; score?: number };
 type ChatResult = {
   conversationId: string;
@@ -53,8 +51,6 @@ type ChatResult = {
   model: string;
   usage?: { inputTokens: number; outputTokens: number } | null;
 };
-
-const client = new RpcClient();
 
 const STREAM_LABELS: Record<StreamState, string> = {
   connecting: 'Connecting…',
@@ -98,14 +94,8 @@ export function App() {
   const [tokenDraft, setTokenDraft] = useState('');
   const [unauthorized, setUnauthorized] = useState(false);
   const [lanes, setLanes] = useState<LanesState>(emptyLanes());
-  const [laneGoal, setLaneGoal] = useState('');
-  const [laneDryRun, setLaneDryRun] = useState(true);
-  const [laneReal, setLaneReal] = useState(false);
-  const [laneMaxTurns, setLaneMaxTurns] = useState('');
-  const [laneMaxMinutes, setLaneMaxMinutes] = useState('');
   const [realExecAvailable, setRealExecAvailable] = useState(false);
-  const [laneBusy, setLaneBusy] = useState(false);
-  const [doctor, setDoctor] = useState<DoctorReport | null>(null);
+  const [doctor, setDoctor] = useState<DoctorReportLite | null>(null);
   const [decisions, setDecisions] = useState<DecisionRowLite[]>([]);
   const [decisionDraft, setDecisionDraft] = useState('');
   const [taskDraft, setTaskDraft] = useState('');
@@ -179,9 +169,10 @@ export function App() {
             brief: companion?.brief ?? null,
             milestones: companion?.milestones ?? [],
             tasks,
+            lanes: laneViews,
           })
         : [],
-    [selectedProject, companion, tasks],
+    [selectedProject, companion, tasks, laneViews],
   );
 
   // Rule-based next-best actions over typed state — never an LLM guess.
@@ -230,7 +221,7 @@ export function App() {
       client.call('project.list'),
       client.call('providers.list'),
       client.call('health'),
-      client.call<DoctorReport>('doctor'),
+      client.call<DoctorReportLite>('doctor'),
     ]);
     const nextProjects = extractArray<Project>(projectResult, ['projects']);
     setProjects(nextProjects);
@@ -295,40 +286,6 @@ export function App() {
       const replay = await client.events(conversationId, 0);
       setTranscript(foldEvents(emptyTranscript(), replay));
       setLanes(foldLaneEvents(emptyLanes(), replay));
-    } catch (e) {
-      reportError(e);
-    }
-  }
-
-  async function startLane(): Promise<void> {
-    if (!laneGoal.trim() || !conversationId || laneBusy) return;
-    setLaneBusy(true);
-    setError('');
-    try {
-      const budget: { maxTurns?: number; maxMinutes?: number } = {};
-      const turns = Number.parseInt(laneMaxTurns, 10);
-      const minutes = Number.parseInt(laneMaxMinutes, 10);
-      if (Number.isFinite(turns) && turns > 0) budget.maxTurns = turns;
-      if (Number.isFinite(minutes) && minutes > 0) budget.maxMinutes = minutes;
-      await client.lanesStart({
-        conversationId,
-        goal: laneGoal.trim(),
-        dryRun: laneDryRun,
-        real: laneReal,
-        detach: true, // observe via the live event stream
-        ...(Object.keys(budget).length > 0 ? { budget } : {}),
-      });
-      setLaneGoal('');
-    } catch (e) {
-      reportError(e);
-    } finally {
-      setLaneBusy(false);
-    }
-  }
-
-  async function cancelLane(laneId: string): Promise<void> {
-    try {
-      await client.lanesCancel(laneId);
     } catch (e) {
       reportError(e);
     }
@@ -776,21 +733,7 @@ export function App() {
             </button>
           ) : null}
         </section>
-        <section className="card">
-          <h2>Next actions</h2>
-          {companionActions.length === 0 ? (
-            <p className="empty-note">
-              Nothing urgent — runtime is healthy and nothing is waiting on you.
-            </p>
-          ) : (
-            companionActions.map((a) => (
-              <div key={a.id} className={`companion-action companion-${a.urgency}`}>
-                <strong>{a.label}</strong>
-                <p>{a.detail}</p>
-              </div>
-            ))
-          )}
-        </section>
+        <NextActionsPanel actions={companionActions} />
         <section className="card">
           <h2>Brief</h2>
           {briefEditing ? (
@@ -885,108 +828,8 @@ export function App() {
             </div>
           )}
         </section>
-        <section className="card surface-card">
-          <h2>Surface</h2>
-          {surfaceArtifacts.length === 0 ? (
-            <p className="empty-note">
-              Structured previews of this project render here — capture a brief or add milestones
-              and the Surface comes alive. Built from typed project state, never sample data.
-            </p>
-          ) : (
-            surfaceArtifacts.map((a) => {
-              if (a.kind === 'brief-summary') {
-                return (
-                  <article key={a.id} className="artifact artifact-brief">
-                    <span className="artifact-kind">brief</span>
-                    <h3 dir={textDir(a.goal)}>{a.goal}</h3>
-                    {a.audience ? <p className="artifact-sub">for {a.audience}</p> : null}
-                    {a.successCriteria.length > 0 ? (
-                      <ul>
-                        {a.successCriteria.map((s) => (
-                          <li key={s} dir={textDir(s)}>
-                            {s}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {a.scope.length > 0 || a.noScope.length > 0 ? (
-                      <p className="artifact-sub">
-                        {a.scope.length > 0 ? `in: ${a.scope.join(' · ')}` : ''}
-                        {a.scope.length > 0 && a.noScope.length > 0 ? '  —  ' : ''}
-                        {a.noScope.length > 0 ? `out: ${a.noScope.join(' · ')}` : ''}
-                      </p>
-                    ) : null}
-                  </article>
-                );
-              }
-              return (
-                <article key={a.id} className="artifact artifact-board">
-                  <span className="artifact-kind">milestones</span>
-                  <div className="board-rows">
-                    {a.items.map((m) => (
-                      <div key={m.id} className={`board-row board-${m.status}`}>
-                        <span className="board-title" dir={textDir(m.title)}>
-                          {m.title}
-                        </span>
-                        <span className="board-meta">
-                          {m.status}
-                          {m.targetDate ? ` · → ${m.targetDate}` : ''}
-                          {m.openTasks > 0 ? ` · ${m.openTasks} open` : ''}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  {a.unassignedOpenTasks > 0 ? (
-                    <p className="artifact-sub">
-                      {a.unassignedOpenTasks} open task{a.unassignedOpenTasks > 1 ? 's' : ''} not
-                      assigned to a milestone
-                    </p>
-                  ) : null}
-                </article>
-              );
-            })
-          )}
-        </section>
-        <section className="card">
-          <h2>Runtime</h2>
-          {doctor ? (
-            doctor.sections.map((s) => {
-              const worst = s.checks.some((c) => c.status === 'fail')
-                ? 'fail'
-                : s.checks.some((c) => c.status === 'warn')
-                  ? 'warn'
-                  : 'ok';
-              return (
-                <div key={s.title} className="doctor-section">
-                  <div className="doctor-head">
-                    <strong>{s.title}</strong>
-                    <span className={`doc-badge doc-${worst}`}>
-                      {worst === 'ok' ? 'ok' : worst === 'warn' ? 'needs setup' : 'failing'}
-                    </span>
-                  </div>
-                  {s.checks
-                    .filter((c) => c.status !== 'ok')
-                    .map((c) => (
-                      <p key={c.id} className="doctor-detail">
-                        {c.label}
-                        {c.detail ? ` — ${c.detail}` : ''}
-                      </p>
-                    ))}
-                </div>
-              );
-            })
-          ) : (
-            <p>Runtime checks not loaded yet.</p>
-          )}
-          {doctor && doctor.fixes.length > 0 ? (
-            <details className="doctor-fixes">
-              <summary>How to fix ({doctor.fixes.length})</summary>
-              {doctor.fixes.map((fix) => (
-                <code key={fix}>{fix}</code>
-              ))}
-            </details>
-          ) : null}
-        </section>
+        <SurfacePanel artifacts={surfaceArtifacts} />
+        <RuntimePanel doctor={doctor} />
         <section className="card">
           <h2>Provider status</h2>
           <div className="provider-row">
@@ -1331,126 +1174,14 @@ export function App() {
             ))
           )}
         </section>
-        <section className="card lanes-card">
-          <h2>Lanes</h2>
-          <form
-            className="lane-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void startLane();
-            }}
-          >
-            <textarea
-              value={laneGoal}
-              onChange={(e) => setLaneGoal(e.target.value)}
-              dir={textDir(laneGoal)}
-              placeholder="Lane goal (e.g. tidy the repo)"
-              rows={2}
-            />
-            <div className="lane-budget">
-              <input
-                type="number"
-                min="1"
-                value={laneMaxTurns}
-                onChange={(e) => setLaneMaxTurns(e.target.value)}
-                placeholder="max turns"
-              />
-              <input
-                type="number"
-                min="1"
-                value={laneMaxMinutes}
-                onChange={(e) => setLaneMaxMinutes(e.target.value)}
-                placeholder="max min"
-              />
-            </div>
-            <label className="lane-check">
-              <input
-                type="checkbox"
-                checked={laneDryRun}
-                onChange={(e) => setLaneDryRun(e.target.checked)}
-              />
-              Dry run (record mandate only)
-            </label>
-            <label
-              className="lane-check"
-              title="Real execution must be enabled on the daemon (AMRITA_LANES_ALLOW_REAL_EXECUTION)."
-            >
-              <input
-                type="checkbox"
-                checked={laneReal}
-                disabled={laneDryRun}
-                onChange={(e) => setLaneReal(e.target.checked)}
-              />
-              Run for real {realExecAvailable ? '' : '(daemon opt-in required)'}
-            </label>
-            <button type="submit" disabled={laneBusy || !laneGoal.trim() || !conversationId}>
-              {laneBusy ? '…' : 'Start lane'}
-            </button>
-          </form>
-          <div className="lane-list">
-            {laneViews.length === 0 ? (
-              <p>No lanes yet.</p>
-            ) : (
-              laneViews.map((lane) => (
-                <article key={lane.id} className={`lane lane-${lane.status}`}>
-                  <div className="lane-head">
-                    <span className={`lane-badge lane-badge-${lane.status}`}>{lane.status}</span>
-                    <small>{lane.id.slice(0, 12)}</small>
-                    {isActive(lane) ? (
-                      <button
-                        type="button"
-                        className="lane-cancel"
-                        onClick={() => void cancelLane(lane.id)}
-                      >
-                        Cancel
-                      </button>
-                    ) : null}
-                  </div>
-                  {lane.goal ? (
-                    <p className="lane-goal" dir={textDir(lane.goal)}>
-                      {lane.goal}
-                    </p>
-                  ) : null}
-                  {lane.progress.length > 0 ? (
-                    <p className="lane-progress">{lane.progress.at(-1)?.note}</p>
-                  ) : null}
-                  {lane.exit ? (
-                    <p className="lane-exit">
-                      exit {lane.exit}
-                      {lane.summary ? ` · ${lane.summary}` : lane.reason ? ` · ${lane.reason}` : ''}
-                    </p>
-                  ) : null}
-                </article>
-              ))
-            )}
-          </div>
-        </section>
-        <section className="card">
-          <h2>Activity</h2>
-          {timeline.length === 0 ? (
-            <p className="empty-note">No activity yet — everything this project does lands here.</p>
-          ) : (
-            <div className="timeline">
-              {timeline.map((ev) => (
-                <div key={ev.id} className="timeline-row">
-                  <span className="timeline-type">{ev.type}</span>
-                  <span className="timeline-text" dir="auto">
-                    {timelineText(ev)}
-                  </span>
-                  <small>{ev.ts.slice(0, 16).replace('T', ' ')}</small>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <LanesPanel
+          lanes={laneViews}
+          conversationId={conversationId}
+          realExecAvailable={realExecAvailable}
+          onError={reportError}
+        />
+        <TimelinePanel events={timeline} />
       </aside>
     </main>
   );
-}
-
-/** One honest line per event — payload text/title/goal, never invented. */
-function timelineText(ev: AmritaEventLite): string {
-  const p = ev.payload;
-  const v = p.text ?? p.title ?? p.goal ?? p.note ?? p.reason ?? p.resolution ?? '';
-  return typeof v === 'string' ? v.slice(0, 80) : '';
 }

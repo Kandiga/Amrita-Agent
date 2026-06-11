@@ -121,6 +121,22 @@ export interface CompanionState {
   milestones: MilestoneLite[];
 }
 
+// ── doctor (RPC result shapes; see docs/specs/runtime.md) ───────────────────
+
+export interface DoctorCheckLite {
+  id: string;
+  label: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail?: string;
+}
+
+export interface DoctorReportLite {
+  ok: boolean;
+  status: 'ok' | 'warn' | 'fail';
+  sections: { title: string; checks: DoctorCheckLite[] }[];
+  fixes: string[];
+}
+
 /** One role's resolution: project binding > global binding > auto (ADR-0017, §2.8). */
 export interface RoleResolutionLite {
   role: 'fast' | 'main' | 'deep';

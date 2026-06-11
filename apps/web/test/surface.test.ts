@@ -64,6 +64,37 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
     }
   });
 
+  it('the most recent FINISHED lane becomes a receipt; active lanes do not', () => {
+    const none = buildSurfaceArtifacts(
+      base({ lanes: [{ id: 'L1', kind: 'claude-code', status: 'running', goal: 'wip' }] }),
+    );
+    expect(none).toEqual([]); // running lane: nothing to receipt yet
+
+    const artifacts = buildSurfaceArtifacts(
+      base({
+        lanes: [
+          { id: 'L2', kind: 'claude-code', status: 'running', goal: 'wip' }, // newest, unfinished
+          {
+            id: 'L1',
+            kind: 'claude-code',
+            status: 'completed',
+            goal: 'tidy repo',
+            exit: 'done',
+            summary: 'all tidy',
+          },
+        ],
+      }),
+    );
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      kind: 'lane-receipt',
+      laneId: 'L1',
+      exit: 'done',
+      goal: 'tidy repo',
+      summary: 'all tidy',
+    });
+  });
+
   it('brief + milestones yield both artifacts, deterministically ordered', () => {
     const artifacts = buildSurfaceArtifacts(
       base({ brief, milestones: [milestone({ id: 'M1', title: 'Alpha' })] }),
