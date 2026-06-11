@@ -86,6 +86,31 @@ describe('RpcClient', () => {
     }
   });
 
+  it('sends typed project-knowledge RPC payloads (tasks/decisions/memory)', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    const ctx = { projectId: 'P1', conversationId: 'C1' };
+    await client.tasksCreate({ ...ctx, title: 'ship it' });
+    await client.tasksComplete({ ...ctx, taskId: 'T1' });
+    await client.decisionsRecord({ ...ctx, text: 'use ulids' });
+    await client.decisionsList({ projectId: 'P1' });
+    await client.memoryPut({ ...ctx, scope: 'project', content: 'remember this' });
+    expect(bodies.map((b) => b.method)).toEqual([
+      'tasks.create',
+      'tasks.complete',
+      'decisions.record',
+      'decisions.list',
+      'memory.put',
+    ]);
+    expect(bodies[0]?.params).toMatchObject({ ...ctx, title: 'ship it' });
+    expect(bodies[4]?.params).toMatchObject({ scope: 'project', content: 'remember this' });
+  });
+
   it('sends typed lane RPC payloads with the auth header', async () => {
     const calls: Array<{
       body: { method: string; params: unknown };

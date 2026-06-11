@@ -487,6 +487,43 @@ section h2,
   font-size: 12px;
   color: var(--muted);
 }
+.empty-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.task-row:last-of-type {
+  border-bottom: none;
+}
+.task-main {
+  flex: 1;
+  min-width: 0;
+}
+.task-main small {
+  display: block;
+  color: var(--muted);
+}
+.task-done .task-main strong {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.task-complete {
+  padding: 3px 9px;
+  font-size: 12px;
+  flex: none;
+}
+.decision-row {
+  margin: 8px 0 0;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--accent);
+  font-size: 13px;
+}
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 240px minmax(0, 1fr);

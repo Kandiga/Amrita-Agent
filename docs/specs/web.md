@@ -53,9 +53,16 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 - Runtime panel — the daemon's `doctor` report as per-section status chips (`ok` / `needs setup` /
   `failing`) with the warn/fail check details inline. Honest: unconfigured surfaces say "needs
   setup", never pretend readiness.
-- Memory search panel.
-- Tasks panel.
+- Memory panel — FTS search plus a "Remember for this project…" write (`memory.put`, project scope).
+- Tasks panel — list, add (`tasks.create`), and complete (`tasks.complete`); done tasks render
+  struck-through.
+- Decisions panel — the project's append-only decision log (`decisions.list`) plus a "Record a
+  decision…" write (`decisions.record`).
 - Lanes panel — start/observe/cancel Claude Code lanes (see below).
+
+Knowledge writes carry the active project + conversation as provenance and go through the same
+typed RPC/event path as every other surface (no direct store access, no fake data — empty means
+empty).
 
 The UI uses `dir="auto"`-style helpers for Hebrew/English mixed text and keeps raw protocol/debug details out of the primary chat flow.
 

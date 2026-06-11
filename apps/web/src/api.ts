@@ -72,6 +72,20 @@ export interface LaneCancelResultLite {
   status: string | null;
 }
 
+export interface TaskRowLite {
+  id: string;
+  title: string;
+  status: string;
+  createdAt?: string;
+}
+
+export interface DecisionRowLite {
+  id: string;
+  text: string;
+  supersedesId?: string | null;
+  createdAt?: string;
+}
+
 interface RpcEnvelope {
   result?: unknown;
   error?: { code: string; message: string; details?: unknown };
@@ -155,5 +169,44 @@ export class RpcClient {
 
   lanesCancel(laneId: string): Promise<LaneCancelResultLite> {
     return this.call<LaneCancelResultLite>('lanes.cancel', { laneId });
+  }
+
+  // ── project knowledge (typed wrappers; auth header is applied by call()) ───
+
+  tasksCreate(params: {
+    projectId: string;
+    conversationId: string;
+    title: string;
+  }): Promise<{ taskId: string }> {
+    return this.call<{ taskId: string }>('tasks.create', params);
+  }
+
+  tasksComplete(params: {
+    projectId: string;
+    conversationId: string;
+    taskId: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('tasks.complete', params);
+  }
+
+  decisionsList(params: { projectId?: string } = {}): Promise<DecisionRowLite[]> {
+    return this.call<DecisionRowLite[]>('decisions.list', params);
+  }
+
+  decisionsRecord(params: {
+    projectId: string;
+    conversationId: string;
+    text: string;
+  }): Promise<{ decisionId: string }> {
+    return this.call<{ decisionId: string }>('decisions.record', params);
+  }
+
+  memoryPut(params: {
+    projectId: string;
+    conversationId: string;
+    scope: 'user' | 'project';
+    content: string;
+  }): Promise<{ entryId: string }> {
+    return this.call<{ entryId: string }>('memory.put', params);
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type AmritaEventLite, RpcClient, RpcError } from './api.ts';
+import { type AmritaEventLite, type DecisionRowLite, RpcClient, RpcError } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import {
   type LanesState,
@@ -96,6 +96,10 @@ export function App() {
   const [realExecAvailable, setRealExecAvailable] = useState(false);
   const [laneBusy, setLaneBusy] = useState(false);
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
+  const [decisions, setDecisions] = useState<DecisionRowLite[]>([]);
+  const [decisionDraft, setDecisionDraft] = useState('');
+  const [taskDraft, setTaskDraft] = useState('');
+  const [rememberDraft, setRememberDraft] = useState('');
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -193,7 +197,7 @@ export function App() {
       setConversations(list);
       if (list[0]) openConversation(list[0].id);
       else await createConversation(project.id);
-      await loadTasks(project.id);
+      await Promise.all([loadTasks(project.id), loadDecisions(project.id)]);
     } catch (e) {
       reportError(e);
     } finally {
@@ -269,6 +273,65 @@ export function App() {
     if (!projectId) return;
     const result = await client.call('tasks.list', { projectId });
     setTasks(extractArray<Task>(result, ['tasks']));
+  }
+
+  async function loadDecisions(projectId = selectedProject?.id) {
+    if (!projectId) return;
+    setDecisions(await client.decisionsList({ projectId }));
+  }
+
+  // Knowledge writes go through the same typed events as every other surface;
+  // each one needs the active project + conversation as provenance.
+  function writeCtx(): { projectId: string; conversationId: string } | null {
+    return selectedProject && conversationId
+      ? { projectId: selectedProject.id, conversationId }
+      : null;
+  }
+
+  async function addTask() {
+    const ctx = writeCtx();
+    if (!ctx || !taskDraft.trim()) return;
+    try {
+      await client.tasksCreate({ ...ctx, title: taskDraft.trim() });
+      setTaskDraft('');
+      await loadTasks();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function completeTask(taskId: string) {
+    const ctx = writeCtx();
+    if (!ctx) return;
+    try {
+      await client.tasksComplete({ ...ctx, taskId });
+      await loadTasks();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function addDecision() {
+    const ctx = writeCtx();
+    if (!ctx || !decisionDraft.trim()) return;
+    try {
+      await client.decisionsRecord({ ...ctx, text: decisionDraft.trim() });
+      setDecisionDraft('');
+      await loadDecisions();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function rememberMemory() {
+    const ctx = writeCtx();
+    if (!ctx || !rememberDraft.trim()) return;
+    try {
+      await client.memoryPut({ ...ctx, scope: 'project', content: rememberDraft.trim() });
+      setRememberDraft('');
+    } catch (e) {
+      reportError(e);
+    }
   }
 
   async function searchMemory() {
@@ -553,20 +616,96 @@ export function App() {
               Search
             </button>
           </div>
+          {memory.length === 0 && memoryQuery ? <p className="empty-note">No matches.</p> : null}
           {memory.map((m) => (
-            <p key={m.id}>{m.content}</p>
+            <p key={m.id} dir={textDir(m.content)}>
+              {m.content}
+            </p>
           ))}
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void rememberMemory();
+            }}
+          >
+            <input
+              value={rememberDraft}
+              onChange={(e) => setRememberDraft(e.target.value)}
+              dir={textDir(rememberDraft)}
+              placeholder="Remember for this project…"
+            />
+            <button type="submit" disabled={!rememberDraft.trim() || !conversationId}>
+              Save
+            </button>
+          </form>
         </section>
         <section className="card">
           <h2>Tasks</h2>
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addTask();
+            }}
+          >
+            <input
+              value={taskDraft}
+              onChange={(e) => setTaskDraft(e.target.value)}
+              dir={textDir(taskDraft)}
+              placeholder="Add a task…"
+            />
+            <button type="submit" disabled={!taskDraft.trim() || !conversationId}>
+              Add
+            </button>
+          </form>
           {tasks.length === 0 ? (
-            <p>No tasks yet.</p>
+            <p className="empty-note">No tasks yet.</p>
           ) : (
             tasks.map((t) => (
-              <p key={t.id}>
-                <strong>{t.title}</strong>
-                <br />
-                <small>{t.status}</small>
+              <div key={t.id} className={`task-row${t.status === 'done' ? ' task-done' : ''}`}>
+                <div className="task-main">
+                  <strong dir={textDir(t.title)}>{t.title}</strong>
+                  <small>{t.status}</small>
+                </div>
+                {t.status !== 'done' && t.status !== 'dropped' ? (
+                  <button
+                    type="button"
+                    className="task-complete"
+                    onClick={() => completeTask(t.id)}
+                  >
+                    Done
+                  </button>
+                ) : null}
+              </div>
+            ))
+          )}
+        </section>
+        <section className="card">
+          <h2>Decisions</h2>
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addDecision();
+            }}
+          >
+            <input
+              value={decisionDraft}
+              onChange={(e) => setDecisionDraft(e.target.value)}
+              dir={textDir(decisionDraft)}
+              placeholder="Record a decision…"
+            />
+            <button type="submit" disabled={!decisionDraft.trim() || !conversationId}>
+              Record
+            </button>
+          </form>
+          {decisions.length === 0 ? (
+            <p className="empty-note">No decisions recorded yet.</p>
+          ) : (
+            decisions.map((d) => (
+              <p key={d.id} className="decision-row" dir={textDir(d.text)}>
+                {d.text}
               </p>
             ))
           )}
