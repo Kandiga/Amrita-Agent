@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type AmritaEventLite, type DecisionRowLite, RpcClient, RpcError } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import { nextActions } from './companion.ts';
 import {
   type LanesState,
   emptyLanes,
@@ -140,6 +141,12 @@ export function App() {
   }, [transcript, pending]);
 
   const laneViews = useMemo(() => lanesList(lanes), [lanes]);
+
+  // Rule-based next-best actions over typed state — never an LLM guess.
+  const companionActions = useMemo(
+    () => nextActions({ doctor, tasks, decisions, lanes: laneViews, conversationId }),
+    [doctor, tasks, decisions, laneViews, conversationId],
+  );
 
   // Live subscription: (re)open whenever the selected conversation changes. The
   // same event stream feeds the transcript and the Lanes panel.
@@ -567,6 +574,21 @@ export function App() {
               Clear token
             </button>
           ) : null}
+        </section>
+        <section className="card">
+          <h2>Next actions</h2>
+          {companionActions.length === 0 ? (
+            <p className="empty-note">
+              Nothing urgent — runtime is healthy and nothing is waiting on you.
+            </p>
+          ) : (
+            companionActions.map((a) => (
+              <div key={a.id} className={`companion-action companion-${a.urgency}`}>
+                <strong>{a.label}</strong>
+                <p>{a.detail}</p>
+              </div>
+            ))
+          )}
         </section>
         <section className="card">
           <h2>Runtime</h2>

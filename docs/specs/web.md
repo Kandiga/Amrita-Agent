@@ -49,7 +49,13 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 - Project sidebar.
 - Conversation list and creation.
 - Chat transcript and composer.
-- Provider selector and status card.
+- Provider selector and status card (shows whether the provider streams live — honest, from
+  `providers.list.streaming`).
+- Next actions panel — `src/companion.ts`, a **pure, rule-based** derivation over typed state
+  (doctor fails → blocker; active/finished lanes → attention; first task / top open task / first
+  decision → suggestions). Deliberately not an LLM planner (see
+  `docs/strategy/project-companion-roadmap.md`, Stage 0); an empty state honestly says nothing is
+  waiting.
 - Runtime panel — the daemon's `doctor` report as per-section status chips (`ok` / `needs setup` /
   `failing`) with the warn/fail check details inline. Honest: unconfigured surfaces say "needs
   setup", never pretend readiness.
