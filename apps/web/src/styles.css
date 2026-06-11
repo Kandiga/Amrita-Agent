@@ -789,6 +789,29 @@ section h2,
   font-size: 11px;
   color: var(--muted);
 }
+.approvals-card {
+  border-color: color-mix(in srgb, #d1503a 45%, var(--border));
+}
+.approval-row {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.approval-row:last-of-type {
+  border-bottom: none;
+}
+.approval-detail {
+  margin: 4px 0;
+  font-size: 13px;
+}
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.approval-actions button {
+  padding: 5px 14px;
+  font-size: 12px;
+}
 .artifact-preview {
   padding: 10px;
 }

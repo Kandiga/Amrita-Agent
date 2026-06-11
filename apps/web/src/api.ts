@@ -127,6 +127,17 @@ export interface BrandLite {
   updatedAt: string;
 }
 
+/** A pending operator approval (ADR-0021). Runtime state; events are the audit. */
+export interface OperatorApprovalLite {
+  approvalId: string;
+  action: string;
+  detail?: string;
+  projectId: string;
+  conversationId: string;
+  laneId?: string;
+  requestedAt: string;
+}
+
 /** A durable approval of a deterministic preview's content hash (ADR-0020). */
 export interface PreviewApprovalLite {
   previewId: string;
@@ -361,6 +372,17 @@ export class RpcClient {
 
   briefUpdate(params: BriefUpdateParams): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('projects.brief.update', params);
+  }
+
+  approvalsList(): Promise<OperatorApprovalLite[]> {
+    return this.call<OperatorApprovalLite[]>('approvals.list');
+  }
+
+  approvalsResolve(params: {
+    approvalId: string;
+    decision: 'allow' | 'deny';
+  }): Promise<{ approvalId: string; resolved: boolean }> {
+    return this.call<{ approvalId: string; resolved: boolean }>('approvals.resolve', params);
   }
 
   brandUpdate(params: BrandUpdateParams): Promise<{ ok: boolean }> {

@@ -4,12 +4,14 @@ import {
   type CompanionState,
   type DecisionRowLite,
   type DoctorReportLite,
+  type OperatorApprovalLite,
   type RoleResolutionLite,
   RpcError,
 } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import { client } from './client.ts';
 import { nextActions } from './companion.ts';
+import { ApprovalsPanel } from './components/ApprovalsPanel.tsx';
 import { BrandPanel } from './components/BrandPanel.tsx';
 import { BriefPanel } from './components/BriefPanel.tsx';
 import { DecisionsPanel } from './components/DecisionsPanel.tsx';
@@ -109,6 +111,8 @@ export function App() {
   const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
   /** Inspector mode: the Project Brain panels, or the Settings & Runtime Hub. */
   const [showSettings, setShowSettings] = useState(false);
+  /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
+  const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -199,6 +203,7 @@ export function App() {
         onEvent: (ev) => {
           setTranscript((s) => reduceEvent(s, ev));
           setLanes((s) => reduceLaneEvent(s, ev));
+          if (ev.type.startsWith('approval.')) void loadApprovals();
         },
         onState: (s) => setStreamState(s),
       },
@@ -248,6 +253,7 @@ export function App() {
         loadTasks(project.id),
         loadDecisions(project.id),
         loadCompanion(project.id),
+        loadApprovals(),
       ]);
     } catch (e) {
       reportError(e);
@@ -308,6 +314,23 @@ export function App() {
     setCompanion(state);
     setTimeline(events);
     setRoleInfo(roles.roles);
+  }
+
+  async function loadApprovals(): Promise<void> {
+    try {
+      setApprovals(await client.approvalsList());
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function resolveApproval(approvalId: string, decision: 'allow' | 'deny'): Promise<void> {
+    try {
+      await client.approvalsResolve({ approvalId, decision });
+      await loadApprovals();
+    } catch (e) {
+      reportError(e);
+    }
   }
 
   /** The write envelope shared by every knowledge panel. */
@@ -561,6 +584,10 @@ export function App() {
         ) : (
           <>
             <NextActionsPanel actions={companionActions} />
+            <ApprovalsPanel
+              approvals={approvals.filter((a) => a.projectId === selectedProject?.id)}
+              onResolve={(id, d) => void resolveApproval(id, d)}
+            />
             <BriefPanel
               brief={companion?.brief ?? null}
               writeCtx={writeCtx}

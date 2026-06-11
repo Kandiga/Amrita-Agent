@@ -133,6 +133,18 @@ Press **Settings** in the top bar. The inspector becomes the Runtime Hub:
 - CLI equivalents: `pnpm amrita -- runtime status --project system --db ~/.amrita/amrita.db`,
   `pnpm amrita -- role set main mock --model my-brain --project system --db ~/.amrita/amrita.db`.
 
+## 5c. Operator mode: approvals + Telegram (ADR-0021)
+
+- Start the daemon opted-in: `AMRITA_LANES_ALLOW_REAL_EXECUTION=1 pnpm amritad -- --db ... --http`.
+  In the web Lanes panel start a lane with **Run for real**: an **Approvals needed** card
+  appears (the lane shows "awaiting operator approval" and nothing executes). **Deny** → the
+  lane aborts with "denied by operator". Unanswered requests time out to deny.
+- Telegram (optional, needs your own bot): `export TELEGRAM_BOT_TOKEN=<token>
+  AMRITA_TELEGRAM_ALLOWED_IDS=<your numeric id>` then add `--telegram`. Pair with
+  `/pair <code>` (`amrita channel pair --project system`), then `/status`, `/approvals`,
+  `/approve <id>`, `/deny <id>`, `/stop <lane>`, `/help`. Doctor and `channels.list` show
+  telegram `ready` only while the runner is actually running.
+
 ## 6. Inspect runtime status
 
 - **Web:** the **Runtime** panel shows the doctor report — per-section chips (`ok` / `needs

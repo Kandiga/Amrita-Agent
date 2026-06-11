@@ -67,6 +67,8 @@ deterministic and free of provider/tool/lane execution.
 | `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |
 | `lanes.cancel` | `{laneId}` | `{laneId, cancelled, status}` |
+| `approvals.list` | — | pending operator approvals (ADR-0021; runtime state, events are the audit) |
+| `approvals.resolve` | `{approvalId, decision: allow\|deny}` | `{approvalId, resolved}` — unknown/settled ids report `resolved:false` |
 | `projects.companion.get` | `{projectId}` | `{brief|null, brand|null, questions[], risks[], milestones[], previewApprovals[]}` — the Project Brain aggregate (ADR-0018/0020) |
 | `projects.brief.update` | `{projectId, conversationId, goal, audience?, successCriteria?, scope?, noScope?, sourceMessageId?}` | `{ok}` (full-document upsert) |
 | `projects.questions.open` | `{projectId, conversationId, text, sourceMessageId?}` | `{questionId}` |
@@ -179,6 +181,14 @@ Lanes run delegated work (e.g. Claude Code) beside a conversation. See [lanes.md
   observes it over the live event stream; `lanes.cancel` aborts it (terminating the child) and the lane
   reports `exit: 'cancelled'`. Without `detach`, `lanes.start` awaits completion (CLI/synchronous use).
 - The daemon never forwards a secret into a lane, and aborts all active lanes on shutdown.
+- **Operator approvals (ADR-0021):** a `real: true` start under the default `forward` policy
+  pauses on a `lane.run-real` approval — resolved via `approvals.resolve` (web/Telegram),
+  timed out to DENY (default 120 s), or denied by cancellation; the runner never executes
+  without an explicit allow. `auto-safe`/`sandboxed` pre-authorize and skip the gate.
+- **Telegram operator runner:** `amritad --http --telegram` long-polls the official Bot API
+  (owner allowlist from `AMRITA_TELEGRAM_ALLOWED_IDS`, token from `TELEGRAM_BOT_TOKEN`,
+  presence-checked, never logged). Refuses to start unconfigured. `channels.list`/doctor say
+  telegram is `ready` only while the runner is live.
 
 ## Transport & CLI
 

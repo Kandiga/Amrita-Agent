@@ -222,3 +222,35 @@ One ledger, updated per phase — no scattered notes.
   files) deferred.
 - **Next phase:** operator mode (Telegram runner + approval.* plumbing) or Settings-Hub
   expansion per the roadmap; see session report recommendation.
+
+## Phase 10 — Operator Mode (approvals + Telegram runner)
+- **Start commit:** `fb586f5` (== origin/v2-main after Boni's push; clean; 240 root / 52 web
+  green at start).
+- **Scope:** roadmap item 1 of the continue-directive — approval plumbing through lanes,
+  Telegram operator commands + live runner, web approvals panel. ADR-0021.
+- **Shipped:**
+  - `063b9c6` — kernel approval broker (`requestApproval`/`resolveApproval`/
+    `listPendingApprovals`, timeout→DENY default 120s, signal-aware, audit via approval.*
+    events); REAL lane runs under the default 'forward' policy now gate on a `lane.run-real`
+    approval ('auto-safe'/'sandboxed' pre-authorize; safe/dry flows unchanged);
+    `approvals.list/resolve` RPC; 6-scenario test suite (allow/deny/timeout/cancel/ungated/
+    unknown-id).
+  - `c81e7d8` — Telegram operator commands (/status /lanes /approvals /approve /deny /stop
+    /help; project-scoped, prefix-matched, owner-gated) + the live long-poll runner
+    (injectable fetch, official Bot API, token read once in-closure, refuses unconfigured,
+    idle backoff); `amritad --telegram`; kernel channel-runner tracking so channels.list +
+    doctor report telegram `ready` only while actually running; daemon⇄channels bin-only
+    cycle documented in ADR-0021 §5.
+  - web (this commit): `approvalsList/Resolve` wrappers, ApprovalsPanel (renders only when
+    something is pending; live-stream refresh on approval.* events; project-scoped filter),
+    Allow/Deny actions.
+- **Honesty checks:** deny-by-default everywhere (timeout, empty allowlist, stranger gate);
+  no fake telegram readiness; no secrets in replies/errors/tests (fake token fixture labeled).
+- **Verification:** counts in the session report; live HTTP smoke proves the deny path
+  end-to-end without executing anything real.
+- **Limitations / next:** approvals panel not browser-verified this session (API/unit-level
+  only — stated honestly); no CLI approvals commands yet (web+Telegram are the surfaces);
+  approval notifications are pull/stream-based (no Telegram push on request — the runner
+  could proactively notify owners: next slice); remaining roadmap items (Setup Hub manifests,
+  research lanes, artifact library, GitHub import, tool registry, installer scaffold)
+  untouched this session — next session should start at Setup Hub + GitHub one-way import.
