@@ -388,6 +388,13 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.startLane(clean(p)),
   ),
   'lanes.get': def(z.object({ laneId: z.string() }), (k, p) => k.getLane(p.laneId) ?? null),
+
+  // ── operator approvals (ADR-0021) ─────────────────────────────────────────
+  'approvals.list': def(z.object({}).optional(), (k) => k.listPendingApprovals()),
+  'approvals.resolve': def(
+    z.object({ approvalId: z.string(), decision: z.enum(['allow', 'deny']) }),
+    (k, p) => k.resolveApproval(p.approvalId, p.decision),
+  ),
   'lanes.cancel': def(z.object({ laneId: z.string() }), (k, p) => k.cancelLane(p.laneId)),
 
   'chat.turn': def(

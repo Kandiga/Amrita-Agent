@@ -121,6 +121,19 @@ export interface KernelOptions {
   laneAllowedRoots?: string[];
   /** Injectable coding-runtime prober (tests pass a fake; defaults to bounded spawn). */
   codingRuntimeProber?: CommandProber;
+  /** How long a pending approval waits before timing out to DENY (ADR-0021). */
+  approvalTimeoutMs?: number;
+}
+
+/** A pending operator approval (kernel-runtime state; the audit trail is events). */
+export interface PendingApproval {
+  approvalId: string;
+  action: string;
+  detail?: string;
+  projectId: string;
+  conversationId: string;
+  laneId?: string;
+  requestedAt: string;
 }
 
 /** Start a lane (delegated unit of work). Secret-free; nested fields are zod-validated upstream. */
@@ -194,6 +207,12 @@ export class AmritaKernel {
   >();
   /** Listeners for STREAM-ONLY events (model.delta) — never persisted (D8). */
   private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
+  /** Pending operator approvals (ADR-0021). Audit trail lives in approval.* events. */
+  private readonly pendingApprovals = new Map<
+    string,
+    { info: PendingApproval; settle: (d: 'allow' | 'deny' | 'timeout') => void }
+  >();
+  private readonly approvalTimeoutMs: number;
   private closed = false;
 
   private constructor(
@@ -204,6 +223,7 @@ export class AmritaKernel {
     laneRunner: LaneRunner,
     realLaneExecution: boolean,
     codingRuntimeProber: CommandProber | undefined,
+    approvalTimeoutMs: number,
   ) {
     this.store = store;
     this.dbPath = dbPath;
@@ -212,6 +232,7 @@ export class AmritaKernel {
     this.laneRunner = laneRunner;
     this.realLaneExecution = realLaneExecution;
     this.codingRuntimeProber = codingRuntimeProber;
+    this.approvalTimeoutMs = approvalTimeoutMs;
   }
 
   /** Open (creating + migrating) the store and start the kernel. */
@@ -242,6 +263,7 @@ export class AmritaKernel {
       laneRunner,
       realLaneExecution,
       opts.codingRuntimeProber,
+      opts.approvalTimeoutMs ?? 120_000,
     );
   }
 
@@ -250,6 +272,8 @@ export class AmritaKernel {
     // Abort any in-flight (detached) lanes so no child outlives the daemon.
     for (const { controller } of this.activeLanes.values()) controller.abort();
     this.activeLanes.clear();
+    for (const pending of this.pendingApprovals.values()) pending.settle('deny');
+    this.pendingApprovals.clear();
     this.streamListeners.clear();
     this.store.close();
   }
@@ -1052,6 +1076,100 @@ export class AmritaKernel {
     }
   }
 
+  // ── operator approvals (ADR-0021) ──────────────────────────────────────────
+
+  /**
+   * Request an operator approval: emits `approval.requested`, then waits for
+   * `resolveApproval` (web/Telegram/CLI), a timeout (→ DENY, audited), or the
+   * provided abort signal. Deny-by-default: only an explicit `allow` proceeds.
+   */
+  requestApproval(
+    ctx: { projectId: string; conversationId: string; laneId?: string },
+    action: string,
+    detail?: string,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<'allow' | 'deny' | 'timeout'> {
+    const approvalId = newId();
+    const info: PendingApproval = {
+      approvalId,
+      action,
+      ...(detail ? { detail } : {}),
+      projectId: ctx.projectId,
+      conversationId: ctx.conversationId,
+      ...(ctx.laneId ? { laneId: ctx.laneId } : {}),
+      requestedAt: new Date().toISOString(),
+    };
+    this.store.appendEvent({
+      id: newId(),
+      ts: info.requestedAt,
+      projectId: ctx.projectId,
+      conversationId: ctx.conversationId,
+      ...(ctx.laneId ? { laneId: ctx.laneId } : {}),
+      origin: 'agent',
+      type: 'approval.requested',
+      payload: { approvalId, action, ...(detail ? { detail } : {}) },
+    } as UnsealedEvent);
+
+    return new Promise((resolve) => {
+      const timeoutMs = opts.timeoutMs ?? this.approvalTimeoutMs;
+      const timer = setTimeout(() => settle('timeout'), timeoutMs);
+      const onAbort = () => settle('deny');
+      const settle = (decision: 'allow' | 'deny' | 'timeout') => {
+        if (!this.pendingApprovals.has(approvalId)) return;
+        this.pendingApprovals.delete(approvalId);
+        clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', onAbort);
+        // Audit the outcome unless the kernel is closing. Timeout audits as deny.
+        if (!this.closed && decision !== 'allow') {
+          this.safeEmitApprovalResolved(ctx, approvalId, 'deny');
+        }
+        if (!this.closed && decision === 'allow') {
+          this.safeEmitApprovalResolved(ctx, approvalId, 'allow');
+        }
+        resolve(decision);
+      };
+      this.pendingApprovals.set(approvalId, { info, settle });
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private safeEmitApprovalResolved(
+    ctx: { projectId: string; conversationId: string; laneId?: string },
+    approvalId: string,
+    decision: 'allow' | 'deny',
+  ): void {
+    try {
+      this.store.appendEvent({
+        id: newId(),
+        ts: new Date().toISOString(),
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        ...(ctx.laneId ? { laneId: ctx.laneId } : {}),
+        origin: 'user',
+        type: 'approval.resolved',
+        payload: { approvalId, decision },
+      } as UnsealedEvent);
+    } catch {
+      // auditing must never break the waiter
+    }
+  }
+
+  /** Pending approvals, oldest first. Runtime state; the log holds the audit trail. */
+  listPendingApprovals(): PendingApproval[] {
+    return [...this.pendingApprovals.values()].map((p) => p.info);
+  }
+
+  /** Resolve a pending approval. Unknown/already-settled ids report resolved:false. */
+  resolveApproval(
+    approvalId: string,
+    decision: 'allow' | 'deny',
+  ): { approvalId: string; resolved: boolean } {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) return { approvalId, resolved: false };
+    pending.settle(decision);
+    return { approvalId, resolved: true };
+  }
+
   /**
    * Start a lane: emit `lane.spawned` + `lane.mandate`, then (unless `dryRun`)
    * run it through the lane runner, streaming `lane.progress` and finishing with
@@ -1099,6 +1217,12 @@ export class AmritaKernel {
       return { laneId, status: 'aborted', dryRun: false, detached: false, report: null, error };
     }
 
+    // ADR-0021: a REAL run under the default 'forward' policy requires an
+    // operator approval before anything executes. 'auto-safe'/'sandboxed'
+    // policies skip the gate (the operator pre-authorized that posture).
+    const requireApproval =
+      !!input.real && this.realLaneExecution && mandate.approvals === 'forward';
+
     const controller = new AbortController();
     const promise = this.runLaneToCompletion(
       projectId,
@@ -1106,6 +1230,7 @@ export class AmritaKernel {
       laneId,
       mandate,
       controller.signal,
+      requireApproval,
     ).finally(() => this.activeLanes.delete(laneId));
     this.activeLanes.set(laneId, { controller, promise });
 
@@ -1131,7 +1256,27 @@ export class AmritaKernel {
     laneId: string,
     mandate: Parameters<LaneRunner['run']>[0],
     signal: AbortSignal,
+    requireApproval = false,
   ): Promise<LaneSettleResult> {
+    if (requireApproval) {
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.progress', {
+        note: 'awaiting operator approval for real execution',
+      });
+      const decision = await this.requestApproval(
+        { projectId, conversationId, laneId },
+        'lane.run-real',
+        mandate.goal,
+        { signal },
+      );
+      if (decision !== 'allow') {
+        const reason =
+          decision === 'timeout'
+            ? 'real run approval timed out (denied by default)'
+            : 'real run denied by operator';
+        this.safeEmitLane(projectId, conversationId, laneId, 'lane.aborted', { laneId, reason });
+        return { status: 'aborted', report: null, error: reason };
+      }
+    }
     try {
       const report = await this.laneRunner.run(mandate, {
         signal,

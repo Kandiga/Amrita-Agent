@@ -174,7 +174,14 @@ describe('lane execution controls (WO#5.2)', () => {
     });
     expect(kernel.health().lanes.realExecution).toBe(true);
     const { conversationId } = seedConversation(kernel);
-    const res = await kernel.startLane({ conversationId, goal: 'real', real: true });
+    // 'auto-safe' pre-authorizes this run; the default 'forward' policy would
+    // gate it behind an operator approval (ADR-0021, covered in approvals.test).
+    const res = await kernel.startLane({
+      conversationId,
+      goal: 'real',
+      real: true,
+      approvals: 'auto-safe',
+    });
     expect(res.status).toBe('completed');
     expect(res.report?.summary).toBe('ran for real');
   });
