@@ -7,26 +7,41 @@ This is the greenfield v2. The original single-package, zero-runtime-dependency 
 (v0.1) is frozen in its own repo at tag `v0.1` and serves as a reference; see
 [`docs/v01-harvest.md`](docs/v01-harvest.md) for the migration map.
 
-## Status — Phase 0 (foundation)
+## Status — usable product loop (Phases 0–5 first slices)
 
-Implemented and tested in this scaffold:
+Implemented and tested:
 
-- **`@amrita/protocol`** — the constitution. A namespaced Zod event protocol (envelope + ~40 typed
+- **`@amrita/protocol`** — the constitution. A namespaced Zod event protocol (envelope + ~54 typed
   payloads), the lane contract (`LaneMandate` / `MergeReport`), the client/server RPC union, and
   entity row schemas. `model.delta` is stream-only and never persisted.
 - **`@amrita/store`** — a Drizzle + better-sqlite3 event store. Hand-written reversible migrations,
   WAL, a per-conversation monotonic `seq` assigned inside the append transaction, the hybrid
-  user-message model (message row + event in one transaction), FTS5 ranked search over message
-  text, and >32 KB tool-payload spill-to-artifact.
+  user-message model, FTS5 ranked search (messages + memory), entity tables with their invariants
+  (append-only decisions, `secret_ref` env-name-only, settings secret tripwire), and >32 KB
+  tool-payload spill-to-artifact.
+- **`@amrita/daemon`** — the `amritad` kernel + JSON-RPC over stdio and HTTP/WS, bearer-token
+  auth, the chat-turn provider boundary (deterministic `mock` + env-backed anthropic/openai
+  adapters), **live `model.delta` streaming**, lane execution (opt-in, confined, cancellable),
+  and a grouped `doctor` report.
+- **`@amrita/cli`** — `amrita` for projects, conversations, chat, tasks/decisions/memory,
+  accounts (env-name refs only), channels, lanes, and `doctor`.
+- **`@amrita/channels`** — web transport + Telegram skeleton (deny-by-default owner allowlist,
+  pairing codes; a live bot runner is not bundled yet and every surface says so honestly).
+- **`@amrita/web`** — the operator UI: project sidebar, live-streaming chat transcript
+  (WebSocket + replay fallback), memory/tasks/decisions panels with typed writes, a Lanes panel
+  (start dry-run/real-gated, observe, cancel), runtime doctor chips, access-token panel,
+  RTL-aware, usable on narrow viewports.
 
-Later phases (daemon, providers, channels, web, lanes) are specified in [`docs/PLAN.md`](docs/PLAN.md).
+**Try it:** [`docs/smoke.md`](docs/smoke.md) walks the whole loop in ten minutes — daemon → web →
+streamed chat → project knowledge → safe lane → doctor.
 
 ## Quick start
 
 ```bash
 pnpm install
-pnpm typecheck
-pnpm test
+pnpm typecheck && pnpm lint && pnpm test
+pnpm amritad -- --db ~/.amrita/amrita.db --http --port 7460
+pnpm --filter @amrita/web dev   # http://localhost:5173
 ```
 
 ## Why a rewrite
