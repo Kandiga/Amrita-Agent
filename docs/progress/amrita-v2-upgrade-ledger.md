@@ -287,3 +287,20 @@ One ledger, updated per phase — no scattered notes.
   semantics); no `connector.installed` store rows used yet (reserved for user-installed
   connectors); Setup Hub card not browser-click verified this session; research-lane seam +
   artifact library are the next roadmap slices.
+
+## Phase 11e (stretch) — research-lane seam + lane-kind routing
+
+- **Date:** 2026-06-11 · **ADR:** 0023 · no protocol/store change
+- **What landed:** kernel dispatches lanes by `kind` (`extraLaneRunners` on KernelOptions);
+  unknown kinds abort honestly instead of silently running the Claude Code runner (an
+  intentional, documented behavior change); `ResearchLaneRunner` (kind `research`) behind the
+  same LaneRunner contract with an injected `ResearchSearchProvider` seam — unwired it aborts
+  with a needs-setup summary; with a provider it reports sources as merge-report follow-ups
+  (empty result = honest `partial`; provider failure = value-free abort; cooperative cancel).
+- **Honesty checks:** no search provider ships and nothing claims research capability; the
+  default-kind path is regression-tested (Phase 10 approval gate untouched — it sits above
+  the runner seam).
+- **Verification:** lanes 32/32 and daemon lane routing tests in the session report.
+- **Limitations / next:** wire a real search provider as an ADR-0022 connector manifest +
+  provider implementation; artifact-library groundwork did NOT naturally fall out of this
+  phase and remains untouched (next roadmap slice).

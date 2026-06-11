@@ -9,6 +9,7 @@ import {
   type ProcessResult,
   type ProcessRunner,
   type ProcessSpawnOptions,
+  ResearchLaneRunner,
   createNodeProcessRunner,
   evaluateBudget,
   isForbiddenEnvName,
@@ -392,5 +393,84 @@ describe('createNodeProcessRunner (real spawn, no Claude)', () => {
     await expect(
       runner.run({ command: process.execPath, args: ['-e', ''], env: {}, cwd: '/etc' }),
     ).rejects.toThrow(/allowed/);
+  });
+});
+
+describe('ResearchLaneRunner (ADR-0023)', () => {
+  const mandate = laneMandateSchema.parse({
+    laneId: newId(),
+    goal: 'compare sqlite fts5 ranking options',
+    contextPack: {},
+    scope: {},
+  });
+
+  const FINDINGS = [
+    { title: 'FTS5 docs', url: 'https://sqlite.org/fts5.html', snippet: 'bm25' },
+    { title: 'Ranking deep-dive', url: 'https://example.com/fts-ranking' },
+  ];
+
+  it('without a provider: aborts with an honest needs-setup summary (no fake search)', async () => {
+    const runner = new ResearchLaneRunner();
+    const report = await runner.run(mandate);
+    expect(report.exit).toBe('aborted');
+    expect(report.summary).toContain('no search provider is configured');
+    expect(report.followUps).toEqual([]);
+  });
+
+  it('with an injected provider: searches the goal and reports sources as follow-ups', async () => {
+    const queries: string[] = [];
+    const runner = new ResearchLaneRunner({
+      provider: {
+        id: 'fake',
+        search: async (q) => {
+          queries.push(q);
+          return FINDINGS;
+        },
+      },
+    });
+    const notes: string[] = [];
+    const report = await runner.run(mandate, { onProgress: (n) => notes.push(n) });
+    expect(queries).toEqual([mandate.goal]);
+    expect(report.exit).toBe('done');
+    expect(report.summary).toContain('2 source(s) via fake');
+    expect(report.followUps).toEqual([
+      'FTS5 docs — https://sqlite.org/fts5.html',
+      'Ranking deep-dive — https://example.com/fts-ranking',
+    ]);
+    expect(notes.some((n) => n.includes('searching via fake'))).toBe(true);
+  });
+
+  it('empty results are an honest partial, and provider failures abort value-free', async () => {
+    const empty = new ResearchLaneRunner({ provider: { id: 'fake', search: async () => [] } });
+    const emptyReport = await empty.run(mandate);
+    expect(emptyReport.exit).toBe('partial');
+    expect(emptyReport.summary).toContain('no sources found');
+
+    const failing = new ResearchLaneRunner({
+      provider: {
+        id: 'fake',
+        search: async () => {
+          throw new Error('HTTP 500: secret-bearing body that must not leak');
+        },
+      },
+    });
+    const failReport = await failing.run(mandate);
+    expect(failReport.exit).toBe('aborted');
+    expect(failReport.summary).not.toContain('secret-bearing'); // name only, never the message
+  });
+
+  it('cooperative cancellation reports cancelled', async () => {
+    const controller = new AbortController();
+    const runner = new ResearchLaneRunner({
+      provider: {
+        id: 'fake',
+        search: async () => {
+          controller.abort();
+          return FINDINGS;
+        },
+      },
+    });
+    const report = await runner.run(mandate, { signal: controller.signal });
+    expect(report.exit).toBe('cancelled');
   });
 });

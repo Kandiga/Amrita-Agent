@@ -41,6 +41,14 @@ interface LaneRunner {
 events) and an optional `AbortSignal`. Child-process execution goes through an injected `ProcessRunner`,
 so the runner is fully testable without spawning anything.
 
+**Kind routing (ADR-0023):** the kernel dispatches `lanes.start` by the lane's `kind` — the default
+runner serves `claude-code`, extras (`KernelOptions.extraLaneRunners`) register by their `kind`, and an
+unknown kind aborts honestly ("no runner registered…") instead of silently running the default.
+`ResearchLaneRunner` (kind `research`) is the first extra: it resolves the goal through an injected
+`ResearchSearchProvider` and reports sources as merge-report follow-ups. **No provider ships yet** —
+unwired, a research lane aborts with a needs-setup summary; it never pretends to search. Approval
+gating, budgets, and cancellation sit above the runner seam and apply to every kind.
+
 ## Safety model
 
 1. **No real execution by default.** `ClaudeCodeLaneRunner.run()` throws `LaneSafetyError` unless a

@@ -1,4 +1,4 @@
-import { FakeLaneRunner } from '@amrita/lanes';
+import { FakeLaneRunner, ResearchLaneRunner } from '@amrita/lanes';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AmritaKernel } from '../src/kernel.ts';
 import { dispatch, isErrorResponse } from '../src/rpc.ts';
@@ -229,5 +229,71 @@ describe('lane execution controls (WO#5.2)', () => {
     if (!isErrorResponse(r)) {
       expect((r.result as { cancelled: boolean }).cancelled).toBe(true);
     }
+  });
+});
+
+describe('lane kind routing (ADR-0023)', () => {
+  it('research lanes without a provider abort honestly via the unwired seam', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({
+      conversationId,
+      goal: 'find fts5 sources',
+      kind: 'research',
+    });
+    expect(res.status).toBe('aborted');
+    expect(res.report?.exit).toBe('aborted');
+    expect(res.report?.summary).toContain('no search provider is configured');
+  });
+
+  it('an injected research runner with a fake provider completes with sources', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      extraLaneRunners: [
+        new ResearchLaneRunner({
+          provider: {
+            id: 'fake',
+            search: async () => [{ title: 'FTS5 docs', url: 'https://sqlite.org/fts5.html' }],
+          },
+        }),
+      ],
+    });
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({
+      conversationId,
+      goal: 'find fts5 sources',
+      kind: 'research',
+    });
+    expect(res.status).toBe('completed');
+    expect(res.report?.followUps).toEqual(['FTS5 docs — https://sqlite.org/fts5.html']);
+    // the full lifecycle is in the log, like every other lane kind
+    const types = eventTypes(kernel, conversationId);
+    expect(types).toContain('lane.progress');
+    expect(types).toContain('lane.merge_report');
+    expect(types).toContain('lane.completed');
+  });
+
+  it('an unknown lane kind aborts honestly instead of running the default runner', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      laneRunner: new FakeLaneRunner({ summary: 'must never run' }),
+    });
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({ conversationId, goal: 'x', kind: 'codex' });
+    expect(res.status).toBe('aborted');
+    expect(res.error).toContain('no runner registered for lane kind: codex');
+    // no merge report: nothing executed
+    expect(eventTypes(kernel, conversationId)).not.toContain('lane.merge_report');
+  });
+
+  it('the default kind still routes to the injected default runner (no behavior drift)', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      laneRunner: new FakeLaneRunner({ summary: 'default path intact' }),
+    });
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({ conversationId, goal: 'x' });
+    expect(res.status).toBe('completed');
+    expect(res.report?.summary).toBe('default path intact');
   });
 });

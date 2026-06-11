@@ -1,4 +1,4 @@
-import { ClaudeCodeLaneRunner, type LaneRunner } from '@amrita/lanes';
+import { ClaudeCodeLaneRunner, type LaneRunner, ResearchLaneRunner } from '@amrita/lanes';
 import {
   type AmritaEvent,
   type ConnectorStatusReport,
@@ -118,6 +118,8 @@ export interface KernelOptions {
   fetchImpl?: FetchLike;
   /** Injectable lane runner (tests pass a fake; defaults to a safe, exec-disabled Claude Code runner). */
   laneRunner?: LaneRunner;
+  /** Additional kind-dispatched runners (ADR-0023); override the built-ins by kind. */
+  extraLaneRunners?: LaneRunner[];
   /** Opt-in to REAL Claude Code lane execution. Default false (also `AMRITA_LANES_ALLOW_REAL_EXECUTION=1`). */
   allowRealLaneExecution?: boolean;
   /** Workspace roots a real lane's cwd must resolve within (also `AMRITA_LANES_ALLOWED_ROOTS`, `:`-sep). */
@@ -202,7 +204,10 @@ export class AmritaKernel {
   readonly realLaneExecution: boolean;
   private readonly mock = new MockProvider();
   private readonly fetchImpl: FetchLike;
-  private readonly laneRunner: LaneRunner;
+  /** Serves `claude-code` and whatever kind the injected default declares (tests: `fake`). */
+  private readonly defaultLaneRunner: LaneRunner;
+  /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
+  private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
   private readonly activeLanes = new Map<
     string,
@@ -225,7 +230,8 @@ export class AmritaKernel {
     dbPath: string,
     startedAt: string,
     fetchImpl: FetchLike,
-    laneRunner: LaneRunner,
+    defaultLaneRunner: LaneRunner,
+    extraLaneRunners: Map<string, LaneRunner>,
     realLaneExecution: boolean,
     codingRuntimeProber: CommandProber | undefined,
     approvalTimeoutMs: number,
@@ -234,7 +240,8 @@ export class AmritaKernel {
     this.dbPath = dbPath;
     this.startedAt = startedAt;
     this.fetchImpl = fetchImpl;
-    this.laneRunner = laneRunner;
+    this.defaultLaneRunner = defaultLaneRunner;
+    this.extraLaneRunners = extraLaneRunners;
     this.realLaneExecution = realLaneExecution;
     this.codingRuntimeProber = codingRuntimeProber;
     this.approvalTimeoutMs = approvalTimeoutMs;
@@ -260,16 +267,31 @@ export class AmritaKernel {
       (realLaneExecution
         ? new ClaudeCodeLaneRunner({ allowRealExecution: true, allowedRoots })
         : new ClaudeCodeLaneRunner());
+    // Kind-dispatched runners (ADR-0023): research ships unwired (honest
+    // needs-setup abort); injected extras override by kind (tests wire a provider).
+    const extraLaneRunners = new Map<string, LaneRunner>();
+    for (const r of [new ResearchLaneRunner(), ...(opts.extraLaneRunners ?? [])]) {
+      extraLaneRunners.set(r.kind, r);
+    }
     return new AmritaKernel(
       store,
       opts.dbPath,
       new Date().toISOString(),
       opts.fetchImpl ?? defaultFetch,
       laneRunner,
+      extraLaneRunners,
       realLaneExecution,
       opts.codingRuntimeProber,
       opts.approvalTimeoutMs ?? 120_000,
     );
+  }
+
+  /** Resolve the runner for a lane kind (ADR-0023). Unknown kinds get none — the lane aborts honestly. */
+  private laneRunnerFor(kind: string): LaneRunner | undefined {
+    if (kind === 'claude-code' || kind === this.defaultLaneRunner.kind) {
+      return this.defaultLaneRunner;
+    }
+    return this.extraLaneRunners.get(kind);
   }
 
   close(): void {
@@ -1281,6 +1303,18 @@ export class AmritaKernel {
       return { laneId, status: 'spawned', dryRun: true, detached: false, report: null };
     }
 
+    // ADR-0023: dispatch by kind; an unknown kind aborts honestly instead of
+    // silently running the default (Claude Code) runner.
+    const runner = this.laneRunnerFor(kind);
+    if (!runner) {
+      const error = `no runner registered for lane kind: ${kind}`;
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', {
+        laneId,
+        reason: error,
+      });
+      return { laneId, status: 'aborted', dryRun: false, detached: false, report: null, error };
+    }
+
     // Explicit real intent on a daemon that has not opted in → safe failure, no run.
     if (input.real && !this.realLaneExecution) {
       const error =
@@ -1304,6 +1338,7 @@ export class AmritaKernel {
       conversationId,
       laneId,
       mandate,
+      runner,
       controller.signal,
       requireApproval,
     ).finally(() => this.activeLanes.delete(laneId));
@@ -1330,6 +1365,7 @@ export class AmritaKernel {
     conversationId: string,
     laneId: string,
     mandate: Parameters<LaneRunner['run']>[0],
+    runner: LaneRunner,
     signal: AbortSignal,
     requireApproval = false,
   ): Promise<LaneSettleResult> {
@@ -1353,7 +1389,7 @@ export class AmritaKernel {
       }
     }
     try {
-      const report = await this.laneRunner.run(mandate, {
+      const report = await runner.run(mandate, {
         signal,
         onProgress: (note, pct) =>
           this.safeEmitLane(

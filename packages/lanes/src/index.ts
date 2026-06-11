@@ -5,3 +5,4 @@ export * from './process-runner.ts';
 export * from './stream-json.ts';
 export * from './claude-code.ts';
 export * from './fake.ts';
+export * from './research.ts';
