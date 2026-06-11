@@ -235,6 +235,9 @@ export function App() {
       })) as { project?: Project } | Project;
       const project =
         'project' in ensured && ensured.project ? ensured.project : (ensured as Project);
+      // A freshly ensured project (e.g. `system` on a brand-new DB) must join
+      // the list immediately — selectedProject/writeCtx derive from it.
+      setProjects((old) => (old.some((p) => p.id === project.id) ? old : [...old, project]));
       setProjectSlug(project.slug);
       const listResult = await client.call('conversation.list', { projectId: project.id });
       const list = extractArray<Conversation>(listResult, ['conversations']);
