@@ -147,6 +147,36 @@ export interface RoleResolutionLite {
   via: 'project' | 'binding' | 'auto';
 }
 
+/** Honest coding-runtime probe result (ADR-0019 §6). */
+export interface CodingRuntimeLite {
+  id: string;
+  title: string;
+  state:
+    | 'ready'
+    | 'installed_unauthenticated'
+    | 'installed_auth_unknown'
+    | 'not_installed'
+    | 'status_unknown';
+  version?: string;
+  realExecution: boolean;
+  detail: string;
+  nextCommand?: string;
+}
+
+/** The Settings & Runtime Hub aggregate (runtime.status). */
+export interface RuntimeStatusLite {
+  roles: RoleResolutionLite[];
+  providers: {
+    id: string;
+    kind: string;
+    available: boolean;
+    configuredAccounts: number;
+    envReady: boolean;
+    streaming: boolean;
+  }[];
+  codingRuntimes: CodingRuntimeLite[];
+}
+
 export interface BriefUpdateParams {
   projectId: string;
   conversationId: string;
@@ -376,6 +406,28 @@ export class RpcClient {
       'providers.roles',
       projectId ? { projectId } : {},
     );
+  }
+
+  // ── runtime selection (ADR-0019) ────────────────────────────────────────
+
+  runtimeStatus(projectId?: string): Promise<RuntimeStatusLite> {
+    return this.call<RuntimeStatusLite>('runtime.status', projectId ? { projectId } : {});
+  }
+
+  roleSet(params: {
+    role: 'fast' | 'main' | 'deep';
+    provider: string;
+    model?: string;
+    projectId?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('providers.role.set', params);
+  }
+
+  roleClear(params: {
+    role: 'fast' | 'main' | 'deep';
+    projectId?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('providers.role.clear', params);
   }
 
   timelineList(projectId: string, limit?: number): Promise<AmritaEventLite[]> {

@@ -13,6 +13,7 @@ import { nextActions } from './companion.ts';
 import { LanesPanel } from './components/LanesPanel.tsx';
 import { NextActionsPanel } from './components/NextActionsPanel.tsx';
 import { RuntimePanel } from './components/RuntimePanel.tsx';
+import { SettingsRuntimeHub } from './components/SettingsRuntimeHub.tsx';
 import { SurfacePanel } from './components/SurfacePanel.tsx';
 import { TimelinePanel } from './components/TimelinePanel.tsx';
 import {
@@ -119,6 +120,8 @@ export function App() {
   const [evidence, setEvidence] = useState<Record<string, string>>({});
   /** Effective fast/main/deep model resolution for the open project (§2.8). */
   const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
+  /** Inspector mode: the Project Brain panels, or the Settings & Runtime Hub. */
+  const [showSettings, setShowSettings] = useState(false);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -634,6 +637,14 @@ export function App() {
           <div className="topbar-controls">
             <button
               type="button"
+              className={showSettings ? 'settings-toggle active' : 'settings-toggle'}
+              onClick={() => setShowSettings((v) => !v)}
+              title="Runtime settings — models, providers, coding runtimes"
+            >
+              {showSettings ? 'Project' : 'Settings'}
+            </button>
+            <button
+              type="button"
               className={`conn conn-${streamState}`}
               onClick={refreshTranscript}
               title="Connection state — click to replay from the daemon"
@@ -733,454 +744,472 @@ export function App() {
             </button>
           ) : null}
         </section>
-        <NextActionsPanel actions={companionActions} />
-        <section className="card">
-          <h2>Brief</h2>
-          {briefEditing ? (
-            <form
-              className="brief-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void saveBrief();
-              }}
-            >
-              <textarea
-                value={briefGoal}
-                onChange={(e) => setBriefGoal(e.target.value)}
-                dir={textDir(briefGoal)}
-                placeholder="What is this project for?"
-                rows={2}
-              />
-              <input
-                value={briefAudience}
-                onChange={(e) => setBriefAudience(e.target.value)}
-                dir={textDir(briefAudience)}
-                placeholder="Who is it for? (optional)"
-              />
-              <textarea
-                value={briefCriteria}
-                onChange={(e) => setBriefCriteria(e.target.value)}
-                dir={textDir(briefCriteria)}
-                placeholder={'Success criteria — one per line'}
-                rows={2}
-              />
-              <textarea
-                value={briefScope}
-                onChange={(e) => setBriefScope(e.target.value)}
-                dir={textDir(briefScope)}
-                placeholder={'In scope — one per line'}
-                rows={2}
-              />
-              <textarea
-                value={briefNoScope}
-                onChange={(e) => setBriefNoScope(e.target.value)}
-                dir={textDir(briefNoScope)}
-                placeholder={'Out of scope — one per line'}
-                rows={2}
-              />
-              <div className="brief-actions">
-                <button type="submit" disabled={!briefGoal.trim()}>
-                  Save brief
-                </button>
-                <button type="button" onClick={() => setBriefEditing(false)}>
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : companion?.brief ? (
-            <div className="brief-view">
-              <p className="brief-goal" dir={textDir(companion.brief.goal)}>
-                {companion.brief.goal}
-              </p>
-              {companion.brief.audience ? <small>for {companion.brief.audience}</small> : null}
-              {companion.brief.successCriteria.length > 0 ? (
-                <ul>
-                  {companion.brief.successCriteria.map((s) => (
-                    <li key={s} dir={textDir(s)}>
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {companion.brief.scope.length > 0 ? (
-                <p className="brief-scope">
-                  <strong>In:</strong> {companion.brief.scope.join(' · ')}
-                </p>
-              ) : null}
-              {companion.brief.noScope.length > 0 ? (
-                <p className="brief-scope">
-                  <strong>Out:</strong> {companion.brief.noScope.join(' · ')}
-                </p>
-              ) : null}
-              <button type="button" onClick={startBriefEdit}>
-                Edit brief
-              </button>
-            </div>
-          ) : (
-            <div className="brief-view">
-              <p className="empty-note">
-                No project brief yet. Capture the goal and what done looks like — next actions and
-                planning hang off it.
-              </p>
-              <button type="button" onClick={startBriefEdit} disabled={!conversationId}>
-                Write the brief
-              </button>
-            </div>
-          )}
-        </section>
-        <SurfacePanel artifacts={surfaceArtifacts} />
-        <RuntimePanel doctor={doctor} />
-        <section className="card">
-          <h2>Provider status</h2>
-          <div className="provider-row">
-            <strong>{selectedProvider?.id ?? provider}</strong>
-            <span>{selectedProvider?.available === false ? 'unavailable' : 'available'}</span>
-          </div>
-          <p>
-            configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
-            {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
-          </p>
-          <p>
-            {selectedProvider?.streaming
-              ? 'streams replies live (model.delta)'
-              : 'replies arrive whole — live streaming for this provider is not built yet'}
-          </p>
-          {roleInfo.length > 0 ? (
-            <p className="role-line">
-              {roleInfo
-                .map(
-                  (r) =>
-                    `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
-                      r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
-                    }`,
-                )
-                .join(' · ')}
-            </p>
-          ) : null}
-        </section>
-        <section className="card">
-          <h2>Memory</h2>
-          <div className="search">
-            <input
-              value={memoryQuery}
-              onChange={(e) => setMemoryQuery(e.target.value)}
-              placeholder="Search memory"
-            />
-            <button type="button" onClick={searchMemory}>
-              Search
-            </button>
-          </div>
-          {memory.length === 0 && memoryQuery ? <p className="empty-note">No matches.</p> : null}
-          {memory.map((m) => (
-            <p key={m.id} dir={textDir(m.content)}>
-              {m.content}
-            </p>
-          ))}
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void rememberMemory();
-            }}
-          >
-            <input
-              value={rememberDraft}
-              onChange={(e) => setRememberDraft(e.target.value)}
-              dir={textDir(rememberDraft)}
-              placeholder="Remember for this project…"
-            />
-            <button type="submit" disabled={!rememberDraft.trim() || !conversationId}>
-              Save
-            </button>
-          </form>
-        </section>
-        <section className="card">
-          <h2>Tasks</h2>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void addTask();
-            }}
-          >
-            <input
-              value={taskDraft}
-              onChange={(e) => setTaskDraft(e.target.value)}
-              dir={textDir(taskDraft)}
-              placeholder="Add a task…"
-            />
-            <button type="submit" disabled={!taskDraft.trim() || !conversationId}>
-              Add
-            </button>
-          </form>
-          {(companion?.milestones ?? []).some(
-            (m) => m.status !== 'done' && m.status !== 'dropped',
-          ) ? (
-            <label className="task-milestone">
-              Milestone for new tasks
-              <select value={taskMilestone} onChange={(e) => setTaskMilestone(e.target.value)}>
-                <option value="">(none)</option>
-                {(companion?.milestones ?? [])
-                  .filter((m) => m.status !== 'done' && m.status !== 'dropped')
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.title}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          ) : null}
-          {tasks.length === 0 ? (
-            <p className="empty-note">No tasks yet.</p>
-          ) : (
-            tasks.map((t) => (
-              <div key={t.id} className={`task-row${t.status === 'done' ? ' task-done' : ''}`}>
-                <div className="task-main">
-                  <strong dir={textDir(t.title)}>{t.title}</strong>
-                  <small>{t.status}</small>
-                </div>
-                {t.status !== 'done' && t.status !== 'dropped' ? (
-                  <button
-                    type="button"
-                    className="task-complete"
-                    onClick={() => completeTask(t.id)}
-                  >
-                    Done
+        {showSettings ? (
+          <SettingsRuntimeHub
+            projectId={selectedProject?.id}
+            projectName={selectedProject?.name}
+            onError={reportError}
+          />
+        ) : (
+          <>
+            <NextActionsPanel actions={companionActions} />
+            <section className="card">
+              <h2>Brief</h2>
+              {briefEditing ? (
+                <form
+                  className="brief-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void saveBrief();
+                  }}
+                >
+                  <textarea
+                    value={briefGoal}
+                    onChange={(e) => setBriefGoal(e.target.value)}
+                    dir={textDir(briefGoal)}
+                    placeholder="What is this project for?"
+                    rows={2}
+                  />
+                  <input
+                    value={briefAudience}
+                    onChange={(e) => setBriefAudience(e.target.value)}
+                    dir={textDir(briefAudience)}
+                    placeholder="Who is it for? (optional)"
+                  />
+                  <textarea
+                    value={briefCriteria}
+                    onChange={(e) => setBriefCriteria(e.target.value)}
+                    dir={textDir(briefCriteria)}
+                    placeholder={'Success criteria — one per line'}
+                    rows={2}
+                  />
+                  <textarea
+                    value={briefScope}
+                    onChange={(e) => setBriefScope(e.target.value)}
+                    dir={textDir(briefScope)}
+                    placeholder={'In scope — one per line'}
+                    rows={2}
+                  />
+                  <textarea
+                    value={briefNoScope}
+                    onChange={(e) => setBriefNoScope(e.target.value)}
+                    dir={textDir(briefNoScope)}
+                    placeholder={'Out of scope — one per line'}
+                    rows={2}
+                  />
+                  <div className="brief-actions">
+                    <button type="submit" disabled={!briefGoal.trim()}>
+                      Save brief
+                    </button>
+                    <button type="button" onClick={() => setBriefEditing(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : companion?.brief ? (
+                <div className="brief-view">
+                  <p className="brief-goal" dir={textDir(companion.brief.goal)}>
+                    {companion.brief.goal}
+                  </p>
+                  {companion.brief.audience ? <small>for {companion.brief.audience}</small> : null}
+                  {companion.brief.successCriteria.length > 0 ? (
+                    <ul>
+                      {companion.brief.successCriteria.map((s) => (
+                        <li key={s} dir={textDir(s)}>
+                          {s}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {companion.brief.scope.length > 0 ? (
+                    <p className="brief-scope">
+                      <strong>In:</strong> {companion.brief.scope.join(' · ')}
+                    </p>
+                  ) : null}
+                  {companion.brief.noScope.length > 0 ? (
+                    <p className="brief-scope">
+                      <strong>Out:</strong> {companion.brief.noScope.join(' · ')}
+                    </p>
+                  ) : null}
+                  <button type="button" onClick={startBriefEdit}>
+                    Edit brief
                   </button>
-                ) : null}
-              </div>
-            ))
-          )}
-        </section>
-        <section className="card">
-          <h2>Decisions</h2>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void addDecision();
-            }}
-          >
-            <input
-              value={decisionDraft}
-              onChange={(e) => setDecisionDraft(e.target.value)}
-              dir={textDir(decisionDraft)}
-              placeholder="Record a decision…"
-            />
-            <button type="submit" disabled={!decisionDraft.trim() || !conversationId}>
-              Record
-            </button>
-          </form>
-          {decisions.length === 0 ? (
-            <p className="empty-note">No decisions recorded yet.</p>
-          ) : (
-            decisions.map((d) => (
-              <p key={d.id} className="decision-row" dir={textDir(d.text)}>
-                {d.text}
-              </p>
-            ))
-          )}
-        </section>
-        <section className="card">
-          <h2>Milestones</h2>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void addMilestone();
-            }}
-          >
-            <input
-              value={milestoneDraft}
-              onChange={(e) => setMilestoneDraft(e.target.value)}
-              dir={textDir(milestoneDraft)}
-              placeholder="Add a milestone…"
-            />
-            <input
-              type="date"
-              className="milestone-date"
-              value={milestoneTarget}
-              onChange={(e) => setMilestoneTarget(e.target.value)}
-              title="Target date (optional)"
-            />
-            <button type="submit" disabled={!milestoneDraft.trim() || !conversationId}>
-              Add
-            </button>
-          </form>
-          {(companion?.milestones ?? []).length === 0 ? (
-            <p className="empty-note">
-              No milestones yet — group tasks into the next meaningful chunk of progress.
-            </p>
-          ) : (
-            (companion?.milestones ?? []).map((m) => {
-              const openCount = tasks.filter(
-                (t) => t.milestoneId === m.id && t.status !== 'done' && t.status !== 'dropped',
-              ).length;
-              return (
-                <div key={m.id} className="task-row">
-                  <div className="task-main">
-                    <strong dir={textDir(m.title)}>{m.title}</strong>
-                    <small>
-                      {m.status}
-                      {m.targetDate ? ` · → ${m.targetDate}` : ''}
-                      {openCount > 0 ? ` · ${openCount} open task${openCount > 1 ? 's' : ''}` : ''}
-                    </small>
-                  </div>
-                  {m.status !== 'done' && m.status !== 'dropped' ? (
-                    <button
-                      type="button"
-                      className="task-complete"
-                      onClick={() => void finishMilestone(m.id)}
-                    >
-                      Done
-                    </button>
-                  ) : null}
                 </div>
-              );
-            })
-          )}
-        </section>
-        <section className="card">
-          <h2>Open questions</h2>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void addQuestion();
-            }}
-          >
-            <input
-              value={questionDraft}
-              onChange={(e) => setQuestionDraft(e.target.value)}
-              dir={textDir(questionDraft)}
-              placeholder="What is still unknown?"
-            />
-            <button type="submit" disabled={!questionDraft.trim() || !conversationId}>
-              Add
-            </button>
-          </form>
-          {(companion?.questions ?? []).length === 0 ? (
-            <p className="empty-note">No open questions — when one comes up, park it here.</p>
-          ) : (
-            (companion?.questions ?? []).map((q) => (
-              <div key={q.id} className={`settle-row settle-${q.status}`}>
-                <p dir={textDir(q.text)}>{q.text}</p>
-                {q.status === 'open' ? (
-                  <div className="settle-controls">
-                    <input
-                      value={evidence[q.id] ?? ''}
-                      onChange={(e) => setEvidence((old) => ({ ...old, [q.id]: e.target.value }))}
-                      dir={textDir(evidence[q.id] ?? '')}
-                      placeholder="Resolution note / drop reason…"
-                    />
-                    <button
-                      type="button"
-                      disabled={!(evidence[q.id] ?? '').trim()}
-                      onClick={() => void settleQuestion(q.id, 'resolve')}
-                    >
-                      Resolve
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!(evidence[q.id] ?? '').trim()}
-                      onClick={() => void settleQuestion(q.id, 'drop')}
-                    >
-                      Drop
-                    </button>
-                  </div>
-                ) : (
-                  <small>
-                    {q.status === 'resolved'
-                      ? `resolved — ${q.resolution ?? 'by decision'}`
-                      : `dropped — ${q.dropReason}`}
-                  </small>
-                )}
+              ) : (
+                <div className="brief-view">
+                  <p className="empty-note">
+                    No project brief yet. Capture the goal and what done looks like — next actions
+                    and planning hang off it.
+                  </p>
+                  <button type="button" onClick={startBriefEdit} disabled={!conversationId}>
+                    Write the brief
+                  </button>
+                </div>
+              )}
+            </section>
+            <SurfacePanel artifacts={surfaceArtifacts} />
+            <RuntimePanel doctor={doctor} />
+            <section className="card">
+              <h2>Provider status</h2>
+              <div className="provider-row">
+                <strong>{selectedProvider?.id ?? provider}</strong>
+                <span>{selectedProvider?.available === false ? 'unavailable' : 'available'}</span>
               </div>
-            ))
-          )}
-        </section>
-        <section className="card">
-          <h2>Risks</h2>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void addRisk();
-            }}
-          >
-            <input
-              value={riskDraft}
-              onChange={(e) => setRiskDraft(e.target.value)}
-              dir={textDir(riskDraft)}
-              placeholder="What could go wrong?"
-            />
-            <select
-              className="risk-severity"
-              value={riskSeverity}
-              onChange={(e) => setRiskSeverity(e.target.value as typeof riskSeverity)}
-              title="Severity (optional)"
-            >
-              <option value="">sev?</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-            <button type="submit" disabled={!riskDraft.trim() || !conversationId}>
-              Add
-            </button>
-          </form>
-          {(companion?.risks ?? []).length === 0 ? (
-            <p className="empty-note">No tracked risks. Honest list — empty means empty.</p>
-          ) : (
-            (companion?.risks ?? []).map((r) => (
-              <div key={r.id} className={`settle-row settle-${r.status}`}>
-                <p dir={textDir(r.text)}>
-                  {r.severity ? (
-                    <span className={`sev sev-${r.severity}`}>{r.severity}</span>
-                  ) : null}
-                  {r.text}
+              <p>
+                configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
+                {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
+              </p>
+              <p>
+                {selectedProvider?.streaming
+                  ? 'streams replies live (model.delta)'
+                  : 'replies arrive whole — live streaming for this provider is not built yet'}
+              </p>
+              {roleInfo.length > 0 ? (
+                <p className="role-line">
+                  {roleInfo
+                    .map(
+                      (r) =>
+                        `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
+                          r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
+                        }`,
+                    )
+                    .join(' · ')}
                 </p>
-                {r.status === 'open' ? (
-                  <div className="settle-controls">
-                    <input
-                      value={evidence[r.id] ?? ''}
-                      onChange={(e) => setEvidence((old) => ({ ...old, [r.id]: e.target.value }))}
-                      dir={textDir(evidence[r.id] ?? '')}
-                      placeholder="Resolution note / drop reason…"
-                    />
-                    <button
-                      type="button"
-                      disabled={!(evidence[r.id] ?? '').trim()}
-                      onClick={() => void settleRisk(r.id, 'resolve')}
-                    >
-                      Resolve
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!(evidence[r.id] ?? '').trim()}
-                      onClick={() => void settleRisk(r.id, 'drop')}
-                    >
-                      Drop
-                    </button>
-                  </div>
-                ) : (
-                  <small>
-                    {r.status === 'resolved'
-                      ? `resolved — ${r.resolution ?? 'by decision'}`
-                      : `dropped — ${r.dropReason}`}
-                  </small>
-                )}
+              ) : null}
+            </section>
+            <section className="card">
+              <h2>Memory</h2>
+              <div className="search">
+                <input
+                  value={memoryQuery}
+                  onChange={(e) => setMemoryQuery(e.target.value)}
+                  placeholder="Search memory"
+                />
+                <button type="button" onClick={searchMemory}>
+                  Search
+                </button>
               </div>
-            ))
-          )}
-        </section>
-        <LanesPanel
-          lanes={laneViews}
-          conversationId={conversationId}
-          realExecAvailable={realExecAvailable}
-          onError={reportError}
-        />
-        <TimelinePanel events={timeline} />
+              {memory.length === 0 && memoryQuery ? (
+                <p className="empty-note">No matches.</p>
+              ) : null}
+              {memory.map((m) => (
+                <p key={m.id} dir={textDir(m.content)}>
+                  {m.content}
+                </p>
+              ))}
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void rememberMemory();
+                }}
+              >
+                <input
+                  value={rememberDraft}
+                  onChange={(e) => setRememberDraft(e.target.value)}
+                  dir={textDir(rememberDraft)}
+                  placeholder="Remember for this project…"
+                />
+                <button type="submit" disabled={!rememberDraft.trim() || !conversationId}>
+                  Save
+                </button>
+              </form>
+            </section>
+            <section className="card">
+              <h2>Tasks</h2>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void addTask();
+                }}
+              >
+                <input
+                  value={taskDraft}
+                  onChange={(e) => setTaskDraft(e.target.value)}
+                  dir={textDir(taskDraft)}
+                  placeholder="Add a task…"
+                />
+                <button type="submit" disabled={!taskDraft.trim() || !conversationId}>
+                  Add
+                </button>
+              </form>
+              {(companion?.milestones ?? []).some(
+                (m) => m.status !== 'done' && m.status !== 'dropped',
+              ) ? (
+                <label className="task-milestone">
+                  Milestone for new tasks
+                  <select value={taskMilestone} onChange={(e) => setTaskMilestone(e.target.value)}>
+                    <option value="">(none)</option>
+                    {(companion?.milestones ?? [])
+                      .filter((m) => m.status !== 'done' && m.status !== 'dropped')
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.title}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ) : null}
+              {tasks.length === 0 ? (
+                <p className="empty-note">No tasks yet.</p>
+              ) : (
+                tasks.map((t) => (
+                  <div key={t.id} className={`task-row${t.status === 'done' ? ' task-done' : ''}`}>
+                    <div className="task-main">
+                      <strong dir={textDir(t.title)}>{t.title}</strong>
+                      <small>{t.status}</small>
+                    </div>
+                    {t.status !== 'done' && t.status !== 'dropped' ? (
+                      <button
+                        type="button"
+                        className="task-complete"
+                        onClick={() => completeTask(t.id)}
+                      >
+                        Done
+                      </button>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </section>
+            <section className="card">
+              <h2>Decisions</h2>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void addDecision();
+                }}
+              >
+                <input
+                  value={decisionDraft}
+                  onChange={(e) => setDecisionDraft(e.target.value)}
+                  dir={textDir(decisionDraft)}
+                  placeholder="Record a decision…"
+                />
+                <button type="submit" disabled={!decisionDraft.trim() || !conversationId}>
+                  Record
+                </button>
+              </form>
+              {decisions.length === 0 ? (
+                <p className="empty-note">No decisions recorded yet.</p>
+              ) : (
+                decisions.map((d) => (
+                  <p key={d.id} className="decision-row" dir={textDir(d.text)}>
+                    {d.text}
+                  </p>
+                ))
+              )}
+            </section>
+            <section className="card">
+              <h2>Milestones</h2>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void addMilestone();
+                }}
+              >
+                <input
+                  value={milestoneDraft}
+                  onChange={(e) => setMilestoneDraft(e.target.value)}
+                  dir={textDir(milestoneDraft)}
+                  placeholder="Add a milestone…"
+                />
+                <input
+                  type="date"
+                  className="milestone-date"
+                  value={milestoneTarget}
+                  onChange={(e) => setMilestoneTarget(e.target.value)}
+                  title="Target date (optional)"
+                />
+                <button type="submit" disabled={!milestoneDraft.trim() || !conversationId}>
+                  Add
+                </button>
+              </form>
+              {(companion?.milestones ?? []).length === 0 ? (
+                <p className="empty-note">
+                  No milestones yet — group tasks into the next meaningful chunk of progress.
+                </p>
+              ) : (
+                (companion?.milestones ?? []).map((m) => {
+                  const openCount = tasks.filter(
+                    (t) => t.milestoneId === m.id && t.status !== 'done' && t.status !== 'dropped',
+                  ).length;
+                  return (
+                    <div key={m.id} className="task-row">
+                      <div className="task-main">
+                        <strong dir={textDir(m.title)}>{m.title}</strong>
+                        <small>
+                          {m.status}
+                          {m.targetDate ? ` · → ${m.targetDate}` : ''}
+                          {openCount > 0
+                            ? ` · ${openCount} open task${openCount > 1 ? 's' : ''}`
+                            : ''}
+                        </small>
+                      </div>
+                      {m.status !== 'done' && m.status !== 'dropped' ? (
+                        <button
+                          type="button"
+                          className="task-complete"
+                          onClick={() => void finishMilestone(m.id)}
+                        >
+                          Done
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </section>
+            <section className="card">
+              <h2>Open questions</h2>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void addQuestion();
+                }}
+              >
+                <input
+                  value={questionDraft}
+                  onChange={(e) => setQuestionDraft(e.target.value)}
+                  dir={textDir(questionDraft)}
+                  placeholder="What is still unknown?"
+                />
+                <button type="submit" disabled={!questionDraft.trim() || !conversationId}>
+                  Add
+                </button>
+              </form>
+              {(companion?.questions ?? []).length === 0 ? (
+                <p className="empty-note">No open questions — when one comes up, park it here.</p>
+              ) : (
+                (companion?.questions ?? []).map((q) => (
+                  <div key={q.id} className={`settle-row settle-${q.status}`}>
+                    <p dir={textDir(q.text)}>{q.text}</p>
+                    {q.status === 'open' ? (
+                      <div className="settle-controls">
+                        <input
+                          value={evidence[q.id] ?? ''}
+                          onChange={(e) =>
+                            setEvidence((old) => ({ ...old, [q.id]: e.target.value }))
+                          }
+                          dir={textDir(evidence[q.id] ?? '')}
+                          placeholder="Resolution note / drop reason…"
+                        />
+                        <button
+                          type="button"
+                          disabled={!(evidence[q.id] ?? '').trim()}
+                          onClick={() => void settleQuestion(q.id, 'resolve')}
+                        >
+                          Resolve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!(evidence[q.id] ?? '').trim()}
+                          onClick={() => void settleQuestion(q.id, 'drop')}
+                        >
+                          Drop
+                        </button>
+                      </div>
+                    ) : (
+                      <small>
+                        {q.status === 'resolved'
+                          ? `resolved — ${q.resolution ?? 'by decision'}`
+                          : `dropped — ${q.dropReason}`}
+                      </small>
+                    )}
+                  </div>
+                ))
+              )}
+            </section>
+            <section className="card">
+              <h2>Risks</h2>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void addRisk();
+                }}
+              >
+                <input
+                  value={riskDraft}
+                  onChange={(e) => setRiskDraft(e.target.value)}
+                  dir={textDir(riskDraft)}
+                  placeholder="What could go wrong?"
+                />
+                <select
+                  className="risk-severity"
+                  value={riskSeverity}
+                  onChange={(e) => setRiskSeverity(e.target.value as typeof riskSeverity)}
+                  title="Severity (optional)"
+                >
+                  <option value="">sev?</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+                <button type="submit" disabled={!riskDraft.trim() || !conversationId}>
+                  Add
+                </button>
+              </form>
+              {(companion?.risks ?? []).length === 0 ? (
+                <p className="empty-note">No tracked risks. Honest list — empty means empty.</p>
+              ) : (
+                (companion?.risks ?? []).map((r) => (
+                  <div key={r.id} className={`settle-row settle-${r.status}`}>
+                    <p dir={textDir(r.text)}>
+                      {r.severity ? (
+                        <span className={`sev sev-${r.severity}`}>{r.severity}</span>
+                      ) : null}
+                      {r.text}
+                    </p>
+                    {r.status === 'open' ? (
+                      <div className="settle-controls">
+                        <input
+                          value={evidence[r.id] ?? ''}
+                          onChange={(e) =>
+                            setEvidence((old) => ({ ...old, [r.id]: e.target.value }))
+                          }
+                          dir={textDir(evidence[r.id] ?? '')}
+                          placeholder="Resolution note / drop reason…"
+                        />
+                        <button
+                          type="button"
+                          disabled={!(evidence[r.id] ?? '').trim()}
+                          onClick={() => void settleRisk(r.id, 'resolve')}
+                        >
+                          Resolve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!(evidence[r.id] ?? '').trim()}
+                          onClick={() => void settleRisk(r.id, 'drop')}
+                        >
+                          Drop
+                        </button>
+                      </div>
+                    ) : (
+                      <small>
+                        {r.status === 'resolved'
+                          ? `resolved — ${r.resolution ?? 'by decision'}`
+                          : `dropped — ${r.dropReason}`}
+                      </small>
+                    )}
+                  </div>
+                ))
+              )}
+            </section>
+            <LanesPanel
+              lanes={laneViews}
+              conversationId={conversationId}
+              realExecAvailable={realExecAvailable}
+              onError={reportError}
+            />
+            <TimelinePanel events={timeline} />
+          </>
+        )}
       </aside>
     </main>
   );

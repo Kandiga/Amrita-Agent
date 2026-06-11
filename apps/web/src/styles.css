@@ -605,6 +605,115 @@ section h2,
   background: rgba(209, 80, 58, 0.16);
   color: #b83f2e;
 }
+.settings-toggle {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+.settings-toggle.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+}
+.hub-note {
+  font-size: 12px;
+}
+.hub-role,
+.hub-runtime {
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.hub-role:last-of-type,
+.hub-runtime:last-of-type {
+  border-bottom: none;
+}
+.hub-role-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.hub-role-effective {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.hub-via {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 750;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+}
+.hub-via-project {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.hub-via-binding {
+  background: color-mix(in srgb, var(--accent-2) 16%, transparent);
+  color: var(--accent-2);
+}
+.hub-role-controls {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+.hub-role-controls select,
+.hub-role-controls input {
+  min-width: 0;
+  flex: 1;
+}
+.hub-role-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.hub-role-actions button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.runtime-ok {
+  background: rgba(43, 189, 126, 0.16);
+  color: #1f8f5f;
+}
+.runtime-warn {
+  background: rgba(222, 168, 62, 0.18);
+  color: #9c6f12;
+}
+.runtime-off {
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+}
+.hub-detail {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+.hub-cmd {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  direction: ltr;
+  overflow-x: auto;
+}
+.hub-future {
+  opacity: 0.75;
+}
+.hub-connectors {
+  display: grid;
+  gap: 10px;
+}
+.hub-connector strong {
+  font-size: 13px;
+}
 .role-line {
   font-family: ui-monospace, monospace;
   font-size: 11px;

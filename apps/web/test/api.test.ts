@@ -111,6 +111,32 @@ describe('RpcClient', () => {
     expect(bodies[4]?.params).toMatchObject({ scope: 'project', content: 'remember this' });
   });
 
+  it('sends typed runtime-selection RPC payloads (status/set/clear)', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    await client.runtimeStatus('P1');
+    await client.runtimeStatus();
+    await client.roleSet({ role: 'main', provider: 'mock', model: 'm1', projectId: 'P1' });
+    await client.roleClear({ role: 'main', projectId: 'P1' });
+    await client.roleClear({ role: 'deep' });
+    expect(bodies.map((b) => b.method)).toEqual([
+      'runtime.status',
+      'runtime.status',
+      'providers.role.set',
+      'providers.role.clear',
+      'providers.role.clear',
+    ]);
+    expect(bodies[0]?.params).toEqual({ projectId: 'P1' });
+    expect(bodies[1]?.params).toEqual({});
+    expect(bodies[2]?.params).toMatchObject({ role: 'main', provider: 'mock', projectId: 'P1' });
+    expect(bodies[4]?.params).toEqual({ role: 'deep' });
+  });
+
   it('sends typed companion RPC payloads (brief/questions/risks/milestones/timeline)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
     const client = new RpcClient({
