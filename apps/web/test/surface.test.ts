@@ -25,9 +25,9 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
     expect(buildSurfaceArtifacts(base())).toEqual([]);
   });
 
-  it('a brief becomes a brief-summary artifact with provenance', () => {
+  it('a brief becomes a brief-summary artifact with provenance (plus its preview)', () => {
     const artifacts = buildSurfaceArtifacts(base({ brief }));
-    expect(artifacts).toHaveLength(1);
+    expect(artifacts.map((a) => a.kind)).toEqual(['brief-summary', 'html-preview']);
     expect(artifacts[0]).toMatchObject({
       kind: 'brief-summary',
       id: 'brief-summary:P1',
@@ -95,11 +95,84 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
     });
   });
 
+  it('html-preview: derived from brief+brand, proposed until the exact hash is approved', () => {
+    const brand = {
+      projectId: 'P1',
+      name: 'Nimbus',
+      audience: null,
+      tone: 'premium, calm',
+      styleNotes: [],
+      palette: ['#0EA5E9 cyan accents'],
+      typography: null,
+      doNotUse: [],
+      updatedAt: '2026-06-11T10:00:00.000Z',
+    };
+    const artifacts = buildSurfaceArtifacts(base({ brief, brand }));
+    const preview = artifacts.find((a) => a.kind === 'html-preview');
+    expect(preview?.kind).toBe('html-preview');
+    if (preview?.kind !== 'html-preview') return;
+    // product-real: brand name, tone, palette accent, and brief content are in
+    expect(preview.title).toBe('Nimbus');
+    expect(preview.html).toContain('Nimbus');
+    expect(preview.html).toContain('premium, calm');
+    expect(preview.html).toContain('#0EA5E9');
+    expect(preview.html).toContain('login works');
+    // never auto-approved
+    expect(preview.status).toBe('proposed');
+
+    // approving the EXACT hash flips it to approved…
+    const approved = buildSurfaceArtifacts(
+      base({
+        brief,
+        brand,
+        previewApprovals: [
+          {
+            previewId: preview.id,
+            contentHash: preview.contentHash,
+            approvedAt: '2026-06-11T11:00:00.000Z',
+          },
+        ],
+      }),
+    ).find((a) => a.kind === 'html-preview');
+    expect(approved?.kind === 'html-preview' && approved.status).toBe('approved');
+
+    // …and any state drift demotes honestly back to proposed
+    const drifted = buildSurfaceArtifacts(
+      base({
+        brief: { ...brief, goal: 'ship the CRM v2' },
+        brand,
+        previewApprovals: [
+          {
+            previewId: preview.id,
+            contentHash: preview.contentHash,
+            approvedAt: '2026-06-11T11:00:00.000Z',
+          },
+        ],
+      }),
+    ).find((a) => a.kind === 'html-preview');
+    expect(drifted?.kind === 'html-preview' && drifted.status).toBe('proposed');
+  });
+
+  it('html-preview escapes project text and says so when brand is unset', () => {
+    const hostile = buildSurfaceArtifacts(
+      base({ brief: { ...brief, goal: '<script>alert(1)</script>' } }),
+    ).find((a) => a.kind === 'html-preview');
+    if (hostile?.kind !== 'html-preview') throw new Error('expected preview');
+    expect(hostile.html).not.toContain('<script>');
+    expect(hostile.html).toContain('&lt;script&gt;');
+    // neutral defaults are labeled, never an invented identity
+    expect(hostile.html).toContain('neutral preview — no brand memory set');
+  });
+
   it('brief + milestones yield both artifacts, deterministically ordered', () => {
     const artifacts = buildSurfaceArtifacts(
       base({ brief, milestones: [milestone({ id: 'M1', title: 'Alpha' })] }),
     );
-    expect(artifacts.map((a) => a.kind)).toEqual(['brief-summary', 'milestone-board']);
+    expect(artifacts.map((a) => a.kind)).toEqual([
+      'brief-summary',
+      'milestone-board',
+      'html-preview',
+    ]);
     // determinism: same inputs, same output
     expect(
       buildSurfaceArtifacts(base({ brief, milestones: [milestone({ id: 'M1', title: 'Alpha' })] })),

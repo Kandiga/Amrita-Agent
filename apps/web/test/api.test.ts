@@ -111,6 +111,28 @@ describe('RpcClient', () => {
     expect(bodies[4]?.params).toMatchObject({ scope: 'project', content: 'remember this' });
   });
 
+  it('sends typed brand + preview-approval RPC payloads', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    const ctx = { projectId: 'P1', conversationId: 'C1' };
+    await client.brandUpdate({ ...ctx, name: 'Nimbus', palette: ['#0EA5E9 cyan'] });
+    await client.previewApprove({ ...ctx, previewId: 'html-preview:P1', contentHash: 'abc123' });
+    expect(bodies.map((b) => b.method)).toEqual([
+      'projects.brand.update',
+      'projects.previews.approve',
+    ]);
+    expect(bodies[0]?.params).toMatchObject({ name: 'Nimbus', palette: ['#0EA5E9 cyan'] });
+    expect(bodies[1]?.params).toMatchObject({
+      previewId: 'html-preview:P1',
+      contentHash: 'abc123',
+    });
+  });
+
   it('sends typed runtime-selection RPC payloads (status/set/clear)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
     const client = new RpcClient({

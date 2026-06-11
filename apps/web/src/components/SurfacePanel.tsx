@@ -1,12 +1,19 @@
 import { textDir } from '../lib.ts';
+import { buildSandboxedPreview } from '../sandbox.ts';
 import type { ArtifactSpec } from '../surface.ts';
 
+interface SurfacePanelProps {
+  artifacts: ArtifactSpec[];
+  /** Durably approve a proposed preview's exact content (ADR-0020). */
+  onApprovePreview: (previewId: string, contentHash: string) => void;
+}
+
 /**
- * The Native Interactive Surface, Stage A: deterministic renderers over typed
- * ArtifactSpecs derived from real project state. No generated code executes
- * here; an empty project renders an honest empty state.
+ * The Native Interactive Surface: deterministic Stage-A renderers plus the
+ * first Stage-B `html-preview` — which renders ONLY inside the sandbox harness
+ * (no same-origin, zero-network CSP) and is never auto-approved.
  */
-export function SurfacePanel({ artifacts }: { artifacts: ArtifactSpec[] }) {
+export function SurfacePanel({ artifacts, onApprovePreview }: SurfacePanelProps) {
   return (
     <section className="card surface-card">
       <h2>Surface</h2>
@@ -39,6 +46,42 @@ export function SurfacePanel({ artifacts }: { artifacts: ArtifactSpec[] }) {
                     {a.noScope.length > 0 ? `out: ${a.noScope.join(' · ')}` : ''}
                   </p>
                 ) : null}
+              </article>
+            );
+          }
+          if (a.kind === 'html-preview') {
+            const sandboxed = buildSandboxedPreview({
+              kind: 'html-preview',
+              id: a.id,
+              projectId: a.projectId,
+              title: a.title,
+              html: a.html,
+            });
+            return (
+              <article key={a.id} className="artifact artifact-preview">
+                <div className="preview-head">
+                  <span className="artifact-kind">preview</span>
+                  <span className={`doc-badge preview-${a.status}`}>{a.status}</span>
+                </div>
+                <iframe
+                  className="preview-frame"
+                  title={a.title}
+                  sandbox={sandboxed.sandbox}
+                  srcDoc={sandboxed.srcDoc}
+                />
+                {a.status === 'proposed' ? (
+                  <div className="preview-actions">
+                    <p className="artifact-sub">
+                      Proposed from this project's brief, brand and plan — approve to keep this
+                      exact version. Any state change re-proposes it.
+                    </p>
+                    <button type="button" onClick={() => onApprovePreview(a.id, a.contentHash)}>
+                      Approve preview
+                    </button>
+                  </div>
+                ) : (
+                  <p className="artifact-sub">approved — matches the version you signed off</p>
+                )}
               </article>
             );
           }

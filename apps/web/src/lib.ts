@@ -9,6 +9,12 @@ export interface ChatMessage {
   pending?: boolean;
 }
 
+/** The (projectId, conversationId) envelope every knowledge write carries. */
+export interface WriteCtx {
+  projectId: string;
+  conversationId: string;
+}
+
 /** Predominant text direction, for RTL-aware rendering (Hebrew/Arabic → rtl). */
 export function textDir(text: string): 'rtl' | 'ltr' {
   return /[֐-׿؀-ۿ܀-߿]/.test(text) ? 'rtl' : 'ltr';

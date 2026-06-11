@@ -114,11 +114,45 @@ export interface MilestoneLite {
   targetDate: string | null;
 }
 
+/** Per-project brand memory (ADR-0020). Null = honest empty, never invented. */
+export interface BrandLite {
+  projectId: string;
+  name: string | null;
+  audience: string | null;
+  tone: string | null;
+  styleNotes: string[];
+  palette: string[];
+  typography: string | null;
+  doNotUse: string[];
+  updatedAt: string;
+}
+
+/** A durable approval of a deterministic preview's content hash (ADR-0020). */
+export interface PreviewApprovalLite {
+  previewId: string;
+  contentHash: string;
+  approvedAt: string;
+}
+
 export interface CompanionState {
   brief: BriefLite | null;
+  brand: BrandLite | null;
   questions: QuestionLite[];
   risks: RiskLite[];
   milestones: MilestoneLite[];
+  previewApprovals: PreviewApprovalLite[];
+}
+
+export interface BrandUpdateParams {
+  projectId: string;
+  conversationId: string;
+  name?: string;
+  audience?: string;
+  tone?: string;
+  styleNotes?: string[];
+  palette?: string[];
+  typography?: string;
+  doNotUse?: string[];
 }
 
 // ── doctor (RPC result shapes; see docs/specs/runtime.md) ───────────────────
@@ -327,6 +361,19 @@ export class RpcClient {
 
   briefUpdate(params: BriefUpdateParams): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('projects.brief.update', params);
+  }
+
+  brandUpdate(params: BrandUpdateParams): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.brand.update', params);
+  }
+
+  previewApprove(params: {
+    projectId: string;
+    conversationId: string;
+    previewId: string;
+    contentHash: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.previews.approve', params);
   }
 
   questionOpen(params: {

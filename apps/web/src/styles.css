@@ -789,6 +789,36 @@ section h2,
   font-size: 11px;
   color: var(--muted);
 }
+.artifact-preview {
+  padding: 10px;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.preview-frame {
+  width: 100%;
+  height: 340px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #101013;
+}
+.preview-proposed {
+  background: rgba(222, 168, 62, 0.18);
+  color: #9c6f12;
+}
+.preview-approved {
+  background: rgba(43, 189, 126, 0.16);
+  color: #1f8f5f;
+}
+.preview-actions {
+  margin-top: 8px;
+}
+.preview-actions button {
+  margin-top: 6px;
+}
 .timeline {
   display: grid;
   gap: 7px;
