@@ -41,6 +41,10 @@ const REQUIRED_TABLES = [
   'connectors',
   'settings',
   'channel_pairings',
+  'project_briefs',
+  'open_questions',
+  'risks',
+  'milestones',
 ];
 
 function tableNames(db: Database.Database): string[] {
@@ -56,24 +60,26 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000..0003 all apply
-    expect(migrateUp(db)).toBe(4);
-    expect(currentVersion(db)).toBe(3);
+    // up: 0000..0004 all apply
+    expect(migrateUp(db)).toBe(5);
+    expect(currentVersion(db)).toBe(4);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
-    // full down: all revert; even the lineage column is gone
-    expect(migrateDown(db)).toBe(4);
+    // full down: all revert; even the lineage + milestone columns are gone
+    expect(migrateDown(db)).toBe(5);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
+    expect(tableNames(db)).not.toContain('project_briefs');
+    expect(tableNames(db)).not.toContain('milestones');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(4);
-    expect(currentVersion(db)).toBe(3);
+    expect(migrateUp(db)).toBe(5);
+    expect(currentVersion(db)).toBe(4);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
@@ -81,12 +87,17 @@ describe('migrations', () => {
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → 0002 (memory FTS) + 0003 (channel pairings)
-    expect(migrateDown(db, 1)).toBe(2);
+    // revert only above version 1 → 0002 (memory FTS) + 0003 (pairings) + 0004 (companion)
+    expect(migrateDown(db, 1)).toBe(3);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
+    expect(tableNames(db)).not.toContain('open_questions');
     expect(tableNames(db)).toContain('memory_entries'); // 0001 intact
+    const taskCols = (db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(taskCols).not.toContain('milestone_id'); // 0004's column reverted
 
     // revert above version 0 → just 0001
     expect(migrateDown(db, 0)).toBe(1);
@@ -1236,6 +1247,149 @@ describe('channel pairings (WO#3.1)', () => {
     expect(list[0]?.claimedBy).toBe('555');
     // pairings carry no secret value
     expect(JSON.stringify(list)).not.toMatch(/sk-|password/i);
+  });
+});
+
+describe('project companion (ADR-0018)', () => {
+  function ctx(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId }).id;
+    return { projectId, conversationId };
+  }
+
+  it('brief is a full-document upsert, rebuilt by the latest brief.updated', () => {
+    const c = ctx();
+    expect(store.getBrief(c.projectId)).toBeUndefined();
+    store.upsertBrief({
+      ...c,
+      goal: 'ship the CRM',
+      successCriteria: ['login works'],
+      scope: ['web app'],
+      noScope: ['mobile app'],
+    });
+    let brief = store.getBrief(c.projectId);
+    expect(brief).toMatchObject({
+      goal: 'ship the CRM',
+      successCriteria: ['login works'],
+      scope: ['web app'],
+      noScope: ['mobile app'],
+      audience: null,
+    });
+
+    store.upsertBrief({
+      ...c,
+      goal: 'ship the CRM v2',
+      audience: 'small agencies',
+      successCriteria: ['login works', 'export works'],
+    });
+    brief = store.getBrief(c.projectId);
+    expect(brief?.goal).toBe('ship the CRM v2');
+    expect(brief?.audience).toBe('small agencies');
+    expect(brief?.successCriteria).toEqual(['login works', 'export works']);
+    expect(brief?.scope).toEqual([]); // full-document semantics: omitted = empty
+    // exactly one row per project
+    const count = store.db
+      .prepare('SELECT COUNT(*) AS n FROM project_briefs WHERE project_id = ?')
+      .get(c.projectId) as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it('question lifecycle: open → resolve needs evidence; drop needs a reason', () => {
+    const c = ctx();
+    const { questionId } = store.openQuestion({ ...c, text: 'which auth provider?' });
+    expect(store.listQuestions({ projectId: c.projectId, status: 'open' })).toHaveLength(1);
+
+    // resolving with NEITHER a note nor a decision link is rejected by the protocol
+    expect(() => store.resolveQuestion({ ...c, questionId })).toThrow();
+
+    // resolving with a decision link works and records provenance
+    const { decisionId } = store.recordDecision({ ...c, text: 'use magic links' });
+    store.resolveQuestion({ ...c, questionId, resolvedByDecisionId: decisionId });
+    const resolved = store.listQuestions({ projectId: c.projectId, status: 'resolved' });
+    expect(resolved[0]).toMatchObject({ id: questionId, resolvedByDecisionId: decisionId });
+
+    // a decision link that doesn't exist rolls the event back (trigger)
+    const q2 = store.openQuestion({ ...c, text: 'hosting?' });
+    const before = store.getEvents(c.conversationId).length;
+    expect(() =>
+      store.resolveQuestion({ ...c, questionId: q2.questionId, resolvedByDecisionId: newId() }),
+    ).toThrow(/does not reference a decision/);
+    expect(store.getEvents(c.conversationId)).toHaveLength(before); // event rolled back too
+
+    // dropping requires a reason (typed input) and records it
+    store.dropQuestion({ ...c, questionId: q2.questionId, reason: 'out of scope for v1' });
+    expect(store.listQuestions({ projectId: c.projectId, status: 'dropped' })[0]?.dropReason).toBe(
+      'out of scope for v1',
+    );
+  });
+
+  it('risk lifecycle mirrors questions, with a tiny optional severity', () => {
+    const c = ctx();
+    const { riskId } = store.openRisk({ ...c, text: 'sqlite file corruption', severity: 'high' });
+    expect(store.listRisks({ projectId: c.projectId, status: 'open' })[0]).toMatchObject({
+      severity: 'high',
+      status: 'open',
+    });
+    store.resolveRisk({ ...c, riskId, resolution: 'WAL + backups in place' });
+    expect(store.listRisks({ projectId: c.projectId, status: 'resolved' })[0]?.resolution).toBe(
+      'WAL + backups in place',
+    );
+    // invalid severity is rejected by the protocol schema
+    expect(() => store.openRisk({ ...c, text: 'x', severity: 'huge' as 'high' })).toThrow();
+  });
+
+  it('milestones: create/update/complete, and tasks link to them (trigger-checked)', () => {
+    const c = ctx();
+    const { milestoneId } = store.createMilestone({
+      ...c,
+      title: 'Alpha',
+      targetDate: '2026-07-01',
+    });
+    expect(store.listMilestones({ projectId: c.projectId })[0]).toMatchObject({
+      title: 'Alpha',
+      status: 'planned',
+      targetDate: '2026-07-01',
+    });
+    store.updateMilestone({ ...c, milestoneId, status: 'active' });
+    expect(store.listMilestones({ projectId: c.projectId, status: 'active' })).toHaveLength(1);
+
+    // a task can be created linked, and re-linked / unlinked via update
+    const { taskId } = store.createTask({ ...c, title: 'build login', milestoneId });
+    expect(store.listTasks({ projectId: c.projectId })[0]?.milestoneId).toBe(milestoneId);
+    store.updateTask({ ...c, taskId, milestoneId: null });
+    expect(store.listTasks({ projectId: c.projectId })[0]?.milestoneId).toBeNull();
+
+    // linking to a nonexistent milestone rolls back (trigger), event included
+    const before = store.getEvents(c.conversationId).length;
+    expect(() => store.updateTask({ ...c, taskId, milestoneId: newId() })).toThrow(
+      /milestone does not exist/,
+    );
+    expect(store.getEvents(c.conversationId)).toHaveLength(before);
+
+    store.completeMilestone({ ...c, milestoneId });
+    expect(store.listMilestones({ projectId: c.projectId })[0]?.status).toBe('done');
+    // bad targetDate shape rejected by protocol
+    expect(() => store.createMilestone({ ...c, title: 'x', targetDate: 'July 1' })).toThrow();
+  });
+
+  it('listProjectEvents derives a bounded, newest-first timeline across conversations', () => {
+    const projectId = project();
+    const conv1 = store.createConversation({ projectId }).id;
+    const conv2 = store.createConversation({ projectId }).id;
+    store.recordUserMessage({ projectId, conversationId: conv1, text: 'first' });
+    store.openQuestion({ projectId, conversationId: conv2, text: 'why?' });
+    store.createMilestone({ projectId, conversationId: conv1, title: 'M1' });
+
+    const timeline = store.listProjectEvents(projectId);
+    expect(timeline.length).toBeGreaterThanOrEqual(3);
+    // newest first, and it spans both conversations
+    expect(timeline[0]?.type).toBe('milestone.created');
+    expect(new Set(timeline.map((e) => e.conversationId)).size).toBe(2);
+    // bounded
+    expect(store.listProjectEvents(projectId, { limit: 2 })).toHaveLength(2);
+    // other projects' events are not included
+    const otherProject = store.createProject({ slug: 'timeline-other', name: 'Other' }).id;
+    expect(store.listProjectEvents(otherProject)).toHaveLength(0);
   });
 });
 

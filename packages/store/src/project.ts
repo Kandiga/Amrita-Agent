@@ -41,14 +41,15 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       const p = ev.payload;
       db.prepare(
         `INSERT INTO tasks
-           (id, project_id, conversation_id, source_message_id, lane_id, status, title, body, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, project_id, conversation_id, source_message_id, lane_id, milestone_id, status, title, body, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         p.taskId,
         p.projectId,
         p.conversationId ?? null,
         p.sourceMessageId ?? null,
         p.laneId ?? null,
+        p.milestoneId ?? null,
         p.status ?? 'now',
         p.title,
         null,
@@ -73,6 +74,11 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         sets.push('body = ?');
         vals.push(p.body);
       }
+      if (p.milestoneId !== undefined) {
+        // null unlinks; a non-null id is checked by the tasks_milestone_upd trigger
+        sets.push('milestone_id = ?');
+        vals.push(p.milestoneId);
+      }
       sets.push('updated_at = ?');
       vals.push(ev.ts, p.taskId);
       db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -82,6 +88,154 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(
         ev.ts,
         ev.payload.taskId,
+      );
+      return;
+    }
+
+    // ── project companion (ADR-0018) ──────────────────────────────────────
+    case 'brief.updated': {
+      const p = ev.payload;
+      // Full-document upsert: replaying the log rebuilds the row verbatim.
+      db.prepare(
+        `INSERT INTO project_briefs
+           (project_id, goal, audience, success_criteria_json, scope_json, no_scope_json, source_message_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET
+           goal = excluded.goal,
+           audience = excluded.audience,
+           success_criteria_json = excluded.success_criteria_json,
+           scope_json = excluded.scope_json,
+           no_scope_json = excluded.no_scope_json,
+           source_message_id = excluded.source_message_id,
+           updated_at = excluded.updated_at`,
+      ).run(
+        p.projectId,
+        p.goal,
+        p.audience ?? null,
+        JSON.stringify(p.successCriteria),
+        JSON.stringify(p.scope),
+        JSON.stringify(p.noScope),
+        p.sourceMessageId ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'question.opened': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO open_questions
+           (id, project_id, conversation_id, source_message_id, text, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`,
+      ).run(
+        p.questionId,
+        p.projectId,
+        p.conversationId ?? null,
+        p.sourceMessageId ?? null,
+        p.text,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'question.resolved': {
+      const p = ev.payload;
+      // The table CHECK requires a resolution note or a decision link; the
+      // decision-existence trigger validates the link. A violation rolls back.
+      db.prepare(
+        `UPDATE open_questions
+         SET status = 'resolved', resolution = ?, resolved_by_decision_id = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(p.resolution ?? null, p.resolvedByDecisionId ?? null, ev.ts, p.questionId);
+      return;
+    }
+    case 'question.dropped': {
+      const p = ev.payload;
+      db.prepare(
+        "UPDATE open_questions SET status = 'dropped', drop_reason = ?, updated_at = ? WHERE id = ?",
+      ).run(p.reason, ev.ts, p.questionId);
+      return;
+    }
+    case 'risk.opened': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO risks
+           (id, project_id, conversation_id, source_message_id, text, severity, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+      ).run(
+        p.riskId,
+        p.projectId,
+        p.conversationId ?? null,
+        p.sourceMessageId ?? null,
+        p.text,
+        p.severity ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'risk.resolved': {
+      const p = ev.payload;
+      db.prepare(
+        `UPDATE risks
+         SET status = 'resolved', resolution = ?, resolved_by_decision_id = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(p.resolution ?? null, p.resolvedByDecisionId ?? null, ev.ts, p.riskId);
+      return;
+    }
+    case 'risk.dropped': {
+      const p = ev.payload;
+      db.prepare(
+        "UPDATE risks SET status = 'dropped', drop_reason = ?, updated_at = ? WHERE id = ?",
+      ).run(p.reason, ev.ts, p.riskId);
+      return;
+    }
+    case 'milestone.created': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO milestones (id, project_id, title, description, status, target_date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        p.milestoneId,
+        p.projectId,
+        p.title,
+        p.description ?? null,
+        p.status ?? 'planned',
+        p.targetDate ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'milestone.updated': {
+      const p = ev.payload;
+      const sets: string[] = [];
+      const vals: Bind[] = [];
+      if (p.title !== undefined) {
+        sets.push('title = ?');
+        vals.push(p.title);
+      }
+      if (p.description !== undefined) {
+        sets.push('description = ?');
+        vals.push(p.description);
+      }
+      if (p.status !== undefined) {
+        sets.push('status = ?');
+        vals.push(p.status);
+      }
+      if (p.targetDate !== undefined) {
+        sets.push('target_date = ?');
+        vals.push(p.targetDate);
+      }
+      sets.push('updated_at = ?');
+      vals.push(ev.ts, p.milestoneId);
+      db.prepare(`UPDATE milestones SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      return;
+    }
+    case 'milestone.completed': {
+      db.prepare("UPDATE milestones SET status = 'done', updated_at = ? WHERE id = ?").run(
+        ev.ts,
+        ev.payload.milestoneId,
       );
       return;
     }

@@ -181,6 +181,7 @@ export const eventPayloads = {
       conversationId: idSchema.optional(),
       sourceMessageId: idSchema.optional(),
       laneId: idSchema.optional(),
+      milestoneId: idSchema.optional(),
       title: z.string().min(1),
       status: taskStatusSchema.optional(),
     })
@@ -191,9 +192,96 @@ export const eventPayloads = {
       status: taskStatusSchema.optional(),
       title: z.string().min(1).optional(),
       body: z.string().optional(),
+      // nullable so a task can be UNLINKED from a milestone (ADR-0018)
+      milestoneId: idSchema.nullable().optional(),
     })
     .strict(),
   'task.completed': z.object({ taskId: idSchema }).strict(),
+
+  // project companion (ADR-0018) — brief / open questions / risks / milestones.
+  // The brief is a FULL-document upsert: replaying the log rebuilds the row.
+  'brief.updated': z
+    .object({
+      projectId: idSchema,
+      goal: z.string().min(1).max(2000),
+      audience: z.string().min(1).max(500).optional(),
+      successCriteria: z.array(z.string().min(1).max(500)).max(20),
+      scope: z.array(z.string().min(1).max(500)).max(50),
+      noScope: z.array(z.string().min(1).max(500)).max(50),
+      sourceMessageId: idSchema.optional(),
+    })
+    .strict(),
+  'question.opened': z
+    .object({
+      questionId: idSchema,
+      projectId: idSchema,
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+      text: z.string().min(1).max(2000),
+    })
+    .strict(),
+  // Resolving needs evidence: a note or a decision link — never a silent close.
+  'question.resolved': z
+    .object({
+      questionId: idSchema,
+      resolution: z.string().min(1).max(2000).optional(),
+      resolvedByDecisionId: idSchema.optional(),
+    })
+    .strict()
+    .refine((p) => p.resolution !== undefined || p.resolvedByDecisionId !== undefined, {
+      message: 'a resolved question needs a resolution note or a decision link',
+    }),
+  'question.dropped': z
+    .object({ questionId: idSchema, reason: z.string().min(1).max(2000) })
+    .strict(),
+  'risk.opened': z
+    .object({
+      riskId: idSchema,
+      projectId: idSchema,
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+      text: z.string().min(1).max(2000),
+      severity: z.enum(['low', 'medium', 'high']).optional(),
+    })
+    .strict(),
+  'risk.resolved': z
+    .object({
+      riskId: idSchema,
+      resolution: z.string().min(1).max(2000).optional(),
+      resolvedByDecisionId: idSchema.optional(),
+    })
+    .strict()
+    .refine((p) => p.resolution !== undefined || p.resolvedByDecisionId !== undefined, {
+      message: 'a resolved risk needs a resolution note or a decision link',
+    }),
+  'risk.dropped': z.object({ riskId: idSchema, reason: z.string().min(1).max(2000) }).strict(),
+  'milestone.created': z
+    .object({
+      milestoneId: idSchema,
+      projectId: idSchema,
+      title: z.string().min(1).max(300),
+      description: z.string().min(1).max(2000).optional(),
+      targetDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, 'targetDate must be YYYY-MM-DD')
+        .optional(),
+      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+    })
+    .strict(),
+  'milestone.updated': z
+    .object({
+      milestoneId: idSchema,
+      title: z.string().min(1).max(300).optional(),
+      description: z.string().min(1).max(2000).optional(),
+      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      targetDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, 'targetDate must be YYYY-MM-DD')
+        .nullable()
+        .optional(),
+    })
+    .strict(),
+  'milestone.completed': z.object({ milestoneId: idSchema }).strict(),
 
   // decisions (append-only log)
   'decision.recorded': z

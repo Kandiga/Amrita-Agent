@@ -60,6 +60,9 @@ export interface EntityWriteOpts {
 
 export type TaskStatus = 'now' | 'later' | 'done' | 'dropped';
 export type MemoryScope = 'user' | 'project';
+export type QuestionStatus = 'open' | 'resolved' | 'dropped';
+export type RiskSeverity = 'low' | 'medium' | 'high';
+export type MilestoneStatus = 'planned' | 'active' | 'done' | 'dropped';
 export type ConnectorStatus = 'needs_setup' | 'ready' | 'error' | 'disabled';
 export type AuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
 export type LaneStatus = 'spawned' | 'running' | 'merging' | 'completed' | 'aborted';
@@ -75,6 +78,7 @@ export interface TaskRow {
   conversationId: string | null;
   sourceMessageId: string | null;
   laneId: string | null;
+  milestoneId: string | null;
   status: TaskStatus;
   title: string;
   body: string | null;
@@ -100,6 +104,59 @@ export interface MemoryEntryRow {
   charCount: number;
   source: string | null;
   sourceMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The project brief — one upsert-document row per project (ADR-0018). */
+export interface ProjectBriefRow {
+  projectId: string;
+  goal: string;
+  audience: string | null;
+  successCriteria: string[];
+  scope: string[];
+  noScope: string[];
+  sourceMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenQuestionRow {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  sourceMessageId: string | null;
+  text: string;
+  status: QuestionStatus;
+  resolution: string | null;
+  resolvedByDecisionId: string | null;
+  dropReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RiskRow {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  sourceMessageId: string | null;
+  text: string;
+  severity: RiskSeverity | null;
+  status: QuestionStatus;
+  resolution: string | null;
+  resolvedByDecisionId: string | null;
+  dropReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MilestoneRow {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: MilestoneStatus;
+  targetDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -482,6 +539,19 @@ export class Store {
     return rows.map(rowToEvent);
   }
 
+  /**
+   * The project timeline — a bounded, newest-first read of the event log across
+   * ALL of a project's conversations (ADR-0018). Derived, never stored: the log
+   * IS the activity feed. `rowid` breaks ties for events sharing a timestamp.
+   */
+  listProjectEvents(projectId: string, opts: { limit?: number } = {}): AmritaEvent[] {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+    const rows = this.db
+      .prepare('SELECT * FROM events WHERE project_id = ? ORDER BY ts DESC, rowid DESC LIMIT ?')
+      .all(projectId, limit) as Record<string, unknown>[];
+    return rows.map(rowToEvent);
+  }
+
   // ── search ────────────────────────────────────────────────────────────────
 
   /** Full-text search over message text, ranked best-first by bm25. */
@@ -539,6 +609,7 @@ export class Store {
       status?: TaskStatus;
       sourceMessageId?: string;
       laneId?: string;
+      milestoneId?: string;
     } & EntityWriteOpts,
   ): { taskId: string; event: AmritaEvent } {
     const taskId = newId();
@@ -552,6 +623,7 @@ export class Store {
         conversationId: input.conversationId,
         ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
         ...(input.laneId ? { laneId: input.laneId } : {}),
+        ...(input.milestoneId ? { milestoneId: input.milestoneId } : {}),
         title: input.title,
         ...(input.status ? { status: input.status } : {}),
       },
@@ -568,6 +640,8 @@ export class Store {
       status?: TaskStatus;
       title?: string;
       body?: string;
+      /** A milestone to link to, or `null` to unlink (ADR-0018). */
+      milestoneId?: string | null;
     } & EntityWriteOpts,
   ): { event: AmritaEvent } {
     const event = this.emit(
@@ -579,6 +653,7 @@ export class Store {
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.body !== undefined ? { body: input.body } : {}),
+        ...(input.milestoneId !== undefined ? { milestoneId: input.milestoneId } : {}),
       },
       input,
     );
@@ -649,6 +724,243 @@ export class Store {
       input,
     );
     return { decisionId, event };
+  }
+
+  // ── project companion (ADR-0018) ──────────────────────────────────────────
+
+  /** Create or replace the project brief (a full-document upsert). */
+  upsertBrief(
+    input: {
+      projectId: string;
+      conversationId: string;
+      goal: string;
+      audience?: string;
+      successCriteria?: string[];
+      scope?: string[];
+      noScope?: string[];
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'brief.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        projectId: input.projectId,
+        goal: input.goal,
+        ...(input.audience ? { audience: input.audience } : {}),
+        successCriteria: input.successCriteria ?? [],
+        scope: input.scope ?? [],
+        noScope: input.noScope ?? [],
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  openQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      text: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { questionId: string; event: AmritaEvent } {
+    const questionId = newId();
+    const event = this.emit(
+      'question.opened',
+      input.projectId,
+      input.conversationId,
+      {
+        questionId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        text: input.text,
+      },
+      input,
+    );
+    return { questionId, event };
+  }
+
+  /** Resolve a question with a note and/or a decision link (at least one — enforced). */
+  resolveQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      questionId: string;
+      resolution?: string;
+      resolvedByDecisionId?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'question.resolved',
+      input.projectId,
+      input.conversationId,
+      {
+        questionId: input.questionId,
+        ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.resolvedByDecisionId ? { resolvedByDecisionId: input.resolvedByDecisionId } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  dropQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      questionId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'question.dropped',
+      input.projectId,
+      input.conversationId,
+      { questionId: input.questionId, reason: input.reason },
+      input,
+    );
+    return { event };
+  }
+
+  openRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      text: string;
+      severity?: RiskSeverity;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { riskId: string; event: AmritaEvent } {
+    const riskId = newId();
+    const event = this.emit(
+      'risk.opened',
+      input.projectId,
+      input.conversationId,
+      {
+        riskId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        text: input.text,
+        ...(input.severity ? { severity: input.severity } : {}),
+      },
+      input,
+    );
+    return { riskId, event };
+  }
+
+  resolveRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      riskId: string;
+      resolution?: string;
+      resolvedByDecisionId?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'risk.resolved',
+      input.projectId,
+      input.conversationId,
+      {
+        riskId: input.riskId,
+        ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.resolvedByDecisionId ? { resolvedByDecisionId: input.resolvedByDecisionId } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  dropRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      riskId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'risk.dropped',
+      input.projectId,
+      input.conversationId,
+      { riskId: input.riskId, reason: input.reason },
+      input,
+    );
+    return { event };
+  }
+
+  createMilestone(
+    input: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+      description?: string;
+      targetDate?: string;
+      status?: MilestoneStatus;
+    } & EntityWriteOpts,
+  ): { milestoneId: string; event: AmritaEvent } {
+    const milestoneId = newId();
+    const event = this.emit(
+      'milestone.created',
+      input.projectId,
+      input.conversationId,
+      {
+        milestoneId,
+        projectId: input.projectId,
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.targetDate ? { targetDate: input.targetDate } : {}),
+        ...(input.status ? { status: input.status } : {}),
+      },
+      input,
+    );
+    return { milestoneId, event };
+  }
+
+  updateMilestone(
+    input: {
+      projectId: string;
+      conversationId: string;
+      milestoneId: string;
+      title?: string;
+      description?: string;
+      status?: MilestoneStatus;
+      targetDate?: string | null;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'milestone.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        milestoneId: input.milestoneId,
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  completeMilestone(
+    input: { projectId: string; conversationId: string; milestoneId: string } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'milestone.completed',
+        input.projectId,
+        input.conversationId,
+        { milestoneId: input.milestoneId },
+        input,
+      ),
+    };
   }
 
   /**
@@ -1082,11 +1394,107 @@ export class Store {
     return this.db
       .prepare(
         `SELECT id, project_id AS projectId, conversation_id AS conversationId,
-                source_message_id AS sourceMessageId, lane_id AS laneId, status, title, body,
+                source_message_id AS sourceMessageId, lane_id AS laneId,
+                milestone_id AS milestoneId, status, title, body,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM tasks ${clause} ORDER BY created_at ASC`,
       )
       .all(...vals) as TaskRow[];
+  }
+
+  // ── project companion reads (ADR-0018) ────────────────────────────────────
+
+  getBrief(projectId: string): ProjectBriefRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT project_id AS projectId, goal, audience,
+                success_criteria_json AS sc, scope_json AS sj, no_scope_json AS nsj,
+                source_message_id AS sourceMessageId,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM project_briefs WHERE project_id = ?`,
+      )
+      .get(projectId) as
+      | (Omit<ProjectBriefRow, 'successCriteria' | 'scope' | 'noScope'> & {
+          sc: string;
+          sj: string;
+          nsj: string;
+        })
+      | undefined;
+    if (!row) return undefined;
+    const { sc, sj, nsj, ...rest } = row;
+    return {
+      ...rest,
+      successCriteria: JSON.parse(sc) as string[],
+      scope: JSON.parse(sj) as string[],
+      noScope: JSON.parse(nsj) as string[],
+    };
+  }
+
+  listQuestions(filters: { projectId?: string; status?: QuestionStatus } = {}): OpenQuestionRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      vals.push(filters.status);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, text, status, resolution,
+                resolved_by_decision_id AS resolvedByDecisionId, drop_reason AS dropReason,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM open_questions ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as OpenQuestionRow[];
+  }
+
+  listRisks(filters: { projectId?: string; status?: QuestionStatus } = {}): RiskRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      vals.push(filters.status);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, text, severity, status, resolution,
+                resolved_by_decision_id AS resolvedByDecisionId, drop_reason AS dropReason,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM risks ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as RiskRow[];
+  }
+
+  listMilestones(filters: { projectId?: string; status?: MilestoneStatus } = {}): MilestoneRow[] {
+    const where: string[] = [];
+    const vals: string[] = [];
+    if (filters.projectId) {
+      where.push('project_id = ?');
+      vals.push(filters.projectId);
+    }
+    if (filters.status) {
+      where.push('status = ?');
+      vals.push(filters.status);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, title, description, status,
+                target_date AS targetDate, created_at AS createdAt, updated_at AS updatedAt
+         FROM milestones ${clause} ORDER BY created_at ASC`,
+      )
+      .all(...vals) as MilestoneRow[];
   }
 
   listDecisions(

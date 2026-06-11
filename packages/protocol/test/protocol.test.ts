@@ -231,6 +231,28 @@ describe('entity event taxonomy (WO#1.2)', () => {
     'provider.degraded': { provider: 'anthropic', reason: 'credit exhausted' },
     'connector.installed': { connectorId: newId(), slug: 'claude-code', kind: 'cli' },
     'settings.updated': { key: 'theme', value: 'dark' },
+    // companion (ADR-0018)
+    'brief.updated': {
+      projectId: newId(),
+      goal: 'ship the CRM',
+      audience: 'small agencies',
+      successCriteria: ['login works'],
+      scope: ['web app'],
+      noScope: ['mobile'],
+    },
+    'question.opened': { questionId: newId(), projectId: newId(), text: 'which auth provider?' },
+    'question.resolved': { questionId: newId(), resolution: 'magic links' },
+    'question.dropped': { questionId: newId(), reason: 'out of scope' },
+    'risk.opened': { riskId: newId(), projectId: newId(), text: 'data loss', severity: 'high' },
+    'risk.resolved': { riskId: newId(), resolvedByDecisionId: newId() },
+    'milestone.created': {
+      milestoneId: newId(),
+      projectId: newId(),
+      title: 'Alpha',
+      targetDate: '2026-07-01',
+    },
+    'milestone.updated': { milestoneId: newId(), status: 'active', targetDate: null },
+    'milestone.completed': { milestoneId: newId() },
   };
 
   for (const [type, payload] of Object.entries(valid)) {
@@ -285,6 +307,34 @@ describe('entity event taxonomy (WO#1.2)', () => {
     expect(() =>
       parseEvent(sealed('settings.updated', { key: 'public_url', value: 'https://x' })),
     ).not.toThrow();
+  });
+
+  it('rejects a resolution with neither a note nor a decision link (no silent closures)', () => {
+    expect(() => parseEvent(sealed('question.resolved', { questionId: newId() }))).toThrow(
+      /resolution note or a decision link/,
+    );
+    expect(() => parseEvent(sealed('risk.resolved', { riskId: newId() }))).toThrow(
+      /resolution note or a decision link/,
+    );
+  });
+
+  it('rejects malformed companion payloads (bad date, bad severity, missing reason)', () => {
+    expect(() =>
+      parseEvent(
+        sealed('milestone.created', {
+          milestoneId: newId(),
+          projectId: newId(),
+          title: 'x',
+          targetDate: 'July 1',
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseEvent(
+        sealed('risk.opened', { riskId: newId(), projectId: newId(), text: 'x', severity: 'huge' }),
+      ),
+    ).toThrow();
+    expect(() => parseEvent(sealed('question.dropped', { questionId: newId() }))).toThrow();
   });
 
   it('keeps model.delta the only stream-only event across the whole taxonomy', () => {

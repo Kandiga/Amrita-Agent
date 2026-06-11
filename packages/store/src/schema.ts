@@ -122,8 +122,13 @@ export const tasks = sqliteTable(
     body: text('body'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
+    // 0004: milestone linkage, trigger-enforced (no FK clause) — see ADR-0018.
+    milestoneId: text('milestone_id'),
   },
-  (t) => ({ byProjectStatus: index('idx_tasks_project_status').on(t.projectId, t.status) }),
+  (t) => ({
+    byProjectStatus: index('idx_tasks_project_status').on(t.projectId, t.status),
+    byMilestone: index('idx_tasks_milestone').on(t.milestoneId),
+  }),
 );
 
 /**
@@ -258,6 +263,92 @@ export const settings = sqliteTable(
       sql`lower(${t.key}) NOT LIKE '%secret%' AND lower(${t.key}) NOT LIKE '%api_key%' AND lower(${t.key}) NOT LIKE '%apikey%' AND lower(${t.key}) NOT LIKE '%token%' AND lower(${t.key}) NOT LIKE '%password%'`,
     ),
   }),
+);
+
+// ── 0004: Project Companion Core (ADR-0018) ────────────────────────────────
+
+/** One upsert-document brief per project; arrays stored as JSON strings. */
+export const projectBriefs = sqliteTable('project_briefs', {
+  projectId: text('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  goal: text('goal').notNull(),
+  audience: text('audience'),
+  successCriteriaJson: text('success_criteria_json').notNull().default('[]'),
+  scopeJson: text('scope_json').notNull().default('[]'),
+  noScopeJson: text('no_scope_json').notNull().default('[]'),
+  sourceMessageId: text('source_message_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/**
+ * Open questions. Lifecycle CHECKs (resolved needs a note or decision link;
+ * dropped needs a reason) and the decision-existence triggers live in the SQL
+ * migration, the source of truth.
+ */
+export const openQuestions = sqliteTable(
+  'open_questions',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id'),
+    sourceMessageId: text('source_message_id'),
+    text: text('text').notNull(),
+    status: text('status', { enum: ['open', 'resolved', 'dropped'] })
+      .notNull()
+      .default('open'),
+    resolution: text('resolution'),
+    resolvedByDecisionId: text('resolved_by_decision_id'),
+    dropReason: text('drop_reason'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({ byProjectStatus: index('idx_questions_project_status').on(t.projectId, t.status) }),
+);
+
+export const risks = sqliteTable(
+  'risks',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id'),
+    sourceMessageId: text('source_message_id'),
+    text: text('text').notNull(),
+    severity: text('severity', { enum: ['low', 'medium', 'high'] }),
+    status: text('status', { enum: ['open', 'resolved', 'dropped'] })
+      .notNull()
+      .default('open'),
+    resolution: text('resolution'),
+    resolvedByDecisionId: text('resolved_by_decision_id'),
+    dropReason: text('drop_reason'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({ byProjectStatus: index('idx_risks_project_status').on(t.projectId, t.status) }),
+);
+
+export const milestones = sqliteTable(
+  'milestones',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status', { enum: ['planned', 'active', 'done', 'dropped'] })
+      .notNull()
+      .default('planned'),
+    targetDate: text('target_date'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({ byProject: index('idx_milestones_project').on(t.projectId, t.status) }),
 );
 
 // ── 0003: channel pairings (links external identities → project/conversation) ──
