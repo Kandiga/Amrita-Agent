@@ -20,6 +20,19 @@ copy-paste source. See `docs/v01-harvest.md` for what to mine from it and what t
 6. **Honest integrations only.** Never fake an auth path or a capability. Unconfigured surfaces say
    "needs setup". (Carried forward from v0.1 — it is the project's identity.)
 
+## Product direction (v3 north star)
+
+See `.claude/rules/amrita-product-direction.md` and `.claude/rules/amrita-quality-bar.md` —
+binding for all sessions. Headlines: Amrita is a chat-first Project OS with her **own** Native
+Interactive Surface (Open Design is inspiration only, **never** a plugin/dependency); Claude
+Code is a managed execution runtime behind a typed bridge, not the product center;
+provider/model/runtime selection is first-class, user-visible, and deterministic
+(session > lane > project > global > auto); Windows-first installer path with CLI/daemon mode
+preserved; self-maintenance changes are audited, diffable, and reversible. Strategy sources:
+`docs/strategy/native-interactive-surface.md`, `docs/strategy/windows-installer-and-updates.md`,
+`docs/strategy/project-companion-roadmap.md`. Progress receipts live in
+`docs/progress/amrita-v2-upgrade-ledger.md`.
+
 ## Layout
 
 ```
