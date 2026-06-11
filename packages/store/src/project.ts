@@ -121,6 +121,51 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       );
       return;
     }
+    case 'brand.updated': {
+      const p = ev.payload;
+      // Full-document upsert: replaying the log rebuilds the row verbatim.
+      db.prepare(
+        `INSERT INTO project_brands
+           (project_id, name, audience, tone, style_notes_json, palette_json, typography, do_not_use_json, source_message_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET
+           name = excluded.name,
+           audience = excluded.audience,
+           tone = excluded.tone,
+           style_notes_json = excluded.style_notes_json,
+           palette_json = excluded.palette_json,
+           typography = excluded.typography,
+           do_not_use_json = excluded.do_not_use_json,
+           source_message_id = excluded.source_message_id,
+           updated_at = excluded.updated_at`,
+      ).run(
+        p.projectId,
+        p.name ?? null,
+        p.audience ?? null,
+        p.tone ?? null,
+        JSON.stringify(p.styleNotes),
+        JSON.stringify(p.palette),
+        p.typography ?? null,
+        JSON.stringify(p.doNotUse),
+        p.sourceMessageId ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'preview.approved': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO preview_approvals (project_id, preview_id, content_hash, source_message_id, approved_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, preview_id) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           source_message_id = excluded.source_message_id,
+           approved_at = excluded.approved_at`,
+      ).run(p.projectId, p.previewId, p.contentHash, p.sourceMessageId ?? null, ev.ts);
+      return;
+    }
+
     case 'question.opened': {
       const p = ev.payload;
       db.prepare(

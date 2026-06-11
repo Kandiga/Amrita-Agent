@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   unique,
@@ -349,6 +350,40 @@ export const milestones = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (t) => ({ byProject: index('idx_milestones_project').on(t.projectId, t.status) }),
+);
+
+// ── 0005: brand memory + preview approvals (ADR-0020) ──────────────────────
+
+/** One brand document per project; arrays stored as JSON strings. */
+export const projectBrands = sqliteTable('project_brands', {
+  projectId: text('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name'),
+  audience: text('audience'),
+  tone: text('tone'),
+  styleNotesJson: text('style_notes_json').notNull().default('[]'),
+  paletteJson: text('palette_json').notNull().default('[]'),
+  typography: text('typography'),
+  doNotUseJson: text('do_not_use_json').notNull().default('[]'),
+  sourceMessageId: text('source_message_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** Durable approvals of deterministic preview content hashes. */
+export const previewApprovals = sqliteTable(
+  'preview_approvals',
+  {
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    previewId: text('preview_id').notNull(),
+    contentHash: text('content_hash').notNull(),
+    sourceMessageId: text('source_message_id'),
+    approvedAt: text('approved_at').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.projectId, t.previewId] }) }),
 );
 
 // ── 0003: channel pairings (links external identities → project/conversation) ──

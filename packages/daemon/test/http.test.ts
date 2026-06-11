@@ -39,7 +39,7 @@ describe('http control api', () => {
     expect(r.status).toBe(200);
     const j = (await r.json()) as { ok: boolean; schemaVersion: number };
     expect(j.ok).toBe(true);
-    expect(j.schemaVersion).toBe(4);
+    expect(j.schemaVersion).toBe(5);
   });
 
   it('POST /rpc runs a chat turn (mock provider)', async () => {

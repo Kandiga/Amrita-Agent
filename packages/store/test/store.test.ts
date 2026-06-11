@@ -45,6 +45,8 @@ const REQUIRED_TABLES = [
   'open_questions',
   'risks',
   'milestones',
+  'project_brands',
+  'preview_approvals',
 ];
 
 function tableNames(db: Database.Database): string[] {
@@ -60,15 +62,15 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000..0004 all apply
-    expect(migrateUp(db)).toBe(5);
-    expect(currentVersion(db)).toBe(4);
+    // up: 0000..0005 all apply
+    expect(migrateUp(db)).toBe(6);
+    expect(currentVersion(db)).toBe(5);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
     // full down: all revert; even the lineage + milestone columns are gone
-    expect(migrateDown(db)).toBe(5);
+    expect(migrateDown(db)).toBe(6);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
@@ -76,10 +78,11 @@ describe('migrations', () => {
     expect(tableNames(db)).not.toContain('channel_pairings');
     expect(tableNames(db)).not.toContain('project_briefs');
     expect(tableNames(db)).not.toContain('milestones');
+    expect(tableNames(db)).not.toContain('project_brands');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(5);
-    expect(currentVersion(db)).toBe(4);
+    expect(migrateUp(db)).toBe(6);
+    expect(currentVersion(db)).toBe(5);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
@@ -87,8 +90,8 @@ describe('migrations', () => {
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → 0002 (memory FTS) + 0003 (pairings) + 0004 (companion)
-    expect(migrateDown(db, 1)).toBe(3);
+    // revert only above version 1 → 0002 (FTS) + 0003 (pairings) + 0004 (companion) + 0005 (brand)
+    expect(migrateDown(db, 1)).toBe(4);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
@@ -1390,6 +1393,80 @@ describe('project companion (ADR-0018)', () => {
     // other projects' events are not included
     const otherProject = store.createProject({ slug: 'timeline-other', name: 'Other' }).id;
     expect(store.listProjectEvents(otherProject)).toHaveLength(0);
+  });
+});
+
+describe('brand memory + preview approvals (ADR-0020)', () => {
+  let n = 0;
+  function ctx(): { projectId: string; conversationId: string } {
+    const projectId = store.createProject({ slug: `brand-${++n}`, name: 'Brand' }).id;
+    const conversationId = store.createConversation({ projectId }).id;
+    return { projectId, conversationId };
+  }
+
+  it('brand is a full-document upsert; no row means honest empty; empty writes rejected', () => {
+    const c = ctx();
+    expect(store.getBrand(c.projectId)).toBeUndefined();
+
+    // an empty brand write is rejected by the protocol refine — nothing lands
+    expect(() => store.upsertBrand({ ...c })).toThrow(/substantive field/);
+    expect(store.getBrand(c.projectId)).toBeUndefined();
+
+    store.upsertBrand({
+      ...c,
+      name: 'Nimbus CRM',
+      tone: 'premium, calm',
+      palette: ['#0EA5E9 cyan accents', 'near-black surfaces'],
+      doNotUse: ['no neon gradients'],
+    });
+    let brand = store.getBrand(c.projectId);
+    expect(brand).toMatchObject({
+      name: 'Nimbus CRM',
+      tone: 'premium, calm',
+      palette: ['#0EA5E9 cyan accents', 'near-black surfaces'],
+      doNotUse: ['no neon gradients'],
+      audience: null,
+    });
+
+    // full-document semantics: a second write replaces, omitted = empty/null
+    store.upsertBrand({ ...c, name: 'Nimbus', audience: 'small agencies' });
+    brand = store.getBrand(c.projectId);
+    expect(brand?.name).toBe('Nimbus');
+    expect(brand?.audience).toBe('small agencies');
+    expect(brand?.tone).toBeNull();
+    expect(brand?.palette).toEqual([]);
+    const count = store.db
+      .prepare('SELECT COUNT(*) AS n FROM project_brands WHERE project_id = ?')
+      .get(c.projectId) as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it('brand never leaks across projects', () => {
+    const a = ctx();
+    const b = ctx();
+    store.upsertBrand({ ...a, name: 'A-brand' });
+    expect(store.getBrand(a.projectId)?.name).toBe('A-brand');
+    expect(store.getBrand(b.projectId)).toBeUndefined();
+  });
+
+  it('preview approvals upsert by (project, previewId) and stay project-scoped', () => {
+    const a = ctx();
+    const b = ctx();
+    const previewId = `html-preview:${a.projectId}`;
+    expect(store.listPreviewApprovals(a.projectId)).toEqual([]);
+
+    store.approvePreview({ ...a, previewId, contentHash: 'hash-1' });
+    expect(store.listPreviewApprovals(a.projectId)[0]).toMatchObject({
+      previewId,
+      contentHash: 'hash-1',
+    });
+    // re-approval after content drift upserts (one row, new hash)
+    store.approvePreview({ ...a, previewId, contentHash: 'hash-2' });
+    const rows = store.listPreviewApprovals(a.projectId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.contentHash).toBe('hash-2');
+    // never visible from another project
+    expect(store.listPreviewApprovals(b.projectId)).toEqual([]);
   });
 });
 

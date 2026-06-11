@@ -161,6 +161,30 @@ export interface MilestoneRow {
   updatedAt: string;
 }
 
+/** Per-project brand memory — one upsert-document row (ADR-0020). */
+export interface ProjectBrandRow {
+  projectId: string;
+  name: string | null;
+  audience: string | null;
+  tone: string | null;
+  styleNotes: string[];
+  palette: string[];
+  typography: string | null;
+  doNotUse: string[];
+  sourceMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A durable approval of a deterministic preview's content hash (ADR-0020). */
+export interface PreviewApprovalRow {
+  projectId: string;
+  previewId: string;
+  contentHash: string;
+  sourceMessageId: string | null;
+  approvedAt: string;
+}
+
 export interface ConnectorRow {
   id: string;
   slug: string;
@@ -752,6 +776,66 @@ export class Store {
         successCriteria: input.successCriteria ?? [],
         scope: input.scope ?? [],
         noScope: input.noScope ?? [],
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  /** Create or replace the project brand document (full-document upsert, ADR-0020). */
+  upsertBrand(
+    input: {
+      projectId: string;
+      conversationId: string;
+      name?: string;
+      audience?: string;
+      tone?: string;
+      styleNotes?: string[];
+      palette?: string[];
+      typography?: string;
+      doNotUse?: string[];
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'brand.updated',
+      input.projectId,
+      input.conversationId,
+      {
+        projectId: input.projectId,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.audience ? { audience: input.audience } : {}),
+        ...(input.tone ? { tone: input.tone } : {}),
+        styleNotes: input.styleNotes ?? [],
+        palette: input.palette ?? [],
+        ...(input.typography ? { typography: input.typography } : {}),
+        doNotUse: input.doNotUse ?? [],
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      },
+      input,
+    );
+    return { event };
+  }
+
+  /** Approve (or re-approve) a preview's content hash for a project (ADR-0020). */
+  approvePreview(
+    input: {
+      projectId: string;
+      conversationId: string;
+      previewId: string;
+      contentHash: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    const event = this.emit(
+      'preview.approved',
+      input.projectId,
+      input.conversationId,
+      {
+        previewId: input.previewId,
+        projectId: input.projectId,
+        contentHash: input.contentHash,
         ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
       },
       input,
@@ -1428,6 +1512,42 @@ export class Store {
       scope: JSON.parse(sj) as string[],
       noScope: JSON.parse(nsj) as string[],
     };
+  }
+
+  getBrand(projectId: string): ProjectBrandRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT project_id AS projectId, name, audience, tone,
+                style_notes_json AS sn, palette_json AS pj, typography,
+                do_not_use_json AS dnu, source_message_id AS sourceMessageId,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM project_brands WHERE project_id = ?`,
+      )
+      .get(projectId) as
+      | (Omit<ProjectBrandRow, 'styleNotes' | 'palette' | 'doNotUse'> & {
+          sn: string;
+          pj: string;
+          dnu: string;
+        })
+      | undefined;
+    if (!row) return undefined;
+    const { sn, pj, dnu, ...rest } = row;
+    return {
+      ...rest,
+      styleNotes: JSON.parse(sn) as string[],
+      palette: JSON.parse(pj) as string[],
+      doNotUse: JSON.parse(dnu) as string[],
+    };
+  }
+
+  listPreviewApprovals(projectId: string): PreviewApprovalRow[] {
+    return this.db
+      .prepare(
+        `SELECT project_id AS projectId, preview_id AS previewId, content_hash AS contentHash,
+                source_message_id AS sourceMessageId, approved_at AS approvedAt
+         FROM preview_approvals WHERE project_id = ? ORDER BY preview_id ASC`,
+      )
+      .all(projectId) as PreviewApprovalRow[];
   }
 
   listQuestions(filters: { projectId?: string; status?: QuestionStatus } = {}): OpenQuestionRow[] {

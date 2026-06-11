@@ -286,6 +286,44 @@ export const eventPayloads = {
     .strict(),
   'milestone.completed': z.object({ milestoneId: idSchema }).strict(),
 
+  // brand memory + preview approvals (ADR-0020)
+  // The brand is a FULL-document upsert like the brief; an empty write is
+  // rejected — no brand row IS the honest empty state, never invented identity.
+  'brand.updated': z
+    .object({
+      projectId: idSchema,
+      name: z.string().min(1).max(200).optional(),
+      audience: z.string().min(1).max(500).optional(),
+      tone: z.string().min(1).max(500).optional(),
+      styleNotes: z.array(z.string().min(1).max(300)).max(20),
+      palette: z.array(z.string().min(1).max(100)).max(12),
+      typography: z.string().min(1).max(500).optional(),
+      doNotUse: z.array(z.string().min(1).max(300)).max(20),
+      sourceMessageId: idSchema.optional(),
+    })
+    .strict()
+    .refine(
+      (p) =>
+        p.name !== undefined ||
+        p.audience !== undefined ||
+        p.tone !== undefined ||
+        p.typography !== undefined ||
+        p.styleNotes.length > 0 ||
+        p.palette.length > 0 ||
+        p.doNotUse.length > 0,
+      { message: 'a brand update needs at least one substantive field' },
+    ),
+  // Approves content-hash H of a deterministic surface preview for a project.
+  // previewId is a stable surface id (e.g. "html-preview:<projectId>"), not a ULID.
+  'preview.approved': z
+    .object({
+      previewId: z.string().min(1).max(120),
+      projectId: idSchema,
+      contentHash: z.string().min(1).max(64),
+      sourceMessageId: idSchema.optional(),
+    })
+    .strict(),
+
   // decisions (append-only log)
   'decision.recorded': z
     .object({

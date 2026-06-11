@@ -42,7 +42,7 @@ describe('amrita CLI', () => {
     const r = await cli(['health']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('amritad');
-    expect(r.out).toContain('schema v4');
+    expect(r.out).toContain('schema v5');
   });
 
   it('doctor renders grouped sections with marks and a numbered fix footer', async () => {
@@ -241,7 +241,7 @@ describe('amrita CLI', () => {
 
   it('--json emits structured output and errors', async () => {
     const h = await cli(['health', '--json']);
-    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(4);
+    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(5);
     const bad = await cli(['bogus', 'command', '--json']);
     expect(bad.code).toBe(2);
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');
