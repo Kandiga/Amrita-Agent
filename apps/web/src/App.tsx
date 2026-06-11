@@ -402,7 +402,7 @@ export function App() {
           <span className="mark">अ</span>
           <div>
             <strong>Amrita</strong>
-            <small>runtime console</small>
+            <small>project-aware agent OS</small>
           </div>
         </div>
         <button
@@ -459,7 +459,10 @@ export function App() {
           <div>
             <strong>{selectedProject?.name ?? projectSlug}</strong>
             <small>
-              {conversationId ? `conversation ${conversationId.slice(0, 12)}` : 'ready'}
+              {(() => {
+                const open = conversations.find((c) => c.id === conversationId);
+                return open ? titleFor(open) : 'ready';
+              })()}
             </small>
           </div>
           <div className="topbar-controls">
@@ -490,7 +493,10 @@ export function App() {
             <div className="empty">
               <span>अ</span>
               <h1>Talk to Amrita</h1>
-              <p>The transcript now streams live from the runtime over a WebSocket.</p>
+              <p>
+                Every project keeps its own memory, tasks and decisions. Say what you need — replies
+                stream in live, and lanes can take on the bigger jobs.
+              </p>
             </div>
           ) : null}
           {messages.map((m) => (

@@ -525,21 +525,36 @@ section h2,
   font-size: 13px;
 }
 @media (max-width: 1100px) {
+  /* The inspector stays reachable: it reflows below the chat as a card grid
+     instead of disappearing. The first row keeps the full viewport height, so
+     chat-first stays true and panels are one scroll away. */
   .app-shell {
     grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-rows: minmax(100dvh, auto) auto;
   }
   .inspector {
-    display: none;
+    grid-column: 1 / -1;
+    border-inline-start: none;
+    border-top: 1px solid var(--border);
+    grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    align-items: start;
   }
 }
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
   }
   .sidebar {
     max-height: 36vh;
     border-inline-end: none;
     border-bottom: 1px solid var(--border);
+  }
+  .chat-panel {
+    min-height: 72dvh;
+  }
+  .inspector {
+    grid-template-columns: 1fr;
   }
   .topbar {
     padding: 12px;
