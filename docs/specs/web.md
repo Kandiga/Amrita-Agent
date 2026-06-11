@@ -95,12 +95,13 @@ The daemon's control surface requires a bearer token (see [runtime.md](runtime.m
 
 ## Component layout (Phase 8 split)
 
-`App.tsx` owns shell state (auth, stream, chat, knowledge writes); presentational/self-contained
-panels live in `src/components/`: `NextActionsPanel`, `RuntimePanel` (doctor), `SurfacePanel`,
-`TimelinePanel`, `LanesPanel` (owns its own form state), and `SettingsRuntimeHub`. The RPC
-client is a shared singleton in `src/client.ts` (one token-bearing instance for all callers).
-Remaining knowledge panels (brief/questions/risks/milestones/tasks/memory/decisions) stay in
-App pending a state-context refactor (ledger debt).
+`App.tsx` (~650 lines) owns shell state only: auth, stream wiring, chat, data loading, and the
+shared `WriteCtx`. Every panel lives in `src/components/` with explicit props:
+`NextActionsPanel`, `BriefPanel`, `BrandPanel`, `SurfacePanel`, `RuntimePanel`, `MemoryPanel`,
+`TasksPanel`, `MilestonesPanel`, `QuestionsPanel`/`RisksPanel` (one shared `SettleListPanel` —
+the resolve-with-evidence lifecycle exists once), `DecisionsPanel`, `TimelinePanel`,
+`LanesPanel`, `SettingsRuntimeHub`. The RPC client is the `src/client.ts` singleton (one
+token-bearing instance for all callers).
 
 ## Settings & Runtime Hub (ADR-0019)
 
@@ -116,12 +117,24 @@ A topbar toggle switches the inspector between Project Brain and the Hub:
   local mock, subscription via Claude Code's own login, Hermes/MCP future). No secret value
   ever reaches the component; status booleans and env names only.
 
-## Surface Stage-B harness (`src/sandbox.ts`)
+## Surface Stage B: the `html-preview` artifact (ADR-0020)
 
-Shipped before any preview UI: `PREVIEW_SANDBOX` (never `allow-same-origin` — asserted),
-zero-network CSP baked into every srcdoc, a 256 KB inline budget that throws toward the D9
-spill path, and `assertSafeSandbox` guarding future call sites. No renderer exists yet — rich
-previews land only with the approval flow (strategy §2.3 Stage B/C).
+The harness (`src/sandbox.ts`: `PREVIEW_SANDBOX` never `allow-same-origin`, zero-network CSP,
+256 KB budget → spill) now has its first consumer. `buildSurfaceArtifacts` derives a
+deterministic one-page **project cover** from brief + brand + plan (palette-note hex → accent;
+brand-less projects render a labeled *neutral preview*, never an invented identity; every
+interpolated string HTML-escaped as defense in depth). Lifecycle, durable per ADR-0020:
+
+- **proposed** — derived content whose FNV-1a hash has no matching approval; rendered in the
+  sandboxed iframe with a `proposed` badge + an Approve action. Never auto-approved.
+- **approved** — hash matches the stored `preview_approvals` row. Any state drift changes the
+  hash and honestly demotes the preview back to proposed.
+
+## Brand panel (ADR-0020)
+
+`BrandPanel` edits the project's brand memory (name/audience/tone/palette notes/style
+notes/typography/do-not-use) as a full-document upsert with an honest empty state; the Surface
+preview and future lane handoffs consume it. No brand row = neutral previews that say so.
 
 ## Lanes panel (WO#5.2)
 

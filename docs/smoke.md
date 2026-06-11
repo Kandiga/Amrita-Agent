@@ -94,6 +94,20 @@ pnpm amrita -- milestone create --project system --title Alpha --target 2026-07-
 pnpm amrita -- timeline --project system --limit 10 --db ~/.amrita/amrita.db
 ```
 
+## 4c. Brand memory + the first sandboxed preview (ADR-0020)
+
+- **Brand** — press **Set the brand**: name "Nimbus", tone "premium, calm", palette line
+  `#0EA5E9 cyan accents`, a "do not use" line. Save.
+- **Surface** — a `preview` card appears: a sandboxed project cover using the brand name, tone,
+  and your palette's hex as the accent, plus the brief's success criteria and the next
+  milestone. The badge says **proposed** — nothing is auto-approved. The iframe runs with
+  `sandbox="allow-scripts"` (no same-origin) and a zero-network CSP; it cannot read your token.
+- Press **Approve preview** → the badge flips to **approved** (durable). Now edit the brief's
+  goal: the preview re-derives, the hash changes, and the badge honestly returns to
+  **proposed** — an approval never covers content you didn't see.
+- Without any brand set, the preview labels itself "neutral preview — no brand memory set".
+- CLI: `pnpm amrita -- brand set --project system --name Nimbus --tone "premium, calm" --palette "#0EA5E9 cyan" --db ~/.amrita/amrita.db`, then `brand get`.
+
 ## 5. Run a safe lane (dry-run)
 
 In the **Lanes** panel: type a goal, leave **Dry run** checked (the default), press **Start

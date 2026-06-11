@@ -70,6 +70,16 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
   `DROP COLUMN` — the `conversations.parent_id` pattern), plus `idx_tasks_milestone`.
 - **idx_events_project_ts** on `events(project_id, ts)` — backs the derived project timeline.
 
+### Brand memory + preview approvals (migration `0005_brand_previews`, ADR-0020)
+
+- **project_brands** `(project_id PK→projects CASCADE, name?, audience?, tone?,
+  style_notes_json, palette_json, typography?, do_not_use_json, source_message_id?,
+  created_at, updated_at)` — one upsert-document row per project, rebuilt from `brand.updated`
+  (whose protocol refine rejects empty writes). No row = honest empty state.
+- **preview_approvals** `(project_id→projects CASCADE, preview_id, content_hash,
+  source_message_id?, approved_at, PK(project_id, preview_id))` — durable approvals for
+  deterministic surface previews; re-approval upserts.
+
 ## Migrations (`migrate.ts`)
 
 - `MIGRATIONS` is an ordered, append-only list. Never edit a shipped migration; add the next one.
@@ -77,7 +87,7 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - `migrateDown(db, toVersion?)` reverts highest-first using the paired `.down.sql`.
 - `currentVersion(db)` reports the highest applied version (or -1).
 - Migrations: `0000_init` (spine), `0001_full_store_schema` (entity baseline), `0002_memory_fts`
-  (memory FTS5), `0003_channel_pairings`, `0004_companion` (Project Companion Core, ADR-0018).
+  (memory FTS5), `0003_channel_pairings`, `0004_companion` (ADR-0018), `0005_brand_previews` (ADR-0020).
 - **Acceptance:** up → down → up across all migrations leaves an identical schema and an idempotent
   second `up` applies 0; targeted `migrateDown(db, N)` reverts only versions above `N` (e.g. down to 1
   drops `memory_entries_fts` but keeps `memory_entries`).
@@ -127,6 +137,8 @@ constraint violation rolls back the event), and never writes a secret. Mapping:
 | `question.opened/resolved/dropped` | `open_questions` | insert / mark resolved (note or decision link) / mark dropped (reason) |
 | `risk.opened/resolved/dropped` | `risks` | same lifecycle as questions, + optional severity |
 | `milestone.created/updated/completed` | `milestones` | insert / patch / `status='done'` |
+| `brand.updated` | `project_brands` | **upsert** the full document (replay rebuilds the row) |
+| `preview.approved` | `preview_approvals` | upsert by `(project_id, preview_id)` |
 | everything else | — | log-only (no projection) |
 
 ## Public Store API (`store.ts`, ADR-0007)
@@ -140,14 +152,14 @@ mapped camelCase rows.
 `consolidateMemoryEntries`, `updateSetting`, `installConnector`, `updateConnector`, `removeConnector`,
 `connectProviderAccount`, `markProviderDegraded`, `markProviderRestored`; companion (ADR-0018):
 `upsertBrief`, `openQuestion`/`resolveQuestion`/`dropQuestion`, `openRisk`/`resolveRisk`/`dropRisk`,
-`createMilestone`/`updateMilestone`/`completeMilestone`. All take an `EntityWriteOpts`
+`createMilestone`/`updateMilestone`/`completeMilestone`, `upsertBrand`, `approvePreview` (ADR-0020). All take an `EntityWriteOpts`
 (`origin` default `system`, optional `turnId`/`laneId`/`channel`). Global-config writes
 (settings/connectors/accounts) still carry a `conversationId` (the originating/system conversation).
 
 **Read APIs:** `getConversationTree` (recursive `parent_id` walk), `listTasks`, `listDecisions`
 (`includeSuperseded?`), `getDecisionHistory` (recursive `supersedes_id` chain), `searchMemory`
 (FTS5, see below), `getSetting`, `listConnectors`/`getConnector`, `listAccounts`/`getAccountHealth`,
-`getProviderConfigStatus`, `listLanes`; companion: `getBrief`, `listQuestions`/`listRisks`
+`getProviderConfigStatus`, `listLanes`; companion: `getBrief`, `getBrand`, `listPreviewApprovals`, `listQuestions`/`listRisks`
 (`status?` filter), `listMilestones`, `listProjectEvents(projectId, {limit?})` — the derived
 project timeline (newest first, bounded). Plus the lower-level `appendEvent`, `recordUserMessage`,
 `getEvents`, `searchMessages`.

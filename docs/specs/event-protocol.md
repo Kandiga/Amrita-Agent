@@ -90,6 +90,15 @@ Project Companion Core entities (migration `0004_companion`). All persisted, all
 There is no `timeline.*` event: the project timeline is a bounded read of the existing log by
 `project_id` (ADR-0018).
 
+### Brand + preview events (ADR-0020)
+
+- **brand.** `updated {projectId, name?, audience?, tone?, styleNotes[], palette[], typography?,
+  doNotUse[], sourceMessageId?}` — full-document upsert; a `.refine` rejects a write with no
+  substantive field (an empty brand is no brand, never a stored blank).
+- **preview.** `approved {previewId, projectId, contentHash, sourceMessageId?}` — approves the
+  exact content hash of a deterministic surface preview; `previewId` is a stable surface id
+  (string ≤120), not a ULID.
+
 ## Stream-only types
 
 `STREAM_ONLY_TYPES = { 'model.delta' }`. These may be pushed live to clients but the store rejects

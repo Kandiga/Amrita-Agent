@@ -186,3 +186,39 @@ One ledger, updated per phase — no scattered notes.
   discovery-based future.
 - **Next phase:** Brand memory B1 + first sandboxed `html-preview` behind an approval state +
   knowledge-panel componentization (the remaining App.tsx debt).
+
+## Phase 9 — Brand Memory B1 / sandboxed html-preview / panel extraction
+- **Start commit:** `4d2b44e` (== origin/v2-main after Boni's push; clean tree; gates green
+  235 root / 49 web at start).
+- **Scope:** the next-phase directive — brand memory B1, first sandboxed `html-preview` behind
+  a durable approval flow, and the remaining App.tsx knowledge-panel extraction.
+- **Reality inspection:** no dirty state, no failures, Phase-8 debt list current (knowledge
+  panels in App were the top item — paid this phase).
+- **Files changed:**
+  - store (`c4fdce9`): ADR-0020; migration `0005_brand_previews` (schema v5) — `project_brands`
+    full-document rows + `preview_approvals` (project, previewId) PK; `brand.updated` (refine:
+    ≥1 substantive field — empty brand is rejected, not stored) + `preview.approved` events;
+    store APIs/projections/schema mirrors; tests incl. cross-project isolation and re-approval
+    drift; version-sensitive assertions bumped.
+  - runtime (`cc6aedf`): companion.get gains `brand` + `previewApprovals`;
+    `projects.brand.update` + `projects.previews.approve`; `amrita brand get/set`; daemon/CLI
+    tests.
+  - web (`d4ca2c8`): deterministic project-cover preview (brief+brand+plan; palette hex →
+    accent; HTML-escaped; brand-less = labeled "neutral preview"), FNV-1a content hash,
+    proposed→approved lifecycle rendered ONLY through the sandbox harness (allow-scripts only,
+    zero-network CSP); BrandPanel; **all** knowledge panels extracted
+    (Brief/Brand/Memory/Tasks/Decisions/Questions+Risks via one SettleListPanel/Milestones);
+    App.tsx ~1190 → ~650 lines; surface/api tests for derivation, approval, drift-demotion,
+    escaping.
+- **Approval-lifecycle decision:** previews are pure functions of typed state, so the HTML is
+  never persisted — the durable thing is the approval of an exact content hash; drift demotes
+  honestly. "Draft" = editing brief/brand (documented equivalent).
+- **Honesty checks:** no auto-approval; neutral previews labeled; empty brand rejected at the
+  protocol; approvals project-scoped by PK.
+- **Tests/gates + QA:** final counts and browser QA results in the session report.
+- **Limitations:** single preview template per project (id scheme permits more later); no
+  preview revocation UI (re-approval covers it; `preview.revoked` is additive); LLM-generated
+  previews deferred (deterministic template is the v1 generator); brand asset uploads (logo
+  files) deferred.
+- **Next phase:** operator mode (Telegram runner + approval.* plumbing) or Settings-Hub
+  expansion per the roadmap; see session report recommendation.
