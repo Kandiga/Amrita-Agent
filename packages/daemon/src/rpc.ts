@@ -456,6 +456,11 @@ export async function dispatch(kernel: AmritaKernel, raw: unknown): Promise<RpcR
     return ok(id, await m.run(kernel, params.data));
   } catch (e) {
     // Never leak a stack trace; map the message to a structured code.
+    // A ZodError from a deeper boundary (e.g. the store's event parse, like the
+    // companion resolve-needs-evidence refine) is still an input problem.
+    if (e instanceof z.ZodError) {
+      return err(id, 'invalid_params', 'invalid payload', safeIssues(e.issues));
+    }
     if (e instanceof ProviderError) {
       const code = e.code === 'unknown_provider' ? 'invalid_params' : e.code;
       return err(id, code, e.message);

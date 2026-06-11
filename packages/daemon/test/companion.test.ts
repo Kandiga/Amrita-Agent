@@ -64,7 +64,10 @@ describe('project companion over RPC (ADR-0018)', () => {
       params: { ...c, questionId },
     });
     expect(isErrorResponse(bad)).toBe(true);
-    if (isErrorResponse(bad)) expect(bad.error.message).not.toMatch(/\bat \//);
+    if (isErrorResponse(bad)) {
+      expect(bad.error.code).toBe('invalid_params'); // a deep ZodError is an input problem
+      expect(bad.error.message).not.toMatch(/\bat \//);
+    }
 
     const { decisionId } = await call<{ decisionId: string }>('decisions.record', {
       ...c,
