@@ -125,6 +125,8 @@ export const tasks = sqliteTable(
     updatedAt: text('updated_at').notNull(),
     // 0004: milestone linkage, trigger-enforced (no FK clause) — see ADR-0018.
     milestoneId: text('milestone_id'),
+    // 0006: external provenance, e.g. `github:owner/repo#123` — see ADR-0022.
+    externalRef: text('external_ref'),
   },
   (t) => ({
     byProjectStatus: index('idx_tasks_project_status').on(t.projectId, t.status),

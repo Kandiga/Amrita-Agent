@@ -4,6 +4,8 @@ import {
   type AmritaEvent,
   type EventType,
   STREAM_ONLY_TYPES,
+  connectorManifestSchema,
+  connectorStatusReportSchema,
   eventPayloads,
   isSafeEnvSecretRefName,
   isStreamOnly,
@@ -353,5 +355,63 @@ describe('entity event taxonomy (WO#1.2)', () => {
         ),
       ).toThrow();
     }
+  });
+});
+
+describe('connector manifests + task provenance (ADR-0022)', () => {
+  const githubManifest = {
+    slug: 'github',
+    kind: 'source',
+    title: 'GitHub',
+    description: 'issues import',
+    capabilities: ['issues.import'],
+    requiredEnv: ['GITHUB_TOKEN'],
+    setupCommands: ['export GITHUB_TOKEN=<token>'],
+  };
+
+  it('accepts a valid manifest and rejects env VALUES, bad slugs, unknown keys', () => {
+    expect(connectorManifestSchema.safeParse(githubManifest).success).toBe(true);
+    // an env entry that looks like a secret VALUE must not validate
+    expect(
+      connectorManifestSchema.safeParse({
+        ...githubManifest,
+        requiredEnv: ['ghp_lowercaseValueShape'],
+      }).success,
+    ).toBe(false);
+    expect(
+      connectorManifestSchema.safeParse({ ...githubManifest, slug: 'Bad Slug!' }).success,
+    ).toBe(false);
+    expect(connectorManifestSchema.safeParse({ ...githubManifest, bogus: 1 }).success).toBe(false);
+  });
+
+  it('connector status reports are strict and enumerate honest states only', () => {
+    const report = {
+      manifest: githubManifest,
+      state: 'needs_setup',
+      detail: 'missing env',
+      missingEnv: ['GITHUB_TOKEN'],
+      nextCommand: 'export GITHUB_TOKEN=<token>',
+    };
+    expect(connectorStatusReportSchema.safeParse(report).success).toBe(true);
+    expect(connectorStatusReportSchema.safeParse({ ...report, state: 'ready' }).success).toBe(
+      false,
+    ); // 'ready' is not a connector state — connected requires a probe
+  });
+
+  it('task.created accepts optional externalRef + body and replays old events unchanged', () => {
+    const full = parseEvent(
+      sealed('task.created', {
+        taskId: newId(),
+        projectId: newId(),
+        title: '#7 · Crash on save',
+        body: 'Imported from https://github.com/o/r/issues/7',
+        externalRef: 'github:o/r#7',
+      }),
+    );
+    expect(full.type).toBe('task.created');
+    // pre-0022 shape (no externalRef/body) still parses — replay compatibility
+    expect(() =>
+      parseEvent(sealed('task.created', { taskId: newId(), projectId: newId(), title: 'old' })),
+    ).not.toThrow();
   });
 });

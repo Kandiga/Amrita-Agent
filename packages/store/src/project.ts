@@ -41,8 +41,8 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       const p = ev.payload;
       db.prepare(
         `INSERT INTO tasks
-           (id, project_id, conversation_id, source_message_id, lane_id, milestone_id, status, title, body, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, project_id, conversation_id, source_message_id, lane_id, milestone_id, status, title, body, external_ref, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         p.taskId,
         p.projectId,
@@ -52,7 +52,8 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         p.milestoneId ?? null,
         p.status ?? 'now',
         p.title,
-        null,
+        p.body ?? null,
+        p.externalRef ?? null,
         ev.ts,
         ev.ts,
       );

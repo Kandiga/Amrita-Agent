@@ -82,6 +82,8 @@ export interface TaskRow {
   status: TaskStatus;
   title: string;
   body: string | null;
+  /** Provenance to an external system, e.g. `github:owner/repo#123` (ADR-0022). */
+  externalRef: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -634,6 +636,8 @@ export class Store {
       sourceMessageId?: string;
       laneId?: string;
       milestoneId?: string;
+      body?: string;
+      externalRef?: string;
     } & EntityWriteOpts,
   ): { taskId: string; event: AmritaEvent } {
     const taskId = newId();
@@ -650,6 +654,8 @@ export class Store {
         ...(input.milestoneId ? { milestoneId: input.milestoneId } : {}),
         title: input.title,
         ...(input.status ? { status: input.status } : {}),
+        ...(input.body ? { body: input.body } : {}),
+        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
       },
       input,
     );
@@ -1480,10 +1486,21 @@ export class Store {
         `SELECT id, project_id AS projectId, conversation_id AS conversationId,
                 source_message_id AS sourceMessageId, lane_id AS laneId,
                 milestone_id AS milestoneId, status, title, body,
+                external_ref AS externalRef,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM tasks ${clause} ORDER BY created_at ASC`,
       )
       .all(...vals) as TaskRow[];
+  }
+
+  /** The external refs (e.g. `github:owner/repo#N`) already present in a project (ADR-0022). */
+  listTaskExternalRefs(projectId: string): Set<string> {
+    const rows = this.db
+      .prepare(
+        'SELECT external_ref AS ref FROM tasks WHERE project_id = ? AND external_ref IS NOT NULL',
+      )
+      .all(projectId) as { ref: string }[];
+    return new Set(rows.map((r) => r.ref));
   }
 
   // ── project companion reads (ADR-0018) ────────────────────────────────────

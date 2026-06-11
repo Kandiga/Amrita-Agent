@@ -26,7 +26,7 @@ describe('AmritaKernel', () => {
     const h = k.health();
     expect(h.ok).toBe(true);
     expect(h.name).toBe('amritad');
-    expect(h.schemaVersion).toBe(5); // 0000..0005 applied
+    expect(h.schemaVersion).toBe(6); // 0000..0006 applied
     expect(h.counts.projects).toBe(0);
     k.close();
     rmSync(dir, { recursive: true, force: true });

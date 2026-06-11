@@ -27,7 +27,7 @@ describe('rpc dispatch', () => {
     expect(await call('ping')).toEqual({ pong: true });
     const h = (await call('health')) as { ok: boolean; schemaVersion: number };
     expect(h.ok).toBe(true);
-    expect(h.schemaVersion).toBe(5);
+    expect(h.schemaVersion).toBe(6);
   });
 
   it('rejects an unknown method', async () => {

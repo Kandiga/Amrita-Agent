@@ -62,15 +62,15 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000..0005 all apply
-    expect(migrateUp(db)).toBe(6);
-    expect(currentVersion(db)).toBe(5);
+    // up: 0000..0006 all apply
+    expect(migrateUp(db)).toBe(7);
+    expect(currentVersion(db)).toBe(6);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
     // full down: all revert; even the lineage + milestone columns are gone
-    expect(migrateDown(db)).toBe(6);
+    expect(migrateDown(db)).toBe(7);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
@@ -81,8 +81,8 @@ describe('migrations', () => {
     expect(tableNames(db)).not.toContain('project_brands');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(6);
-    expect(currentVersion(db)).toBe(5);
+    expect(migrateUp(db)).toBe(7);
+    expect(currentVersion(db)).toBe(6);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
@@ -90,8 +90,8 @@ describe('migrations', () => {
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → 0002 (FTS) + 0003 (pairings) + 0004 (companion) + 0005 (brand)
-    expect(migrateDown(db, 1)).toBe(4);
+    // revert only above version 1 → 0002 (FTS) + 0003 (pairings) + 0004 (companion) + 0005 (brand) + 0006 (external ref)
+    expect(migrateDown(db, 1)).toBe(5);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
@@ -788,6 +788,39 @@ describe('Store API (WO#1.4)', () => {
     ).toThrow();
     expect(store.getEvents(conversationId).length).toBe(before);
     expect(store.listTasks()).toHaveLength(0);
+  });
+
+  it('task provenance: externalRef + body persist, and the unique index blocks duplicates (ADR-0022)', () => {
+    const { projectId, conversationId } = setup();
+    const { taskId } = store.createTask({
+      projectId,
+      conversationId,
+      title: '#7 · Crash on save',
+      body: 'Imported from https://github.com/o/r/issues/7',
+      externalRef: 'github:o/r#7',
+    });
+    const t = store.listTasks({ projectId }).find((x) => x.id === taskId);
+    expect(t?.externalRef).toBe('github:o/r#7');
+    expect(t?.body).toContain('issues/7');
+    expect(store.listTaskExternalRefs(projectId)).toEqual(new Set(['github:o/r#7']));
+
+    // the DB itself rejects a duplicate (project, externalRef) — idempotency backstop
+    expect(() =>
+      store.createTask({ projectId, conversationId, title: 'dup', externalRef: 'github:o/r#7' }),
+    ).toThrow();
+    expect(store.listTasks({ projectId })).toHaveLength(1);
+
+    // a different project may import the same issue
+    const otherProject = store.createProject({ slug: 'other-ref-proj', name: 'O' }).id;
+    const otherConv = store.createConversation({ projectId: otherProject }).id;
+    expect(() =>
+      store.createTask({
+        projectId: otherProject,
+        conversationId: otherConv,
+        title: 'same ref, other project',
+        externalRef: 'github:o/r#7',
+      }),
+    ).not.toThrow();
   });
 
   it('task lifecycle through the API (update + complete)', () => {

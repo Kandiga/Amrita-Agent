@@ -32,6 +32,7 @@ export const MIGRATIONS: readonly Migration[] = [
   load(3, 'channel_pairings'),
   load(4, 'companion'),
   load(5, 'brand_previews'),
+  load(6, 'task_external_ref'),
 ];
 
 function ensureMigrationsTable(db: DB): void {

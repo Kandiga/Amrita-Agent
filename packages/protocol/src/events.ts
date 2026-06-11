@@ -187,6 +187,9 @@ export const eventPayloads = {
       milestoneId: idSchema.optional(),
       title: z.string().min(1),
       status: taskStatusSchema.optional(),
+      body: z.string().max(4000).optional(),
+      // provenance to an external system, e.g. `github:owner/repo#123` (ADR-0022)
+      externalRef: z.string().min(1).max(200).optional(),
     })
     .strict(),
   'task.updated': z
