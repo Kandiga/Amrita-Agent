@@ -770,14 +770,11 @@ export const COMMANDS: Record<string, Command> = {
       const model = strFlag(flags, 'model');
       const project = strFlag(flags, 'project');
       const scopeProjectId = project ? await resolveProjectId(client, project) : undefined;
-      const ctx = await resolveWriteContext(client, project ? { project } : {});
-      await client.call('settings.update', {
-        projectId: ctx.projectId,
-        conversationId: ctx.conversationId,
-        key: scopeProjectId
-          ? `project.${scopeProjectId}.providers.role.${role}`
-          : `providers.role.${role}`,
-        value: { provider, ...(model ? { model } : {}) },
+      await client.call('providers.role.set', {
+        role,
+        provider,
+        ...(model ? { model } : {}),
+        ...(scopeProjectId ? { projectId: scopeProjectId } : {}),
       });
       const scope = scopeProjectId ? ` (project ${project})` : '';
       return {
@@ -800,19 +797,51 @@ export const COMMANDS: Record<string, Command> = {
       }
       const project = strFlag(flags, 'project');
       const scopeProjectId = project ? await resolveProjectId(client, project) : undefined;
-      const ctx = await resolveWriteContext(client, project ? { project } : {});
-      await client.call('settings.update', {
-        projectId: ctx.projectId,
-        conversationId: ctx.conversationId,
-        key: scopeProjectId
-          ? `project.${scopeProjectId}.providers.role.${role}`
-          : `providers.role.${role}`,
-        value: null,
+      await client.call('providers.role.clear', {
+        role,
+        ...(scopeProjectId ? { projectId: scopeProjectId } : {}),
       });
       return {
         result: { role, cleared: true },
         summary: `role ${role} → ${scopeProjectId ? 'global/auto (project override cleared)' : 'auto'}`,
       };
+    },
+  },
+
+  'runtime status': {
+    describe: 'brain roles + providers + coding runtimes, honestly probed',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const projectId = project ? await resolveProjectId(client, project) : undefined;
+      const r = await client.call<{
+        roles: { role: string; resolvesTo: string; model?: string; via: string }[];
+        providers: { id: string; available: boolean; streaming: boolean }[];
+        codingRuntimes: {
+          id: string;
+          state: string;
+          version?: string;
+          realExecution: boolean;
+          detail: string;
+          nextCommand?: string;
+        }[];
+      }>('runtime.status', projectId ? { projectId } : {});
+      const lines = [
+        '◆ brain roles',
+        ...r.roles.map(
+          (x) => `  ${x.role}\t→ ${x.resolvesTo}${x.model ? ` (${x.model})` : ''}\t[${x.via}]`,
+        ),
+        '◆ providers',
+        ...r.providers.map(
+          (p) =>
+            `  ${p.id}\t${p.available ? 'available' : 'unavailable'}${p.streaming ? ' · streams' : ''}`,
+        ),
+        '◆ coding runtimes',
+        ...r.codingRuntimes.flatMap((c) => [
+          `  ${c.id}\t${c.state}${c.version ? ` · ${c.version}` : ''} · real-exec ${c.realExecution ? 'enabled' : 'disabled'}`,
+          `    ${c.detail}${c.nextCommand ? `\n    → ${c.nextCommand}` : ''}`,
+        ]),
+      ];
+      return { result: r, summary: lines.join('\n') };
     },
   },
 

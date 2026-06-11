@@ -378,6 +378,46 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
     (k, p) => k.runChatTurn(clean(p)),
   ),
+  // ── runtime selection (ADR-0019) ──────────────────────────────────────────
+
+  /** One aggregate for the Settings & Runtime Hub: roles + providers + coding runtimes. */
+  'runtime.status': def(z.object({ projectId: z.string().optional() }).optional(), async (k, p) => {
+    const projectId = p?.projectId;
+    return {
+      roles: (['fast', 'main', 'deep'] as const).map((role) => {
+        const globalBinding = k.getRoleBinding(role) ?? null;
+        const projectBinding = projectId ? (k.getRoleBinding(role, projectId) ?? null) : null;
+        const resolved = k.resolveRole(role, projectId);
+        return {
+          role,
+          binding: globalBinding,
+          projectBinding,
+          resolvesTo: resolved.provider,
+          ...(resolved.model ? { model: resolved.model } : {}),
+          via: resolved.via,
+        };
+      }),
+      providers: k.listProviders(),
+      codingRuntimes: await k.getCodingRuntimes(),
+    };
+  }),
+  'providers.role.set': def(
+    z.object({
+      role: z.enum(['fast', 'main', 'deep']),
+      provider: z.string().min(1),
+      model: z.string().min(1).optional(),
+      projectId: z.string().optional(),
+    }),
+    (k, p) => k.setRoleBinding(clean(p)),
+  ),
+  'providers.role.clear': def(
+    z.object({
+      role: z.enum(['fast', 'main', 'deep']),
+      projectId: z.string().optional(),
+    }),
+    (k, p) => k.clearRoleBinding(clean(p)),
+  ),
+
   'providers.roles': def(z.object({ projectId: z.string().optional() }).optional(), (k, p) => ({
     roles: (['fast', 'main', 'deep'] as const).map((role) => {
       const projectId = p?.projectId;

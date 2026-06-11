@@ -53,6 +53,7 @@ import {
   readEnvSecret,
   roleSettingKey,
 } from './provider.ts';
+import { type CodingRuntimeStatus, type CommandProber, getClaudeCodeStatus } from './runtimes.ts';
 import { clean } from './util.ts';
 
 /** A chat turn request. */
@@ -116,6 +117,8 @@ export interface KernelOptions {
   allowRealLaneExecution?: boolean;
   /** Workspace roots a real lane's cwd must resolve within (also `AMRITA_LANES_ALLOWED_ROOTS`, `:`-sep). */
   laneAllowedRoots?: string[];
+  /** Injectable coding-runtime prober (tests pass a fake; defaults to bounded spawn). */
+  codingRuntimeProber?: CommandProber;
 }
 
 /** Start a lane (delegated unit of work). Secret-free; nested fields are zod-validated upstream. */
@@ -182,6 +185,7 @@ export class AmritaKernel {
   private readonly mock = new MockProvider();
   private readonly fetchImpl: FetchLike;
   private readonly laneRunner: LaneRunner;
+  private readonly codingRuntimeProber: CommandProber | undefined;
   private readonly activeLanes = new Map<
     string,
     { controller: AbortController; promise: Promise<LaneSettleResult> }
@@ -197,6 +201,7 @@ export class AmritaKernel {
     fetchImpl: FetchLike,
     laneRunner: LaneRunner,
     realLaneExecution: boolean,
+    codingRuntimeProber: CommandProber | undefined,
   ) {
     this.store = store;
     this.dbPath = dbPath;
@@ -204,6 +209,7 @@ export class AmritaKernel {
     this.fetchImpl = fetchImpl;
     this.laneRunner = laneRunner;
     this.realLaneExecution = realLaneExecution;
+    this.codingRuntimeProber = codingRuntimeProber;
   }
 
   /** Open (creating + migrating) the store and start the kernel. */
@@ -233,6 +239,7 @@ export class AmritaKernel {
       opts.fetchImpl ?? defaultFetch,
       laneRunner,
       realLaneExecution,
+      opts.codingRuntimeProber,
     );
   }
 
@@ -352,6 +359,64 @@ export class AmritaKernel {
   }
 
   /**
+   * Coding runtimes (ADR-0019 / §2.9): probed honestly, independent of the
+   * brain model. Claude Code is the first bridge; future bridges join this list
+   * only with a real status probe behind them.
+   */
+  async getCodingRuntimes(): Promise<CodingRuntimeStatus[]> {
+    return [
+      await getClaudeCodeStatus({
+        realExecution: this.realLaneExecution,
+        ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
+      }),
+    ];
+  }
+
+  /**
+   * The (projectId, conversationId) envelope for system-level config writes
+   * (mirrors the CLI's convention: the `system` project's `(default)` sink).
+   */
+  private systemWriteContext(): { projectId: string; conversationId: string } {
+    const project = this.ensureProject({ slug: 'system', name: 'System' });
+    const existing = this.store.listConversations(project.id).find((c) => c.title === '(default)');
+    const conversationId =
+      existing?.id ??
+      this.store.createConversation({ projectId: project.id, title: '(default)' }).id;
+    return { projectId: project.id, conversationId };
+  }
+
+  /** Bind a role to a provider (global, or one project's scope). Validated, secret-free. */
+  setRoleBinding(input: {
+    role: ProviderRole;
+    provider: string;
+    model?: string;
+    projectId?: string;
+  }): { ok: true } {
+    if (!this.listProviders().some((p) => p.id === input.provider)) {
+      throw new ProviderError('unknown_provider', `unknown provider: ${input.provider}`);
+    }
+    if (input.projectId && !this.store.getProject(input.projectId)) {
+      throw new ProviderError('not_found', `no such project: ${input.projectId}`);
+    }
+    this.store.updateSetting({
+      ...this.systemWriteContext(),
+      key: roleSettingKey(input.role, input.projectId),
+      value: { provider: input.provider, ...(input.model ? { model: input.model } : {}) },
+    });
+    return { ok: true };
+  }
+
+  /** Remove a role binding at a scope; resolution falls back (project→global→auto). */
+  clearRoleBinding(input: { role: ProviderRole; projectId?: string }): { ok: true } {
+    this.store.updateSetting({
+      ...this.systemWriteContext(),
+      key: roleSettingKey(input.role, input.projectId),
+      value: null,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Resolve a ROLE to a concrete provider id (+ optional model) — D5/ADR-0017.
    * Scope order: the project's binding (when a projectId is given) wins over
    * the global binding; otherwise `auto`: the first *available* real provider
@@ -386,6 +451,8 @@ export class AmritaKernel {
     model: string;
     provider: ChatProvider;
     role: ProviderRole;
+    /** Selection-scope provenance, persisted on model.request (ADR-0019). */
+    via: 'explicit' | 'project' | 'binding' | 'auto' | 'default';
   } {
     const role: ProviderRole = input.role ?? 'main';
     let account = input.accountId
@@ -398,10 +465,14 @@ export class AmritaKernel {
     // resolves via its settings binding or `auto` (D5/ADR-0017).
     let roleModel: string | undefined;
     let requested = input.provider ?? account?.provider;
+    let via: 'explicit' | 'project' | 'binding' | 'auto' | 'default' = requested
+      ? 'explicit'
+      : 'default';
     if (!requested && input.role) {
       const resolved = this.resolveRole(input.role, projectId);
       requested = resolved.provider;
       roleModel = resolved.model;
+      via = resolved.via;
     }
     const providerId = requested ?? MOCK_PROVIDER_ID;
     if (account && input.provider && input.provider !== account.provider) {
@@ -417,6 +488,7 @@ export class AmritaKernel {
         model: input.model ?? roleModel ?? 'mock-default',
         provider: this.mock,
         role,
+        via,
       };
     }
 
@@ -446,6 +518,7 @@ export class AmritaKernel {
       model,
       provider: spec.create({ apiKey, model, fetchImpl: this.fetchImpl }),
       role,
+      via,
     };
   }
 
@@ -524,7 +597,7 @@ export class AmritaKernel {
 
     // Resolve the provider first — a config error records nothing. Role
     // resolution is project-aware (project binding > global > auto).
-    const { providerId, model, provider, role } = this.resolveChatProvider(input, projectId);
+    const { providerId, model, provider, role, via } = this.resolveChatProvider(input, projectId);
     const turnId = newId();
     const channel = input.channel;
 
@@ -560,6 +633,7 @@ export class AmritaKernel {
       provider: providerId,
       model,
       role,
+      via,
     });
 
     // Provider call — pure side effect, outside any store transaction.

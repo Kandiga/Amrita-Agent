@@ -98,6 +98,9 @@ export const eventPayloads = {
       provider: z.string(),
       model: z.string(),
       role: z.enum(['fast', 'main', 'deep']),
+      // Runtime-selection provenance (ADR-0019): which scope chose this
+      // provider. Optional so pre-0019 events still parse.
+      via: z.enum(['explicit', 'project', 'binding', 'auto', 'default']).optional(),
     })
     .strict(),
   // STREAM ONLY — never persisted (see STREAM_ONLY_TYPES).
