@@ -510,6 +510,121 @@ section h2,
 .companion-suggestion {
   border-inline-start-color: var(--accent-2);
 }
+.brief-form {
+  display: grid;
+  gap: 8px;
+}
+.brief-form textarea {
+  resize: none;
+}
+.brief-actions {
+  display: flex;
+  gap: 8px;
+}
+.brief-view .brief-goal {
+  margin: 0 0 4px;
+  font-weight: 650;
+}
+.brief-view ul {
+  margin: 8px 0;
+  padding-inline-start: 18px;
+  font-size: 13px;
+}
+.brief-view li {
+  margin: 2px 0;
+}
+.brief-scope {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.brief-view button {
+  margin-top: 8px;
+}
+.task-milestone {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.milestone-date {
+  flex: none;
+  width: 130px;
+}
+.risk-severity {
+  flex: none;
+  width: 86px;
+}
+.settle-row {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.settle-row:last-of-type {
+  border-bottom: none;
+}
+.settle-row > p {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.settle-resolved > p,
+.settle-dropped > p {
+  color: var(--muted);
+}
+.settle-controls {
+  display: flex;
+  gap: 6px;
+}
+.settle-controls input {
+  min-width: 0;
+  flex: 1;
+}
+.settle-controls button {
+  flex: none;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.sev {
+  display: inline-block;
+  margin-inline-end: 6px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.sev-low {
+  background: rgba(43, 189, 126, 0.16);
+  color: #1f8f5f;
+}
+.sev-medium {
+  background: rgba(222, 168, 62, 0.18);
+  color: #9c6f12;
+}
+.sev-high {
+  background: rgba(209, 80, 58, 0.16);
+  color: #b83f2e;
+}
+.timeline {
+  display: grid;
+  gap: 7px;
+  max-height: 320px;
+  overflow: auto;
+}
+.timeline-row {
+  display: grid;
+  gap: 2px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--border);
+}
+.timeline-type {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--accent);
+}
+.timeline-text {
+  font-size: 12px;
+}
 .doctor-fixes {
   margin-top: 8px;
   font-size: 12px;

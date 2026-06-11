@@ -76,7 +76,59 @@ export interface TaskRowLite {
   id: string;
   title: string;
   status: string;
+  milestoneId?: string | null;
   createdAt?: string;
+}
+
+// ── project companion (ADR-0018) ─────────────────────────────────────────────
+
+export interface BriefLite {
+  projectId: string;
+  goal: string;
+  audience: string | null;
+  successCriteria: string[];
+  scope: string[];
+  noScope: string[];
+  updatedAt: string;
+}
+
+export interface QuestionLite {
+  id: string;
+  text: string;
+  status: 'open' | 'resolved' | 'dropped';
+  resolution: string | null;
+  resolvedByDecisionId: string | null;
+  dropReason: string | null;
+  createdAt: string;
+}
+
+export interface RiskLite extends QuestionLite {
+  severity: 'low' | 'medium' | 'high' | null;
+}
+
+export interface MilestoneLite {
+  id: string;
+  title: string;
+  description: string | null;
+  status: 'planned' | 'active' | 'done' | 'dropped';
+  targetDate: string | null;
+}
+
+export interface CompanionState {
+  brief: BriefLite | null;
+  questions: QuestionLite[];
+  risks: RiskLite[];
+  milestones: MilestoneLite[];
+}
+
+export interface BriefUpdateParams {
+  projectId: string;
+  conversationId: string;
+  goal: string;
+  audience?: string;
+  successCriteria?: string[];
+  scope?: string[];
+  noScope?: string[];
 }
 
 export interface DecisionRowLite {
@@ -177,6 +229,7 @@ export class RpcClient {
     projectId: string;
     conversationId: string;
     title: string;
+    milestoneId?: string;
   }): Promise<{ taskId: string }> {
     return this.call<{ taskId: string }>('tasks.create', params);
   }
@@ -208,5 +261,94 @@ export class RpcClient {
     content: string;
   }): Promise<{ entryId: string }> {
     return this.call<{ entryId: string }>('memory.put', params);
+  }
+
+  // ── project companion (ADR-0018) ────────────────────────────────────────
+
+  companionGet(projectId: string): Promise<CompanionState> {
+    return this.call<CompanionState>('projects.companion.get', { projectId });
+  }
+
+  briefUpdate(params: BriefUpdateParams): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.brief.update', params);
+  }
+
+  questionOpen(params: {
+    projectId: string;
+    conversationId: string;
+    text: string;
+  }): Promise<{ questionId: string }> {
+    return this.call<{ questionId: string }>('projects.questions.open', params);
+  }
+
+  questionResolve(params: {
+    projectId: string;
+    conversationId: string;
+    questionId: string;
+    resolution?: string;
+    resolvedByDecisionId?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.questions.resolve', params);
+  }
+
+  questionDrop(params: {
+    projectId: string;
+    conversationId: string;
+    questionId: string;
+    reason: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.questions.drop', params);
+  }
+
+  riskOpen(params: {
+    projectId: string;
+    conversationId: string;
+    text: string;
+    severity?: 'low' | 'medium' | 'high';
+  }): Promise<{ riskId: string }> {
+    return this.call<{ riskId: string }>('projects.risks.open', params);
+  }
+
+  riskResolve(params: {
+    projectId: string;
+    conversationId: string;
+    riskId: string;
+    resolution?: string;
+    resolvedByDecisionId?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.risks.resolve', params);
+  }
+
+  riskDrop(params: {
+    projectId: string;
+    conversationId: string;
+    riskId: string;
+    reason: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.risks.drop', params);
+  }
+
+  milestoneCreate(params: {
+    projectId: string;
+    conversationId: string;
+    title: string;
+    targetDate?: string;
+  }): Promise<{ milestoneId: string }> {
+    return this.call<{ milestoneId: string }>('projects.milestones.create', params);
+  }
+
+  milestoneComplete(params: {
+    projectId: string;
+    conversationId: string;
+    milestoneId: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.milestones.complete', params);
+  }
+
+  timelineList(projectId: string, limit?: number): Promise<AmritaEventLite[]> {
+    return this.call<AmritaEventLite[]>('projects.timeline.list', {
+      projectId,
+      ...(limit !== undefined ? { limit } : {}),
+    });
   }
 }

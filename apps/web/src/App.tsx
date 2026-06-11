@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type AmritaEventLite, type DecisionRowLite, RpcClient, RpcError } from './api.ts';
+import {
+  type AmritaEventLite,
+  type CompanionState,
+  type DecisionRowLite,
+  RpcClient,
+  RpcError,
+} from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import { nextActions } from './companion.ts';
 import {
@@ -29,7 +35,7 @@ type Provider = {
   envReady?: boolean;
   streaming?: boolean;
 };
-type Task = { id: string; title: string; status?: string };
+type Task = { id: string; title: string; status?: string; milestoneId?: string | null };
 type DoctorCheck = { id: string; label: string; status: 'ok' | 'warn' | 'fail'; detail?: string };
 type DoctorReport = {
   ok: boolean;
@@ -101,7 +107,24 @@ export function App() {
   const [decisions, setDecisions] = useState<DecisionRowLite[]>([]);
   const [decisionDraft, setDecisionDraft] = useState('');
   const [taskDraft, setTaskDraft] = useState('');
+  const [taskMilestone, setTaskMilestone] = useState('');
   const [rememberDraft, setRememberDraft] = useState('');
+  // ── project companion (ADR-0018) ──
+  const [companion, setCompanion] = useState<CompanionState | null>(null);
+  const [timeline, setTimeline] = useState<AmritaEventLite[]>([]);
+  const [briefEditing, setBriefEditing] = useState(false);
+  const [briefGoal, setBriefGoal] = useState('');
+  const [briefAudience, setBriefAudience] = useState('');
+  const [briefCriteria, setBriefCriteria] = useState('');
+  const [briefScope, setBriefScope] = useState('');
+  const [briefNoScope, setBriefNoScope] = useState('');
+  const [questionDraft, setQuestionDraft] = useState('');
+  const [riskDraft, setRiskDraft] = useState('');
+  const [riskSeverity, setRiskSeverity] = useState<'low' | 'medium' | 'high' | ''>('');
+  const [milestoneDraft, setMilestoneDraft] = useState('');
+  const [milestoneTarget, setMilestoneTarget] = useState('');
+  // One evidence/reason input per open question/risk row, keyed by row id.
+  const [evidence, setEvidence] = useState<Record<string, string>>({});
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -144,8 +167,19 @@ export function App() {
 
   // Rule-based next-best actions over typed state — never an LLM guess.
   const companionActions = useMemo(
-    () => nextActions({ doctor, tasks, decisions, lanes: laneViews, conversationId }),
-    [doctor, tasks, decisions, laneViews, conversationId],
+    () =>
+      nextActions({
+        doctor,
+        brief: companion?.brief ?? null,
+        questions: companion?.questions ?? [],
+        risks: companion?.risks ?? [],
+        milestones: companion?.milestones ?? [],
+        tasks,
+        decisions,
+        lanes: laneViews,
+        conversationId,
+      }),
+    [doctor, companion, tasks, decisions, laneViews, conversationId],
   );
 
   // Live subscription: (re)open whenever the selected conversation changes. The
@@ -205,7 +239,11 @@ export function App() {
       setConversations(list);
       if (list[0]) openConversation(list[0].id);
       else await createConversation(project.id);
-      await Promise.all([loadTasks(project.id), loadDecisions(project.id)]);
+      await Promise.all([
+        loadTasks(project.id),
+        loadDecisions(project.id),
+        loadCompanion(project.id),
+      ]);
     } catch (e) {
       reportError(e);
     } finally {
@@ -288,6 +326,144 @@ export function App() {
     setDecisions(await client.decisionsList({ projectId }));
   }
 
+  /** Load the Project Brain aggregate + the derived activity timeline. */
+  async function loadCompanion(projectId = selectedProject?.id) {
+    if (!projectId) return;
+    const [state, events] = await Promise.all([
+      client.companionGet(projectId),
+      client.timelineList(projectId, 30),
+    ]);
+    setCompanion(state);
+    setTimeline(events);
+  }
+
+  function startBriefEdit(): void {
+    const b = companion?.brief;
+    setBriefGoal(b?.goal ?? '');
+    setBriefAudience(b?.audience ?? '');
+    setBriefCriteria((b?.successCriteria ?? []).join('\n'));
+    setBriefScope((b?.scope ?? []).join('\n'));
+    setBriefNoScope((b?.noScope ?? []).join('\n'));
+    setBriefEditing(true);
+  }
+
+  function parseLines(s: string): string[] {
+    return s
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  }
+
+  async function saveBrief(): Promise<void> {
+    const ctx = writeCtx();
+    if (!ctx || !briefGoal.trim()) return;
+    try {
+      await client.briefUpdate({
+        ...ctx,
+        goal: briefGoal.trim(),
+        ...(briefAudience.trim() ? { audience: briefAudience.trim() } : {}),
+        successCriteria: parseLines(briefCriteria),
+        scope: parseLines(briefScope),
+        noScope: parseLines(briefNoScope),
+      });
+      setBriefEditing(false);
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function addQuestion(): Promise<void> {
+    const ctx = writeCtx();
+    if (!ctx || !questionDraft.trim()) return;
+    try {
+      await client.questionOpen({ ...ctx, text: questionDraft.trim() });
+      setQuestionDraft('');
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function settleQuestion(questionId: string, mode: 'resolve' | 'drop'): Promise<void> {
+    const ctx = writeCtx();
+    const note = (evidence[questionId] ?? '').trim();
+    if (!ctx || !note) return; // both paths need text: a resolution note or a drop reason
+    try {
+      if (mode === 'resolve') {
+        await client.questionResolve({ ...ctx, questionId, resolution: note });
+      } else {
+        await client.questionDrop({ ...ctx, questionId, reason: note });
+      }
+      setEvidence((old) => ({ ...old, [questionId]: '' }));
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function addRisk(): Promise<void> {
+    const ctx = writeCtx();
+    if (!ctx || !riskDraft.trim()) return;
+    try {
+      await client.riskOpen({
+        ...ctx,
+        text: riskDraft.trim(),
+        ...(riskSeverity ? { severity: riskSeverity } : {}),
+      });
+      setRiskDraft('');
+      setRiskSeverity('');
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function settleRisk(riskId: string, mode: 'resolve' | 'drop'): Promise<void> {
+    const ctx = writeCtx();
+    const note = (evidence[riskId] ?? '').trim();
+    if (!ctx || !note) return;
+    try {
+      if (mode === 'resolve') {
+        await client.riskResolve({ ...ctx, riskId, resolution: note });
+      } else {
+        await client.riskDrop({ ...ctx, riskId, reason: note });
+      }
+      setEvidence((old) => ({ ...old, [riskId]: '' }));
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function addMilestone(): Promise<void> {
+    const ctx = writeCtx();
+    if (!ctx || !milestoneDraft.trim()) return;
+    try {
+      await client.milestoneCreate({
+        ...ctx,
+        title: milestoneDraft.trim(),
+        ...(milestoneTarget ? { targetDate: milestoneTarget } : {}),
+      });
+      setMilestoneDraft('');
+      setMilestoneTarget('');
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function finishMilestone(milestoneId: string): Promise<void> {
+    const ctx = writeCtx();
+    if (!ctx) return;
+    try {
+      await client.milestoneComplete({ ...ctx, milestoneId });
+      await loadCompanion();
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
   // Knowledge writes go through the same typed events as every other surface;
   // each one needs the active project + conversation as provenance.
   function writeCtx(): { projectId: string; conversationId: string } | null {
@@ -300,7 +476,11 @@ export function App() {
     const ctx = writeCtx();
     if (!ctx || !taskDraft.trim()) return;
     try {
-      await client.tasksCreate({ ...ctx, title: taskDraft.trim() });
+      await client.tasksCreate({
+        ...ctx,
+        title: taskDraft.trim(),
+        ...(taskMilestone ? { milestoneId: taskMilestone } : {}),
+      });
       setTaskDraft('');
       await loadTasks();
     } catch (e) {
@@ -591,6 +771,100 @@ export function App() {
           )}
         </section>
         <section className="card">
+          <h2>Brief</h2>
+          {briefEditing ? (
+            <form
+              className="brief-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveBrief();
+              }}
+            >
+              <textarea
+                value={briefGoal}
+                onChange={(e) => setBriefGoal(e.target.value)}
+                dir={textDir(briefGoal)}
+                placeholder="What is this project for?"
+                rows={2}
+              />
+              <input
+                value={briefAudience}
+                onChange={(e) => setBriefAudience(e.target.value)}
+                dir={textDir(briefAudience)}
+                placeholder="Who is it for? (optional)"
+              />
+              <textarea
+                value={briefCriteria}
+                onChange={(e) => setBriefCriteria(e.target.value)}
+                dir={textDir(briefCriteria)}
+                placeholder={'Success criteria — one per line'}
+                rows={2}
+              />
+              <textarea
+                value={briefScope}
+                onChange={(e) => setBriefScope(e.target.value)}
+                dir={textDir(briefScope)}
+                placeholder={'In scope — one per line'}
+                rows={2}
+              />
+              <textarea
+                value={briefNoScope}
+                onChange={(e) => setBriefNoScope(e.target.value)}
+                dir={textDir(briefNoScope)}
+                placeholder={'Out of scope — one per line'}
+                rows={2}
+              />
+              <div className="brief-actions">
+                <button type="submit" disabled={!briefGoal.trim()}>
+                  Save brief
+                </button>
+                <button type="button" onClick={() => setBriefEditing(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : companion?.brief ? (
+            <div className="brief-view">
+              <p className="brief-goal" dir={textDir(companion.brief.goal)}>
+                {companion.brief.goal}
+              </p>
+              {companion.brief.audience ? <small>for {companion.brief.audience}</small> : null}
+              {companion.brief.successCriteria.length > 0 ? (
+                <ul>
+                  {companion.brief.successCriteria.map((s) => (
+                    <li key={s} dir={textDir(s)}>
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {companion.brief.scope.length > 0 ? (
+                <p className="brief-scope">
+                  <strong>In:</strong> {companion.brief.scope.join(' · ')}
+                </p>
+              ) : null}
+              {companion.brief.noScope.length > 0 ? (
+                <p className="brief-scope">
+                  <strong>Out:</strong> {companion.brief.noScope.join(' · ')}
+                </p>
+              ) : null}
+              <button type="button" onClick={startBriefEdit}>
+                Edit brief
+              </button>
+            </div>
+          ) : (
+            <div className="brief-view">
+              <p className="empty-note">
+                No project brief yet. Capture the goal and what done looks like — next actions and
+                planning hang off it.
+              </p>
+              <button type="button" onClick={startBriefEdit} disabled={!conversationId}>
+                Write the brief
+              </button>
+            </div>
+          )}
+        </section>
+        <section className="card">
           <h2>Runtime</h2>
           {doctor ? (
             doctor.sections.map((s) => {
@@ -701,6 +975,23 @@ export function App() {
               Add
             </button>
           </form>
+          {(companion?.milestones ?? []).some(
+            (m) => m.status !== 'done' && m.status !== 'dropped',
+          ) ? (
+            <label className="task-milestone">
+              Milestone for new tasks
+              <select value={taskMilestone} onChange={(e) => setTaskMilestone(e.target.value)}>
+                <option value="">(none)</option>
+                {(companion?.milestones ?? [])
+                  .filter((m) => m.status !== 'done' && m.status !== 'dropped')
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.title}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ) : null}
           {tasks.length === 0 ? (
             <p className="empty-note">No tasks yet.</p>
           ) : (
@@ -749,6 +1040,199 @@ export function App() {
               <p key={d.id} className="decision-row" dir={textDir(d.text)}>
                 {d.text}
               </p>
+            ))
+          )}
+        </section>
+        <section className="card">
+          <h2>Milestones</h2>
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addMilestone();
+            }}
+          >
+            <input
+              value={milestoneDraft}
+              onChange={(e) => setMilestoneDraft(e.target.value)}
+              dir={textDir(milestoneDraft)}
+              placeholder="Add a milestone…"
+            />
+            <input
+              type="date"
+              className="milestone-date"
+              value={milestoneTarget}
+              onChange={(e) => setMilestoneTarget(e.target.value)}
+              title="Target date (optional)"
+            />
+            <button type="submit" disabled={!milestoneDraft.trim() || !conversationId}>
+              Add
+            </button>
+          </form>
+          {(companion?.milestones ?? []).length === 0 ? (
+            <p className="empty-note">
+              No milestones yet — group tasks into the next meaningful chunk of progress.
+            </p>
+          ) : (
+            (companion?.milestones ?? []).map((m) => {
+              const openCount = tasks.filter(
+                (t) => t.milestoneId === m.id && t.status !== 'done' && t.status !== 'dropped',
+              ).length;
+              return (
+                <div key={m.id} className="task-row">
+                  <div className="task-main">
+                    <strong dir={textDir(m.title)}>{m.title}</strong>
+                    <small>
+                      {m.status}
+                      {m.targetDate ? ` · → ${m.targetDate}` : ''}
+                      {openCount > 0 ? ` · ${openCount} open task${openCount > 1 ? 's' : ''}` : ''}
+                    </small>
+                  </div>
+                  {m.status !== 'done' && m.status !== 'dropped' ? (
+                    <button
+                      type="button"
+                      className="task-complete"
+                      onClick={() => void finishMilestone(m.id)}
+                    >
+                      Done
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </section>
+        <section className="card">
+          <h2>Open questions</h2>
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addQuestion();
+            }}
+          >
+            <input
+              value={questionDraft}
+              onChange={(e) => setQuestionDraft(e.target.value)}
+              dir={textDir(questionDraft)}
+              placeholder="What is still unknown?"
+            />
+            <button type="submit" disabled={!questionDraft.trim() || !conversationId}>
+              Add
+            </button>
+          </form>
+          {(companion?.questions ?? []).length === 0 ? (
+            <p className="empty-note">No open questions — when one comes up, park it here.</p>
+          ) : (
+            (companion?.questions ?? []).map((q) => (
+              <div key={q.id} className={`settle-row settle-${q.status}`}>
+                <p dir={textDir(q.text)}>{q.text}</p>
+                {q.status === 'open' ? (
+                  <div className="settle-controls">
+                    <input
+                      value={evidence[q.id] ?? ''}
+                      onChange={(e) => setEvidence((old) => ({ ...old, [q.id]: e.target.value }))}
+                      dir={textDir(evidence[q.id] ?? '')}
+                      placeholder="Resolution note / drop reason…"
+                    />
+                    <button
+                      type="button"
+                      disabled={!(evidence[q.id] ?? '').trim()}
+                      onClick={() => void settleQuestion(q.id, 'resolve')}
+                    >
+                      Resolve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!(evidence[q.id] ?? '').trim()}
+                      onClick={() => void settleQuestion(q.id, 'drop')}
+                    >
+                      Drop
+                    </button>
+                  </div>
+                ) : (
+                  <small>
+                    {q.status === 'resolved'
+                      ? `resolved — ${q.resolution ?? 'by decision'}`
+                      : `dropped — ${q.dropReason}`}
+                  </small>
+                )}
+              </div>
+            ))
+          )}
+        </section>
+        <section className="card">
+          <h2>Risks</h2>
+          <form
+            className="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addRisk();
+            }}
+          >
+            <input
+              value={riskDraft}
+              onChange={(e) => setRiskDraft(e.target.value)}
+              dir={textDir(riskDraft)}
+              placeholder="What could go wrong?"
+            />
+            <select
+              className="risk-severity"
+              value={riskSeverity}
+              onChange={(e) => setRiskSeverity(e.target.value as typeof riskSeverity)}
+              title="Severity (optional)"
+            >
+              <option value="">sev?</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+            <button type="submit" disabled={!riskDraft.trim() || !conversationId}>
+              Add
+            </button>
+          </form>
+          {(companion?.risks ?? []).length === 0 ? (
+            <p className="empty-note">No tracked risks. Honest list — empty means empty.</p>
+          ) : (
+            (companion?.risks ?? []).map((r) => (
+              <div key={r.id} className={`settle-row settle-${r.status}`}>
+                <p dir={textDir(r.text)}>
+                  {r.severity ? (
+                    <span className={`sev sev-${r.severity}`}>{r.severity}</span>
+                  ) : null}
+                  {r.text}
+                </p>
+                {r.status === 'open' ? (
+                  <div className="settle-controls">
+                    <input
+                      value={evidence[r.id] ?? ''}
+                      onChange={(e) => setEvidence((old) => ({ ...old, [r.id]: e.target.value }))}
+                      dir={textDir(evidence[r.id] ?? '')}
+                      placeholder="Resolution note / drop reason…"
+                    />
+                    <button
+                      type="button"
+                      disabled={!(evidence[r.id] ?? '').trim()}
+                      onClick={() => void settleRisk(r.id, 'resolve')}
+                    >
+                      Resolve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!(evidence[r.id] ?? '').trim()}
+                      onClick={() => void settleRisk(r.id, 'drop')}
+                    >
+                      Drop
+                    </button>
+                  </div>
+                ) : (
+                  <small>
+                    {r.status === 'resolved'
+                      ? `resolved — ${r.resolution ?? 'by decision'}`
+                      : `dropped — ${r.dropReason}`}
+                  </small>
+                )}
+              </div>
             ))
           )}
         </section>
@@ -846,7 +1330,32 @@ export function App() {
             )}
           </div>
         </section>
+        <section className="card">
+          <h2>Activity</h2>
+          {timeline.length === 0 ? (
+            <p className="empty-note">No activity yet — everything this project does lands here.</p>
+          ) : (
+            <div className="timeline">
+              {timeline.map((ev) => (
+                <div key={ev.id} className="timeline-row">
+                  <span className="timeline-type">{ev.type}</span>
+                  <span className="timeline-text" dir="auto">
+                    {timelineText(ev)}
+                  </span>
+                  <small>{ev.ts.slice(0, 16).replace('T', ' ')}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </aside>
     </main>
   );
+}
+
+/** One honest line per event — payload text/title/goal, never invented. */
+function timelineText(ev: AmritaEventLite): string {
+  const p = ev.payload;
+  const v = p.text ?? p.title ?? p.goal ?? p.note ?? p.reason ?? p.resolution ?? '';
+  return typeof v === 'string' ? v.slice(0, 80) : '';
 }

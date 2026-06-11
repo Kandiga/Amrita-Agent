@@ -111,6 +111,40 @@ describe('RpcClient', () => {
     expect(bodies[4]?.params).toMatchObject({ scope: 'project', content: 'remember this' });
   });
 
+  it('sends typed companion RPC payloads (brief/questions/risks/milestones/timeline)', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    const ctx = { projectId: 'P1', conversationId: 'C1' };
+    await client.companionGet('P1');
+    await client.briefUpdate({ ...ctx, goal: 'ship it', successCriteria: ['works'] });
+    await client.questionOpen({ ...ctx, text: 'which auth?' });
+    await client.questionResolve({ ...ctx, questionId: 'Q1', resolution: 'magic links' });
+    await client.questionDrop({ ...ctx, questionId: 'Q2', reason: 'out of scope' });
+    await client.riskOpen({ ...ctx, text: 'data loss', severity: 'high' });
+    await client.milestoneCreate({ ...ctx, title: 'Alpha', targetDate: '2026-07-01' });
+    await client.milestoneComplete({ ...ctx, milestoneId: 'M1' });
+    await client.timelineList('P1', 30);
+    expect(bodies.map((b) => b.method)).toEqual([
+      'projects.companion.get',
+      'projects.brief.update',
+      'projects.questions.open',
+      'projects.questions.resolve',
+      'projects.questions.drop',
+      'projects.risks.open',
+      'projects.milestones.create',
+      'projects.milestones.complete',
+      'projects.timeline.list',
+    ]);
+    expect(bodies[1]?.params).toMatchObject({ goal: 'ship it', successCriteria: ['works'] });
+    expect(bodies[5]?.params).toMatchObject({ severity: 'high' });
+    expect(bodies[8]?.params).toMatchObject({ projectId: 'P1', limit: 30 });
+  });
+
   it('sends typed lane RPC payloads with the auth header', async () => {
     const calls: Array<{
       body: { method: string; params: unknown };

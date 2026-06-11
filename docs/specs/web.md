@@ -52,10 +52,18 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 - Provider selector and status card (shows whether the provider streams live — honest, from
   `providers.list.streaming`).
 - Next actions panel — `src/companion.ts`, a **pure, rule-based** derivation over typed state
-  (doctor fails → blocker; active/finished lanes → attention; first task / top open task / first
-  decision → suggestions). Deliberately not an LLM planner (see
-  `docs/strategy/project-companion-roadmap.md`, Stage 0); an empty state honestly says nothing is
-  waiting.
+  (doctor fails → blocker; open high risk / open questions / active or finished lanes →
+  attention; missing brief / unplanned active milestone / first or top task / first decision →
+  suggestions). Deliberately not an LLM planner (see
+  `docs/strategy/project-companion-roadmap.md`); an empty state honestly says nothing is waiting.
+- **Project Brain (ADR-0018):** a Brief card (view + full edit form: goal, audience, success
+  criteria / scope / out-of-scope as line lists), an Open Questions panel and a Risks panel —
+  each open row carries one evidence input whose text becomes the *resolution note* (Resolve) or
+  the *drop reason* (Drop); resolving with nothing is impossible by construction — a Milestones
+  panel (add with optional target date, complete, open-task counts; new tasks can be assigned to
+  a live milestone), and an Activity panel rendering `projects.timeline.list` (type + honest
+  payload line + timestamp, newest first). All data comes from `projects.companion.get`; no
+  sample data anywhere — empty states explain what the panel will hold.
 - Runtime panel — the daemon's `doctor` report as per-section status chips (`ok` / `needs setup` /
   `failing`) with the warn/fail check details inline. Honest: unconfigured surfaces say "needs
   setup", never pretend readiness.

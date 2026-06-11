@@ -63,6 +63,37 @@ pnpm amrita -- task list --project system --db ~/.amrita/amrita.db
 pnpm amrita -- memory search <word> --db ~/.amrita/amrita.db
 ```
 
+## 4b. The Project Brain (Companion Core, ADR-0018)
+
+Still in the right column:
+
+- **Brief** — press **Write the brief**, fill the goal ("ship the CRM"), a couple of success
+  criteria and an out-of-scope line, save. The card now leads the column; "Capture the project
+  brief" disappears from **Next actions**.
+- **Open questions** — add "which auth provider?". Next actions now says "Resolve the open
+  question". Type a note into the row's input and press **Resolve** — resolving with no note and
+  no decision link is impossible (the protocol refuses silent closures). **Drop** uses the same
+  input as the drop reason.
+- **Risks** — add "data loss" with severity `high`: it jumps into Next actions as an attention
+  item. Resolve it with a note ("WAL + backups").
+- **Milestones** — add "Alpha" with a target date; pick it in the Tasks panel's "Milestone for
+  new tasks" select and add a task — the milestone row shows its open-task count. **Done**
+  completes it.
+- **Activity** — every one of the writes above appears immediately, newest first, with its event
+  type and provenance line. This is the event log itself, not a separate feed.
+
+CLI equivalents against the same DB:
+
+```bash
+pnpm amrita -- brief set --project system --goal "ship the CRM" --criteria "login works;export works" --db ~/.amrita/amrita.db
+pnpm amrita -- brief get --project system --db ~/.amrita/amrita.db
+pnpm amrita -- question open "which auth provider?" --project system --db ~/.amrita/amrita.db
+pnpm amrita -- question resolve <QUESTION_ID> --project system --note "magic links" --db ~/.amrita/amrita.db
+pnpm amrita -- risk open "data loss" --severity high --project system --db ~/.amrita/amrita.db
+pnpm amrita -- milestone create --project system --title Alpha --target 2026-07-01 --db ~/.amrita/amrita.db
+pnpm amrita -- timeline --project system --limit 10 --db ~/.amrita/amrita.db
+```
+
 ## 5. Run a safe lane (dry-run)
 
 In the **Lanes** panel: type a goal, leave **Dry run** checked (the default), press **Start

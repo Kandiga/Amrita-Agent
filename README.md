@@ -27,8 +27,10 @@ Implemented and tested:
   accounts (env-name refs only), channels, lanes, and `doctor`.
 - **`@amrita/channels`** — web transport + Telegram skeleton (deny-by-default owner allowlist,
   pairing codes; a live bot runner is not bundled yet and every surface says so honestly).
-- **`@amrita/web`** — the operator UI: project sidebar, live-streaming chat transcript
-  (WebSocket + replay fallback), memory/tasks/decisions panels with typed writes, a Lanes panel
+- **`@amrita/web`** — the operator UI / **Project Brain**: project sidebar, live-streaming chat
+  transcript (WebSocket + replay fallback), project brief + open questions + risks + milestones
+  (ADR-0018, evidence-enforced lifecycles), an activity timeline derived from the event log,
+  memory/tasks/decisions panels with typed writes, rule-based next actions, a Lanes panel
   (start dry-run/real-gated, observe, cancel), runtime doctor chips, access-token panel,
   RTL-aware, usable on narrow viewports.
 
