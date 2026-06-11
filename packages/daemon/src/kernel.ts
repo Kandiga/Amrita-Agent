@@ -79,6 +79,8 @@ export interface KernelHealth {
   dbPath: string;
   schemaVersion: number;
   counts: { projects: number; conversations: number; messages: number; events: number };
+  /** Lane execution posture (no secrets) — `realExecution` is the opt-in gate. */
+  lanes: { realExecution: boolean; active: number };
 }
 
 export interface KernelOptions {
@@ -89,6 +91,10 @@ export interface KernelOptions {
   fetchImpl?: FetchLike;
   /** Injectable lane runner (tests pass a fake; defaults to a safe, exec-disabled Claude Code runner). */
   laneRunner?: LaneRunner;
+  /** Opt-in to REAL Claude Code lane execution. Default false (also `AMRITA_LANES_ALLOW_REAL_EXECUTION=1`). */
+  allowRealLaneExecution?: boolean;
+  /** Workspace roots a real lane's cwd must resolve within (also `AMRITA_LANES_ALLOWED_ROOTS`, `:`-sep). */
+  laneAllowedRoots?: string[];
 }
 
 /** Start a lane (delegated unit of work). Secret-free; nested fields are zod-validated upstream. */
@@ -103,14 +109,41 @@ export interface LaneStartInput {
   deliverables?: string[];
   /** Record `lane.spawned`/`lane.mandate` and stop before running the lane. */
   dryRun?: boolean;
+  /** Explicit intent to run for real; on a non-opted-in daemon this fails safely. */
+  real?: boolean;
+  /** Return immediately with status `running`; the lane runs in the background. */
+  detach?: boolean;
 }
 
 export interface LaneStartResult {
   laneId: string;
   status: LaneStatus;
   dryRun: boolean;
+  detached: boolean;
   report: MergeReport | null;
   error?: string;
+}
+
+export interface LaneCancelResult {
+  laneId: string;
+  cancelled: boolean;
+  status: LaneStatus | null;
+}
+
+/** The internal settle outcome of a background lane run. */
+interface LaneSettleResult {
+  status: LaneStatus;
+  report: MergeReport | null;
+  error?: string;
+}
+
+/** Parse a `:`-separated list of workspace roots (e.g. `AMRITA_LANES_ALLOWED_ROOTS`). */
+function parseAllowedRoots(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(':')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 /**
@@ -123,9 +156,16 @@ export class AmritaKernel {
   readonly store: Store;
   readonly dbPath: string;
   readonly startedAt: string;
+  /** Whether REAL Claude Code lane execution is enabled on this daemon (opt-in). */
+  readonly realLaneExecution: boolean;
   private readonly mock = new MockProvider();
   private readonly fetchImpl: FetchLike;
   private readonly laneRunner: LaneRunner;
+  private readonly activeLanes = new Map<
+    string,
+    { controller: AbortController; promise: Promise<LaneSettleResult> }
+  >();
+  private closed = false;
 
   private constructor(
     store: Store,
@@ -133,12 +173,14 @@ export class AmritaKernel {
     startedAt: string,
     fetchImpl: FetchLike,
     laneRunner: LaneRunner,
+    realLaneExecution: boolean,
   ) {
     this.store = store;
     this.dbPath = dbPath;
     this.startedAt = startedAt;
     this.fetchImpl = fetchImpl;
     this.laneRunner = laneRunner;
+    this.realLaneExecution = realLaneExecution;
   }
 
   /** Open (creating + migrating) the store and start the kernel. */
@@ -147,17 +189,35 @@ export class AmritaKernel {
       path: opts.dbPath,
       ...(opts.spillDir ? { spillDir: opts.spillDir } : {}),
     });
+    const realLaneExecution =
+      opts.allowRealLaneExecution ?? process.env.AMRITA_LANES_ALLOW_REAL_EXECUTION === '1';
+    const configuredRoots =
+      opts.laneAllowedRoots ?? parseAllowedRoots(process.env.AMRITA_LANES_ALLOWED_ROOTS);
+    // When real exec is on but no roots are configured, confine to the daemon cwd.
+    const allowedRoots =
+      configuredRoots.length > 0 ? configuredRoots : realLaneExecution ? [process.cwd()] : [];
+    // Injected runner wins (tests); else a real-capable runner iff opted in, else the
+    // safe default that refuses real execution (ADR-0014/0015).
+    const laneRunner =
+      opts.laneRunner ??
+      (realLaneExecution
+        ? new ClaudeCodeLaneRunner({ allowRealExecution: true, allowedRoots })
+        : new ClaudeCodeLaneRunner());
     return new AmritaKernel(
       store,
       opts.dbPath,
       new Date().toISOString(),
       opts.fetchImpl ?? defaultFetch,
-      // Default runner refuses real Claude Code execution (ADR-0014); tests inject a fake.
-      opts.laneRunner ?? new ClaudeCodeLaneRunner(),
+      laneRunner,
+      realLaneExecution,
     );
   }
 
   close(): void {
+    this.closed = true;
+    // Abort any in-flight (detached) lanes so no child outlives the daemon.
+    for (const { controller } of this.activeLanes.values()) controller.abort();
+    this.activeLanes.clear();
     this.store.close();
   }
 
@@ -176,6 +236,7 @@ export class AmritaKernel {
       dbPath: this.dbPath,
       schemaVersion: version ?? -1,
       counts: this.store.stats(),
+      lanes: { realExecution: this.realLaneExecution, active: this.activeLanes.size },
     };
   }
 
@@ -584,12 +645,32 @@ export class AmritaKernel {
     } as UnsealedEvent);
   }
 
+  /** Emit a lane event, no-op after close, never throwing into the run path. */
+  private safeEmitLane(
+    projectId: string,
+    conversationId: string,
+    laneId: string,
+    type: string,
+    payload: unknown,
+  ): void {
+    if (this.closed) return;
+    try {
+      this.emitLaneEvent(projectId, conversationId, laneId, type, payload);
+    } catch {
+      // a projection hiccup (or a closing store) must never break a lane run
+    }
+  }
+
   /**
    * Start a lane: emit `lane.spawned` + `lane.mandate`, then (unless `dryRun`)
-   * run it through the injected `LaneRunner`, streaming `lane.progress` events
-   * and finishing with `lane.merge_report` + `lane.completed`/`lane.aborted`.
-   * The default runner refuses real Claude Code execution, so a non-dry start
-   * with no injected runner ends safely as `aborted` (ADR-0014). Secret-free.
+   * run it through the lane runner, streaming `lane.progress` and finishing with
+   * `lane.merge_report` + `lane.completed`/`lane.aborted`. With `detach` the call
+   * returns immediately (status `running`) and the lane runs in the background,
+   * cancellable via {@link cancelLane}; otherwise it awaits completion.
+   *
+   * Safety (ADR-0015): the default runner refuses real Claude Code execution, so
+   * a non-dry start ends safely as `aborted` unless the daemon opted in. A `real`
+   * request on a non-opted-in daemon fails safely WITHOUT running. Secret-free.
    */
   async startLane(input: LaneStartInput): Promise<LaneStartResult> {
     const conv = this.store.getConversation(input.conversationId);
@@ -613,44 +694,103 @@ export class AmritaKernel {
     this.emitLaneEvent(projectId, conversationId, laneId, 'lane.mandate', mandate);
 
     if (input.dryRun) {
-      return { laneId, status: 'spawned', dryRun: true, report: null };
+      return { laneId, status: 'spawned', dryRun: true, detached: false, report: null };
     }
 
+    // Explicit real intent on a daemon that has not opted in → safe failure, no run.
+    if (input.real && !this.realLaneExecution) {
+      const error =
+        'real lane execution is disabled on this daemon (set AMRITA_LANES_ALLOW_REAL_EXECUTION=1 or pass allowRealLaneExecution)';
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', {
+        laneId,
+        reason: error,
+      });
+      return { laneId, status: 'aborted', dryRun: false, detached: false, report: null, error };
+    }
+
+    const controller = new AbortController();
+    const promise = this.runLaneToCompletion(
+      projectId,
+      conversationId,
+      laneId,
+      mandate,
+      controller.signal,
+    ).finally(() => this.activeLanes.delete(laneId));
+    this.activeLanes.set(laneId, { controller, promise });
+
+    if (input.detach) {
+      return { laneId, status: 'running', dryRun: false, detached: true, report: null };
+    }
+
+    const settled = await promise;
+    return {
+      laneId,
+      status: settled.status,
+      dryRun: false,
+      detached: false,
+      report: settled.report,
+      ...(settled.error ? { error: settled.error } : {}),
+    };
+  }
+
+  /** Run the lane to completion, emitting lifecycle events. Never throws. */
+  private async runLaneToCompletion(
+    projectId: string,
+    conversationId: string,
+    laneId: string,
+    mandate: Parameters<LaneRunner['run']>[0],
+    signal: AbortSignal,
+  ): Promise<LaneSettleResult> {
     try {
       const report = await this.laneRunner.run(mandate, {
-        onProgress: (note, pct) => {
-          try {
-            this.emitLaneEvent(
-              projectId,
-              conversationId,
-              laneId,
-              'lane.progress',
-              clean({ note, pct }),
-            );
-          } catch {
-            // a progress-projection hiccup must never abort the lane run
-          }
-        },
+        signal,
+        onProgress: (note, pct) =>
+          this.safeEmitLane(
+            projectId,
+            conversationId,
+            laneId,
+            'lane.progress',
+            clean({ note, pct }),
+          ),
       });
       const sealed = mergeReportSchema.parse({ ...report, laneId });
-      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.merge_report', sealed);
-      if (sealed.exit === 'aborted') {
-        this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', {
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.merge_report', sealed);
+      // `cancelled` and `aborted` are terminal-aborted in the row state machine;
+      // the precise disposition lives in the merge report's `exit`.
+      if (sealed.exit === 'aborted' || sealed.exit === 'cancelled') {
+        this.safeEmitLane(projectId, conversationId, laneId, 'lane.aborted', {
           laneId,
-          reason: sealed.summary || 'aborted',
+          reason: sealed.summary || sealed.exit,
         });
-        return { laneId, status: 'aborted', dryRun: false, report: sealed };
+        return { status: 'aborted', report: sealed };
       }
-      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.completed', {
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.completed', {
         laneId,
         exit: sealed.exit,
       });
-      return { laneId, status: 'completed', dryRun: false, report: sealed };
+      return { status: 'completed', report: sealed };
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.aborted', { laneId, reason });
-      return { laneId, status: 'aborted', dryRun: false, report: null, error: reason };
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.aborted', { laneId, reason });
+      return { status: 'aborted', report: null, error: reason };
     }
+  }
+
+  /** Cancel a running lane (aborts the runner); resolves once it has stopped. */
+  async cancelLane(laneId: string): Promise<LaneCancelResult> {
+    const entry = this.activeLanes.get(laneId);
+    if (!entry) {
+      return { laneId, cancelled: false, status: this.store.getLane(laneId)?.status ?? null };
+    }
+    entry.controller.abort();
+    await entry.promise;
+    return { laneId, cancelled: true, status: this.store.getLane(laneId)?.status ?? null };
+  }
+
+  /** Await a (possibly detached) lane's completion. Resolves immediately if not active. */
+  async awaitLane(laneId: string): Promise<void> {
+    const entry = this.activeLanes.get(laneId);
+    if (entry) await entry.promise;
   }
 
   // ── channel pairings (delegated; ADR-0013) ────────────────────────────────

@@ -48,19 +48,27 @@ interface HealthLite {
   schemaVersion: number;
   dbPath: string;
   counts: { projects: number; conversations: number; messages: number; events: number };
+  lanes?: { realExecution: boolean; active: number };
 }
 interface LaneLite {
   id: string;
   status: string;
   kind: string;
   mandateJson: string;
+  mergeJson?: string | null;
 }
 interface LaneStartLite {
   laneId: string;
   status: string;
   dryRun: boolean;
+  detached: boolean;
   report: { exit: string } | null;
   error?: string;
+}
+interface LaneCancelLite {
+  laneId: string;
+  cancelled: boolean;
+  status: string | null;
 }
 
 function laneGoal(lane: LaneLite): string {
@@ -78,11 +86,14 @@ export const COMMANDS: Record<string, Command> = {
     async run(client) {
       const h = await client.call<HealthLite>('health');
       const c = h.counts;
+      const lanes = h.lanes
+        ? `\nlanes real-execution ${h.lanes.realExecution ? 'enabled' : 'disabled'} · ${h.lanes.active} active`
+        : '';
       return {
         result: h,
         summary:
           `amritad · schema v${h.schemaVersion} · ${h.dbPath}\n` +
-          `projects ${c.projects} · conversations ${c.conversations} · messages ${c.messages} · events ${c.events}`,
+          `projects ${c.projects} · conversations ${c.conversations} · messages ${c.messages} · events ${c.events}${lanes}`,
       };
     },
   },
@@ -430,12 +441,12 @@ export const COMMANDS: Record<string, Command> = {
     },
   },
   'lane start': {
-    describe: 'start a lane (--dry-run records the mandate without running Claude Code)',
+    describe: 'start a lane (--dry-run records the mandate; --real requires daemon opt-in)',
     async run(client, { flags }) {
       const goal = strFlag(flags, 'goal');
       if (!goal) {
         throw new CliError(
-          'usage: amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run]',
+          'usage: amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run] [--real]',
         );
       }
       const ctx = await resolveWriteContext(client, {
@@ -447,6 +458,7 @@ export const COMMANDS: Record<string, Command> = {
         conversationId: ctx.conversationId,
         goal,
         dryRun: flags['dry-run'] === true,
+        real: flags.real === true,
         ...(kind ? { kind } : {}),
       });
       const meta = r.dryRun
@@ -457,6 +469,41 @@ export const COMMANDS: Record<string, Command> = {
             ? `exit ${r.report.exit}`
             : r.status;
       return { result: r, summary: `lane ${r.laneId} · ${r.status} · ${meta}` };
+    },
+  },
+  'lane get': {
+    describe: 'show a lane: status, mandate summary, and final report exit',
+    async run(client, { positionals }) {
+      const laneId = positionals[0];
+      if (!laneId) throw new CliError('usage: amrita lane get <LANE_ID>');
+      const lane = await client.call<LaneLite | null>('lanes.get', { laneId });
+      if (!lane) throw new CliError(`lane not found: ${laneId}`, 'not_found');
+      let exit = '';
+      try {
+        exit = lane.mergeJson
+          ? `· exit ${(JSON.parse(lane.mergeJson) as { exit?: string }).exit}`
+          : '';
+      } catch {
+        exit = '';
+      }
+      return {
+        result: lane,
+        summary: `lane ${lane.id} · ${lane.status} · ${lane.kind} ${laneGoal(lane)} ${exit}`.trim(),
+      };
+    },
+  },
+  'lane cancel': {
+    describe: 'cancel a running lane',
+    async run(client, { positionals }) {
+      const laneId = positionals[0];
+      if (!laneId) throw new CliError('usage: amrita lane cancel <LANE_ID>');
+      const r = await client.call<LaneCancelLite>('lanes.cancel', { laneId });
+      return {
+        result: r,
+        summary: r.cancelled
+          ? `cancelled ${laneId} · status ${r.status ?? 'unknown'}`
+          : `lane ${laneId} was not active (status ${r.status ?? 'unknown'})`,
+      };
     },
   },
 };

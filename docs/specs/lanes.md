@@ -92,14 +92,19 @@ real sandboxing. The runner/docs do not claim otherwise.
 lane.spawned → lane.mandate → lane.progress* → lane.merge_report → lane.completed | lane.aborted
 ```
 
-- `lane.spawned`/`lane.mandate` are emitted first; `--dry-run` stops here (the mandate is recorded, no
+- `lane.spawned`/`lane.mandate` are emitted first; `dryRun` stops here (the mandate is recorded, no
   runner runs).
-- Otherwise the injected `LaneRunner` runs; each progress note becomes a `lane.progress` event (the
-  projection moves the lane `spawned → running`).
+- A `real: true` request on a daemon that has **not** opted in emits `lane.aborted` immediately and
+  does not run.
+- Otherwise the lane runs. With `detach` the call returns immediately (`status: 'running'`) and the run
+  continues in the background; otherwise the call awaits completion. Each progress note becomes a
+  `lane.progress` event (`spawned → running`).
 - The final `MergeReport` is emitted as `lane.merge_report` (`→ merging`) then `lane.completed`
-  (`→ completed`) — for any non-aborted exit, including `budget`/`partial`. An `aborted` exit (or a
-  thrown runner) emits `lane.aborted` (`→ aborted`).
-- With the **default** runner (real exec disabled), a non-dry start ends safely as `aborted`.
+  (`→ completed`) for `done`/`partial`/`budget`. An `aborted` **or** `cancelled` exit (or a thrown
+  runner) emits `lane.aborted` (`→ aborted`) — the row status is `aborted`, while the precise
+  disposition (`cancelled` vs `aborted`) lives in the merge report's `exit`.
+- `kernel.cancelLane(laneId)` aborts a running lane (terminating its child) → `exit: 'cancelled'`. The
+  kernel aborts all active lanes on `close()`.
 
 All lane events carry `laneId` on the envelope, so the existing projection keys on it. No payload
 carries a secret value.
@@ -108,21 +113,26 @@ carries a secret value.
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `lanes.start` | `{conversationId, goal, kind?, dryRun?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, report?, error?}` |
+| `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |
+| `lanes.cancel` | `{laneId}` | `{laneId, cancelled, status}` |
 | `lanes.list` | `{projectId?, conversationId?, status?}` | lane rows |
 
 ```bash
 amrita lane list [--project ID_OR_SLUG] [--status running] --db PATH
 amrita lane start --goal "tidy the repo" --project myproj --dry-run --db PATH
+amrita lane start --goal "tidy the repo" --project myproj --real --db PATH   # needs daemon opt-in
+amrita lane get <LANE_ID> --db PATH
+amrita lane cancel <LANE_ID> --db PATH
 ```
 
-`lane start` without `--dry-run` uses the kernel's default runner, which refuses real execution — it
-ends as `aborted` until a real Claude Code runner is explicitly enabled in a future WO.
+Real execution is opt-in (`AMRITA_LANES_ALLOW_REAL_EXECUTION=1` / `allowRealLaneExecution`). Without it,
+`lane start` (and `--real`) ends safely as `aborted`. `health.lanes.realExecution` shows the posture.
 
 ## Deferred
 
-- Real Claude Code execution wiring (`allowRealExecution` + a vetted `createNodeProcessRunner` command
-  line, sandboxing, approval forwarding).
+- Broader Claude Code tools (Edit/Write/Bash) behind explicit mandate approval; real network sandboxing
+  (today `mandate.scope.network` is advisory — see ADR-0015).
 - Context-pack curation and artifact merge-back into the conversation.
-- Per-turn streaming budget enforcement (only aggregate usage/time is enforced today).
+- Per-turn streaming budget for token/usd (turn-count and wall-clock are enforced live; token/usd are
+  evaluated from the final reported usage).

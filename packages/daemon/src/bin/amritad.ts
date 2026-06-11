@@ -44,6 +44,12 @@ async function main(): Promise<void> {
   const { dbPath, http, port } = parseArgs(process.argv.slice(2));
   const kernel = AmritaKernel.open({ dbPath });
 
+  // Make lane execution posture visible at startup (never silently real). On
+  // stdio it goes to stderr so it cannot corrupt the JSON-lines protocol.
+  const laneStatus = `amritad: lanes real-execution ${
+    kernel.realLaneExecution ? 'ENABLED (AMRITA_LANES_ALLOW_REAL_EXECUTION)' : 'disabled'
+  }\n`;
+
   if (http) {
     const auth = resolveAuthToken(process.env.AMRITA_AUTH_TOKEN);
     const running = await startHttpServer(kernel, { port, authToken: auth.token });
@@ -56,6 +62,7 @@ async function main(): Promise<void> {
     } else {
       process.stdout.write('amritad: auth enabled via AMRITA_AUTH_TOKEN\n');
     }
+    process.stdout.write(laneStatus);
     const shutdown = (): void => {
       void running.close().then(() => {
         kernel.close();
@@ -67,6 +74,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  process.stderr.write(laneStatus);
   createStdioServer(kernel, { onClose: () => kernel.close() });
 }
 

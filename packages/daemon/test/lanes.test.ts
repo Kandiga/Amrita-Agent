@@ -143,3 +143,84 @@ describe('lane rpc surface', () => {
     expect(isErrorResponse(r) && r.error.code).toBe('invalid_params');
   });
 });
+
+describe('lane execution controls (WO#5.2)', () => {
+  it('reports real execution disabled by default in health', () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    expect(kernel.realLaneExecution).toBe(false);
+    expect(kernel.health().lanes.realExecution).toBe(false);
+  });
+
+  it('fails a real-execution request safely on a non-opted-in daemon (no run)', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({ conversationId, goal: 'do real work', real: true });
+    expect(res.status).toBe('aborted');
+    expect(res.report).toBeNull();
+    expect(res.error).toMatch(/disabled/);
+    // spawned + mandate + aborted — the runner was never invoked
+    expect(eventTypes(kernel, conversationId)).toEqual([
+      'lane.spawned',
+      'lane.mandate',
+      'lane.aborted',
+    ]);
+  });
+
+  it('honours the opt-in flag and runs the (injected) runner for a real request', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      allowRealLaneExecution: true,
+      laneRunner: new FakeLaneRunner({ summary: 'ran for real' }),
+    });
+    expect(kernel.health().lanes.realExecution).toBe(true);
+    const { conversationId } = seedConversation(kernel);
+    const res = await kernel.startLane({ conversationId, goal: 'real', real: true });
+    expect(res.status).toBe('completed');
+    expect(res.report?.summary).toBe('ran for real');
+  });
+
+  it('detaches a lane and cancels it, transitioning to cancelled', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      laneRunner: new FakeLaneRunner({ block: true }),
+    });
+    const { conversationId } = seedConversation(kernel);
+    const started = await kernel.startLane({ conversationId, goal: 'long job', detach: true });
+    expect(started.detached).toBe(true);
+    expect(started.status).toBe('running');
+    expect(kernel.health().lanes.active).toBe(1);
+
+    const cancel = await kernel.cancelLane(started.laneId);
+    expect(cancel.cancelled).toBe(true);
+    expect(cancel.status).toBe('aborted'); // row status; merge report carries exit:'cancelled'
+    const lane = kernel.getLane(started.laneId);
+    expect(JSON.parse(lane?.mergeJson ?? '{}').exit).toBe('cancelled');
+    expect(eventTypes(kernel, conversationId)).toContain('lane.aborted');
+    expect(kernel.health().lanes.active).toBe(0);
+  });
+
+  it('reports cancel of a non-active lane without error', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const res = await kernel.cancelLane('LANEDOESNOTEXIST');
+    expect(res.cancelled).toBe(false);
+    expect(res.status).toBeNull();
+  });
+
+  it('exposes lanes.cancel over rpc', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      laneRunner: new FakeLaneRunner({ block: true }),
+    });
+    const { conversationId } = seedConversation(kernel);
+    const started = await kernel.startLane({ conversationId, goal: 'job', detach: true });
+    const r = await dispatch(kernel, {
+      id: 1,
+      method: 'lanes.cancel',
+      params: { laneId: started.laneId },
+    });
+    expect(isErrorResponse(r)).toBe(false);
+    if (!isErrorResponse(r)) {
+      expect((r.result as { cancelled: boolean }).cancelled).toBe(true);
+    }
+  });
+});

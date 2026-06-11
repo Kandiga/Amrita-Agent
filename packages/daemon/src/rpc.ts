@@ -220,6 +220,8 @@ export const METHODS: Record<string, RpcMethod> = {
       goal: z.string().min(1).max(4000),
       kind: z.string().optional(),
       dryRun: z.boolean().optional(),
+      real: z.boolean().optional(),
+      detach: z.boolean().optional(),
       scope: z
         .object({
           paths: z.array(z.string()).optional(),
@@ -248,6 +250,7 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.startLane(clean(p)),
   ),
   'lanes.get': def(z.object({ laneId: z.string() }), (k, p) => k.getLane(p.laneId) ?? null),
+  'lanes.cancel': def(z.object({ laneId: z.string() }), (k, p) => k.cancelLane(p.laneId)),
 
   'chat.turn': def(
     z.object({

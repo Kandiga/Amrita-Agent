@@ -63,8 +63,9 @@ deterministic and free of provider/tool/lane execution.
 | `accounts.configStatus` | `{accountId}` | `{status}` |
 | `connectors.list` | — | connector rows |
 | `lanes.list` | `{projectId?, conversationId?, status?}` | lane rows |
-| `lanes.start` | `{conversationId, goal, kind?, dryRun?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, report?, error?}` |
+| `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |
+| `lanes.cancel` | `{laneId}` | `{laneId, cancelled, status}` |
 | `chat.turn` | `{conversationId, text, provider?, model?, accountId?, dryRun?, channel?}` | turn result (secret-free) |
 | `providers.list` | — | provider availability (no secret values) |
 
@@ -122,6 +123,23 @@ ADR-0014). This token is *local session config*, **not** a provider secret: it i
 
 The `amrita` CLI speaks RPC **in process** (no HTTP), so it needs no token. An HTTP client (the web UI)
 must send the bearer token on `/rpc` and `/events`, and the `?token=` query on the WS.
+
+### Lane execution (WO#5.2)
+
+Lanes run delegated work (e.g. Claude Code) beside a conversation. See [lanes.md](lanes.md) and
+[ADR-0015](../adr/0015-real-lane-execution-opt-in.md).
+
+- **Real execution is opt-in and off by default.** Enable it with `AMRITA_LANES_ALLOW_REAL_EXECUTION=1`
+  or `AmritaKernel.open({ allowRealLaneExecution })`. `health.lanes.realExecution` reports the posture
+  (boolean), and `amritad --http` prints it once at startup (to stderr on stdio). Without opt-in, every
+  non-dry lane ends safely as `aborted`; a `lanes.start { real: true }` on a non-opted-in daemon fails
+  safely **without running**.
+- **Workspace confinement.** Real lanes are confined to `AMRITA_LANES_ALLOWED_ROOTS` (`:`-separated) or
+  `laneAllowedRoots`; if real exec is on and none are configured, lanes are confined to the daemon cwd.
+- **`detach`** returns immediately (`status: 'running'`) and runs the lane in the background — the web
+  observes it over the live event stream; `lanes.cancel` aborts it (terminating the child) and the lane
+  reports `exit: 'cancelled'`. Without `detach`, `lanes.start` awaits completion (CLI/synchronous use).
+- The daemon never forwards a secret into a lane, and aborts all active lanes on shutdown.
 
 ## Transport & CLI
 

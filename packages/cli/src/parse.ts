@@ -1,5 +1,5 @@
 /** Boolean flags take no value; everything else `--flag value` (or `--flag=value`). */
-const BOOLEAN_FLAGS = new Set(['json', 'help', 'dry-run']);
+const BOOLEAN_FLAGS = new Set(['json', 'help', 'dry-run', 'real']);
 
 export interface ParsedArgs {
   positionals: string[];

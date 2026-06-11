@@ -226,6 +226,36 @@ describe('amrita CLI', () => {
     expect(r.error).toMatch(/disabled/);
   });
 
+  it('lane start --real without daemon opt-in aborts with a clear message', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const r = json<{ status: string; error?: string }>(
+      await cli(['lane', 'start', '--project', 'crm', '--goal', 'real work', '--real', '--json']),
+    );
+    expect(r.status).toBe('aborted');
+    expect(r.error).toMatch(/disabled/);
+  });
+
+  it('health shows lane real-execution disabled by default', async () => {
+    const h = json<{ lanes: { realExecution: boolean } }>(await cli(['health', '--json']));
+    expect(h.lanes.realExecution).toBe(false);
+    expect((await cli(['health'])).out).toContain('lanes real-execution disabled');
+  });
+
+  it('lane get and lane cancel work on a dry-run lane', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    const started = json<{ laneId: string }>(
+      await cli(['lane', 'start', '--project', 'crm', '--goal', 'tidy', '--dry-run', '--json']),
+    );
+    const got = await cli(['lane', 'get', started.laneId]);
+    expect(got.code).toBe(0);
+    expect(got.out).toContain(started.laneId);
+    expect(got.out).toContain('spawned');
+    // a dry-run lane never ran, so cancel reports it was not active
+    const cancel = await cli(['lane', 'cancel', started.laneId]);
+    expect(cancel.code).toBe(0);
+    expect(cancel.out).toContain('not active');
+  });
+
   it('usage errors exit non-zero', async () => {
     expect((await cli(['task', 'create', '--project', 'crm'])).code).toBe(2); // missing --title
     // missing --db entirely
