@@ -52,6 +52,24 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - **settings** `(key, value_json, updated_at)` — CHECK rejects keys containing
   `secret`/`api_key`/`apikey`/`token`/`password`.
 
+### Companion entities (migration `0004_companion`, ADR-0018)
+
+- **project_briefs** `(project_id PK→projects CASCADE, goal ≤2000, audience?,
+  success_criteria_json, scope_json, no_scope_json, source_message_id?, created_at, updated_at)` —
+  one upsert-document row per project, rebuilt verbatim from `brief.updated` events.
+- **open_questions** `(id, project_id→projects CASCADE, conversation_id?, source_message_id?,
+  text, status[open|resolved|dropped], resolution?, resolved_by_decision_id?, drop_reason?,
+  created_at, updated_at)` — CHECKs: resolved ⇒ `resolution` or `resolved_by_decision_id`;
+  dropped ⇒ `drop_reason`. A trigger requires `resolved_by_decision_id` to reference an existing
+  decision.
+- **risks** — same shape/invariants as `open_questions` plus optional
+  `severity[low|medium|high]`.
+- **milestones** `(id, project_id→projects CASCADE, title, description?,
+  status[planned|active|done|dropped], target_date?, created_at, updated_at)`.
+- **tasks.milestone_id?** — trigger-enforced existence (no FK clause, so the down path can
+  `DROP COLUMN` — the `conversations.parent_id` pattern), plus `idx_tasks_milestone`.
+- **idx_events_project_ts** on `events(project_id, ts)` — backs the derived project timeline.
+
 ## Migrations (`migrate.ts`)
 
 - `MIGRATIONS` is an ordered, append-only list. Never edit a shipped migration; add the next one.
@@ -59,7 +77,7 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - `migrateDown(db, toVersion?)` reverts highest-first using the paired `.down.sql`.
 - `currentVersion(db)` reports the highest applied version (or -1).
 - Migrations: `0000_init` (spine), `0001_full_store_schema` (entity baseline), `0002_memory_fts`
-  (memory FTS5).
+  (memory FTS5), `0003_channel_pairings`, `0004_companion` (Project Companion Core, ADR-0018).
 - **Acceptance:** up → down → up across all migrations leaves an identical schema and an idempotent
   second `up` applies 0; targeted `migrateDown(db, N)` reverts only versions above `N` (e.g. down to 1
   drops `memory_entries_fts` but keeps `memory_entries`).
@@ -105,6 +123,10 @@ constraint violation rolls back the event), and never writes a secret. Mapping:
 | `connector.installed/updated/removed` | `connectors` | insert / status patch / delete |
 | `settings.updated` | `settings` | upsert; secret-ish keys already blocked by the event schema + CHECK |
 | `lane.spawned/mandate/progress/merge_report/completed/aborted` | `lanes` | state machine; project/conversation from the envelope |
+| `brief.updated` | `project_briefs` | **upsert** the full document (replay rebuilds the row) |
+| `question.opened/resolved/dropped` | `open_questions` | insert / mark resolved (note or decision link) / mark dropped (reason) |
+| `risk.opened/resolved/dropped` | `risks` | same lifecycle as questions, + optional severity |
+| `milestone.created/updated/completed` | `milestones` | insert / patch / `status='done'` |
 | everything else | — | log-only (no projection) |
 
 ## Public Store API (`store.ts`, ADR-0007)
@@ -116,14 +138,18 @@ mapped camelCase rows.
 **Write APIs** (each returns the generated id where relevant + the sealed event): `createTask`,
 `updateTask`, `completeTask`, `recordDecision`, `supersedeDecision`, `putMemoryEntry`,
 `consolidateMemoryEntries`, `updateSetting`, `installConnector`, `updateConnector`, `removeConnector`,
-`connectProviderAccount`, `markProviderDegraded`, `markProviderRestored`. All take an `EntityWriteOpts`
+`connectProviderAccount`, `markProviderDegraded`, `markProviderRestored`; companion (ADR-0018):
+`upsertBrief`, `openQuestion`/`resolveQuestion`/`dropQuestion`, `openRisk`/`resolveRisk`/`dropRisk`,
+`createMilestone`/`updateMilestone`/`completeMilestone`. All take an `EntityWriteOpts`
 (`origin` default `system`, optional `turnId`/`laneId`/`channel`). Global-config writes
 (settings/connectors/accounts) still carry a `conversationId` (the originating/system conversation).
 
 **Read APIs:** `getConversationTree` (recursive `parent_id` walk), `listTasks`, `listDecisions`
 (`includeSuperseded?`), `getDecisionHistory` (recursive `supersedes_id` chain), `searchMemory`
 (FTS5, see below), `getSetting`, `listConnectors`/`getConnector`, `listAccounts`/`getAccountHealth`,
-`getProviderConfigStatus`, `listLanes`. Plus the lower-level `appendEvent`, `recordUserMessage`,
+`getProviderConfigStatus`, `listLanes`; companion: `getBrief`, `listQuestions`/`listRisks`
+(`status?` filter), `listMilestones`, `listProjectEvents(projectId, {limit?})` — the derived
+project timeline (newest first, bounded). Plus the lower-level `appendEvent`, `recordUserMessage`,
 `getEvents`, `searchMessages`.
 
 ### Secure config binding (DIRECT write — the one exception, ADR-0008)

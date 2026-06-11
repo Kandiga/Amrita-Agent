@@ -70,6 +70,26 @@ stream-only) and carry provenance ids (ULIDs):
 - **settings.** `updated {key, value}` — `key` is rejected by a Zod `.refine` if it looks secret-ish
   (`secret`/`api_key`/`apikey`/`token`/`password`), mirroring the store CHECK. No secrets on the wire.
 
+### Companion events (ADR-0018)
+
+Project Companion Core entities (migration `0004_companion`). All persisted, all provenance-carrying:
+
+- **brief.** `updated {projectId, goal, audience?, successCriteria[], scope[], noScope[],
+  sourceMessageId?}` — a full-document upsert of the project brief (replay rebuilds the row).
+- **question.** `opened {questionId, projectId, conversationId?, sourceMessageId?, text}`,
+  `resolved {questionId, resolution?, resolvedByDecisionId?}` (a `.refine` requires at least one of
+  the two — no silent wave-aways), `dropped {questionId, reason}`.
+- **risk.** `opened {riskId, projectId, conversationId?, sourceMessageId?, text, severity?}`
+  (`severity ∈ low|medium|high`, optional), `resolved`/`dropped` mirror `question.*`.
+- **milestone.** `created {milestoneId, projectId, title, description?, targetDate?, status?}`
+  (`status ∈ planned|active|done|dropped`, `targetDate` is `YYYY-MM-DD`),
+  `updated {milestoneId, title?, description?, status?, targetDate?}`, `completed {milestoneId}`.
+- **task.** `created`/`updated` additionally carry an optional `milestoneId` (nullable on `updated`
+  to unlink a task).
+
+There is no `timeline.*` event: the project timeline is a bounded read of the existing log by
+`project_id` (ADR-0018).
+
 ## Stream-only types
 
 `STREAM_ONLY_TYPES = { 'model.delta' }`. These may be pushed live to clients but the store rejects
