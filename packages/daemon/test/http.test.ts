@@ -131,6 +131,44 @@ describe('websocket event stream', () => {
     ws.close();
   });
 
+  it('forwards stream-only model.delta frames that concatenate to the agent reply', async () => {
+    const proj = await rpc<{ id: string }>('project.ensure', { slug: 's', name: 'S' });
+    const conv = await rpc<{ id: string }>('conversation.create', { projectId: proj.id });
+
+    const ws = new WebSocket(`${wsBase}/events/ws?conversationId=${conv.id}`);
+    const deltas: string[] = [];
+    let agentText = '';
+    const agentArrived = new Promise<void>((resolve) => {
+      ws.on('message', (d: Buffer) => {
+        const f = JSON.parse(d.toString()) as {
+          t: string;
+          event?: { type: string; seq: number; payload?: { text?: string } };
+        };
+        if (f.t !== 'event' || !f.event) return;
+        if (f.event.type === 'model.delta') {
+          expect(f.event.seq).toBe(0); // stream-only: never store-sealed
+          deltas.push(f.event.payload?.text ?? '');
+        }
+        if (f.event.type === 'message.agent') {
+          agentText = f.event.payload?.text ?? '';
+          resolve();
+        }
+      });
+    });
+    await onceOpen(ws);
+    await rpc('chat.turn', { conversationId: conv.id, text: 'stream over the socket' });
+    await agentArrived;
+
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.join('')).toBe(agentText);
+    // the replay path never returns deltas — they are ephemeral
+    const replay = (await (await fetch(`${base}/events?conversationId=${conv.id}`)).json()) as {
+      events: { type: string }[];
+    };
+    expect(replay.events.some((e) => e.type === 'model.delta')).toBe(false);
+    ws.close();
+  });
+
   it('rejects a WS connection with no conversationId', async () => {
     const ws = new WebSocket(`${wsBase}/events/ws`);
     const closed = new Promise<number>((resolve) => {

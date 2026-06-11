@@ -117,6 +117,43 @@ describe('chat turn — mock (kernel)', () => {
   });
 });
 
+describe('chat turn — streaming model.delta (kernel)', () => {
+  beforeEach(() => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+  });
+
+  it('fans out stream-only deltas that concatenate to the final text, and persists none', async () => {
+    const { conversationId } = ctx(kernel);
+    const deltas: { type: string; seq: number; turnId?: string; payload: { text?: string } }[] = [];
+    const unsubscribe = kernel.subscribeStream((ev) =>
+      deltas.push(ev as unknown as (typeof deltas)[number]),
+    );
+
+    const turn = await kernel.runChatTurn({ conversationId, text: 'stream me a long reply' });
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.every((d) => d.type === 'model.delta' && d.seq === 0)).toBe(true);
+    expect(deltas.every((d) => d.turnId === turn.turnId)).toBe(true);
+    expect(deltas.map((d) => d.payload.text ?? '').join('')).toBe(turn.text);
+    // D8: model.delta is never persisted — the event log holds the full turn without it.
+    expect(kernel.listEvents(conversationId).some((e) => e.type === 'model.delta')).toBe(false);
+
+    // unsubscribe stops fan-out
+    unsubscribe();
+    const before = deltas.length;
+    await kernel.runChatTurn({ conversationId, text: 'again' });
+    expect(deltas.length).toBe(before);
+  });
+
+  it('a throwing stream subscriber never breaks the turn', async () => {
+    const { conversationId } = ctx(kernel);
+    kernel.subscribeStream(() => {
+      throw new Error('bad subscriber');
+    });
+    const turn = await kernel.runChatTurn({ conversationId, text: 'still works' });
+    expect(turn.text).toContain('still works');
+  });
+});
+
 describe('chat turn — real adapter (injected fetch, no network)', () => {
   it('calls the anthropic adapter with the env secret and returns assistant text', async () => {
     const capture: { auth?: string } = {};

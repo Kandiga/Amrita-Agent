@@ -30,6 +30,13 @@ export interface ChatResponse {
 export interface ChatProvider {
   readonly id: string;
   generate(req: ChatRequest): Promise<ChatResponse>;
+  /**
+   * Optional streaming variant: emit incremental text via `onDelta`, then
+   * resolve with the same final response `generate` would return. A provider
+   * without it is driven through `generate` (no fake streaming is synthesized
+   * for real adapters — honesty over cosmetics).
+   */
+  generateStream?(req: ChatRequest, onDelta: (text: string) => void): Promise<ChatResponse>;
 }
 
 /** Structured provider failure (no stack/secret/headers). `code` maps to an RPC code. */
@@ -66,6 +73,26 @@ export class MockProvider implements ChatProvider {
       usage: { inputTokens, outputTokens: Math.ceil(text.length / 4) },
     };
   }
+
+  /** Stream the deterministic reply in word chunks; deltas concatenate to the final text. */
+  async generateStream(req: ChatRequest, onDelta: (text: string) => void): Promise<ChatResponse> {
+    const resp = await this.generate(req);
+    for (const chunk of chunkText(resp.text)) {
+      onDelta(chunk);
+      await Promise.resolve(); // yield so listeners observe deltas before the final response
+    }
+    return resp;
+  }
+}
+
+/** Split text into small word-group chunks whose concatenation is exactly the input. */
+export function chunkText(text: string, wordsPerChunk = 3): string[] {
+  const parts = text.split(/(?<=\s)/); // keep trailing whitespace with each word
+  const chunks: string[] = [];
+  for (let i = 0; i < parts.length; i += wordsPerChunk) {
+    chunks.push(parts.slice(i, i + wordsPerChunk).join(''));
+  }
+  return chunks.filter((c) => c.length > 0);
 }
 
 // ── env secret boundary ──────────────────────────────────────────────────────

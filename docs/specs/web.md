@@ -40,7 +40,7 @@ No secret values are sent from or rendered by the web app. Provider status is bo
 - **De-dupe:** the reducer keys on event `id`. A reconnect replays history the client already has; those events are folded again and change nothing, so reconnects never duplicate messages.
 - **Reconnect:** bounded exponential backoff. On every (re)connect the client resumes from the highest `seq` it has seen (`?sinceSeq=`). After the retry budget is exhausted the stream reports state `error`.
 - **Connection states** (a status pill in the top bar): `connecting` · `open` (“Live”) · `reconnecting` · `error` (“Offline”) · `closed`. Clicking the pill triggers a manual `GET /events` replay — the offline fallback.
-- **Streaming output:** `model.delta` is a *stream-only* event (never persisted — see the protocol's `STREAM_ONLY_TYPES`). The reducer renders accumulated deltas as an in-progress **draft assistant bubble**; a completed `message.agent` then supersedes it. The daemon does not emit `model.delta` yet, so real token streaming is **deferred** — but the client path and a fake-stream test already cover it.
+- **Streaming output:** `model.delta` is a *stream-only* event (never persisted — see the protocol's `STREAM_ONLY_TYPES`). The reducer renders accumulated deltas as an in-progress **draft assistant bubble**; a completed `message.agent` then supersedes it. Since WO#5.3 the daemon **emits deltas live** (kernel stream bus, ADR-0016): the mock provider streams word chunks; real adapters stay non-streaming until SSE adapters land. Deltas arrive with `seq: 0`, so they never advance the replay cursor, and `GET /events` never returns them.
 
 The send path still calls `chat.turn` over RPC; the resulting events arrive over the live socket (and a post-send `GET /events` fold makes the turn land even if the socket is offline). The Vite dev proxy upgrades `/events` with `ws: true` so the browser only ever opens a same-origin socket.
 
@@ -88,6 +88,7 @@ duplicate lanes or progress.
 
 ## Deferred
 
-- Real token streaming (`model.delta` emission from the daemon; the client renders it already).
+- Real-provider SSE streaming (the daemon streams `model.delta` for providers that implement
+  `generateStream`; the anthropic/openai adapters do not yet).
 - Tool-call UI; Telegram pairing screens.
 - Production reverse-proxy and static asset deployment.

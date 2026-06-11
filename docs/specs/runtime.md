@@ -103,6 +103,13 @@ Live fan-out is driven by `store.subscribe(listener)` — a **post-commit** noti
 event (a bad subscriber can never break a write). A WS connection without `conversationId` is closed
 with code 1008. Request bodies are capped at 1 MB.
 
+**Stream-only deltas (WO#5.3, ADR-0016):** the kernel has a second, ephemeral fan-out —
+`subscribeStream(listener)` — for `model.delta`. A chat turn whose provider implements
+`generateStream` (the mock does; real adapters don't yet) emits deltas sealed with `seq: 0`,
+protocol-parsed, to live WS connections only. They are never persisted, never replayed by
+`GET /events`, and never advance the client's `sinceSeq` cursor; the persisted log is identical to
+a non-streaming turn.
+
 ### Auth guard (WO#4.3)
 
 The HTTP/WS surface is protected by a single local **bearer token** (`packages/daemon/src/auth.ts`,

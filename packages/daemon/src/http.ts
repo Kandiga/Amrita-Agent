@@ -165,8 +165,19 @@ export function startHttpServer(
           ws.send(JSON.stringify({ t: 'event', event: ev }));
         }
       });
-      ws.on('close', unsubscribe);
-      ws.on('error', unsubscribe);
+      // Stream-only fan-out (model.delta): ephemeral, seq 0, never replayed —
+      // forwarded as-is without touching lastSeq.
+      const unsubscribeStream = kernel.subscribeStream((ev) => {
+        if (ev.conversationId === conversationId) {
+          ws.send(JSON.stringify({ t: 'event', event: ev }));
+        }
+      });
+      const cleanup = () => {
+        unsubscribe();
+        unsubscribeStream();
+      };
+      ws.on('close', cleanup);
+      ws.on('error', cleanup);
     });
   });
 

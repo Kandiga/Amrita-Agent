@@ -8,6 +8,7 @@ import {
   laneMandateSchema,
   mergeReportSchema,
   newId,
+  parseEvent,
 } from '@amrita/protocol';
 import {
   type AccountRow,
@@ -165,6 +166,8 @@ export class AmritaKernel {
     string,
     { controller: AbortController; promise: Promise<LaneSettleResult> }
   >();
+  /** Listeners for STREAM-ONLY events (model.delta) — never persisted (D8). */
+  private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
   private closed = false;
 
   private constructor(
@@ -218,6 +221,7 @@ export class AmritaKernel {
     // Abort any in-flight (detached) lanes so no child outlives the daemon.
     for (const { controller } of this.activeLanes.values()) controller.abort();
     this.activeLanes.clear();
+    this.streamListeners.clear();
     this.store.close();
   }
 
@@ -377,6 +381,45 @@ export class AmritaKernel {
     };
   }
 
+  /**
+   * Subscribe to STREAM-ONLY events (`model.delta`). These are sealed with
+   * `seq: 0` (the store never assigns them a seq — D8 forbids persisting them)
+   * and fan out only to live listeners (the WS surface). Listener errors are
+   * swallowed so a bad subscriber can never break a turn.
+   */
+  subscribeStream(listener: (ev: AmritaEvent) => void): () => void {
+    this.streamListeners.add(listener);
+    return () => this.streamListeners.delete(listener);
+  }
+
+  /** Emit one stream-only `model.delta`, parsed by the protocol before fan-out. */
+  private emitStreamDelta(
+    projectId: string,
+    conversationId: string,
+    turnId: string,
+    text: string,
+  ): void {
+    if (this.closed || this.streamListeners.size === 0) return;
+    const ev = parseEvent({
+      id: newId(),
+      seq: 0, // stream-only: never store-sealed, never persisted
+      ts: new Date().toISOString(),
+      projectId,
+      conversationId,
+      turnId,
+      origin: 'agent',
+      type: 'model.delta',
+      payload: { text },
+    });
+    for (const listener of this.streamListeners) {
+      try {
+        listener(ev);
+      } catch {
+        // a subscriber must never break the turn
+      }
+    }
+  }
+
   /** Append a turn-scoped event (turn/model namespaces) via the Store API. */
   private emitTurnEvent(
     projectId: string,
@@ -455,7 +498,14 @@ export class AmritaKernel {
       .map((m) => ({ role: m.role, text: m.text }));
     let resp: Awaited<ReturnType<ChatProvider['generate']>>;
     try {
-      resp = await provider.generate({ messages, model });
+      // Prefer the provider's streaming path: incremental text is fanned out as
+      // stream-only `model.delta` (never persisted); the final response below is
+      // what gets persisted as `model.response` + `message.agent`.
+      resp = provider.generateStream
+        ? await provider.generateStream({ messages, model }, (text) =>
+            this.emitStreamDelta(projectId, input.conversationId, turnId, text),
+          )
+        : await provider.generate({ messages, model });
     } catch (e) {
       const message = e instanceof ProviderError ? e.message : `${providerId} request failed`;
       this.emitTurnEvent(projectId, input.conversationId, turnId, 'turn.failed', {
