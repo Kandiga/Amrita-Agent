@@ -158,6 +158,29 @@ describe('operator approvals (ADR-0021)', () => {
     );
   });
 
+  it('closes the bypass: on an opted-in daemon a start WITHOUT real:true is still gated', async () => {
+    // The runner on an opted-in daemon executes for real whether or not the
+    // caller passed `real: true` — so the gate must key on daemon posture.
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      allowRealLaneExecution: true,
+      laneRunner: new FakeLaneRunner({ summary: 'must wait for approval' }),
+    });
+    const { conversationId } = seed(kernel);
+    const started = await kernel.startLane({
+      conversationId,
+      goal: 'sneaky run without the real flag',
+      detach: true,
+    });
+    expect(kernel.listPendingApprovals()).toHaveLength(1); // gated, not running free
+    kernel.resolveApproval(kernel.listPendingApprovals()[0]?.approvalId ?? '', 'deny');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(kernel.getLane(started.laneId)?.status).toBe('aborted');
+    // dry runs on the same opted-in daemon stay ungated
+    await kernel.startLane({ conversationId, goal: 'dry', dryRun: true });
+    expect(kernel.listPendingApprovals()).toEqual([]);
+  });
+
   it('resolving an unknown or settled approval reports resolved:false', async () => {
     kernel = AmritaKernel.open({ dbPath: ':memory:' });
     expect(kernel.resolveApproval('NOSUCH', 'allow')).toEqual({

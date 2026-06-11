@@ -24,15 +24,18 @@ Pending entries are runtime state (`approvals.list`); the event log is the durab
 Nothing is persisted as "pending" across restarts — an approval that outlives its daemon was
 never granted, which is exactly the deny-by-default posture.
 
-### 2. The first gated action: REAL lane runs
-A `lanes.start {real: true}` on an opted-in daemon, under the mandate's **default
-`approvals: 'forward'` policy**, now pauses before anything executes: the lane emits a
-progress note ("awaiting operator approval"), raises `lane.run-real` with the goal as detail,
-and proceeds only on allow. Deny/timeout/cancel abort the lane with the reason — the runner is
-never invoked. `'auto-safe'`/`'sandboxed'` policies skip the gate (an explicit pre-
+### 2. The first gated action: lane runs on a real-execution daemon
+On a daemon that has **opted into real execution**, every non-dry `lanes.start` under the
+mandate's **default `approvals: 'forward'` policy** pauses before anything executes: the lane
+emits a progress note ("awaiting operator approval"), raises `lane.run-real` with the goal as
+detail, and proceeds only on allow. Deny/timeout/cancel abort the lane with the reason — the
+runner is never invoked. The gate is keyed on the **daemon's posture, not the caller's `real`
+flag**: an opted-in daemon's runner executes for real regardless of the flag, so gating only
+`real: true` would let a caller bypass approval by omitting it (found in review and fixed
+before release). `'auto-safe'`/`'sandboxed'` policies skip the gate (an explicit pre-
 authorization). **Behavior change:** previously a real start ran immediately; tests that want
-the old behavior pass `approvals: 'auto-safe'`. Dry runs and safe (non-real) runs are never
-gated.
+ungated runs on an opted-in daemon pass `approvals: 'auto-safe'`. Dry runs are never gated,
+and non-opted daemons are never gated — their runner refuses real execution by construction.
 
 ### 3. Telegram operator commands
 Paired, allowlisted owners get `/status` (brief goal, open tasks/questions/risks, active

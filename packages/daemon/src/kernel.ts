@@ -1326,11 +1326,13 @@ export class AmritaKernel {
       return { laneId, status: 'aborted', dryRun: false, detached: false, report: null, error };
     }
 
-    // ADR-0021: a REAL run under the default 'forward' policy requires an
-    // operator approval before anything executes. 'auto-safe'/'sandboxed'
-    // policies skip the gate (the operator pre-authorized that posture).
-    const requireApproval =
-      !!input.real && this.realLaneExecution && mandate.approvals === 'forward';
+    // ADR-0021: on a daemon that has opted into real execution, EVERY non-dry
+    // run under the default 'forward' policy requires an operator approval —
+    // the runner there executes for real whether or not the caller said
+    // `real: true`, so keying the gate on the flag alone would be a bypass.
+    // 'auto-safe'/'sandboxed' policies skip the gate (pre-authorized posture);
+    // non-opted daemons are ungated because their runner refuses real exec.
+    const requireApproval = this.realLaneExecution && mandate.approvals === 'forward';
 
     const controller = new AbortController();
     const promise = this.runLaneToCompletion(
