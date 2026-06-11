@@ -304,3 +304,20 @@ One ledger, updated per phase — no scattered notes.
 - **Limitations / next:** wire a real search provider as an ADR-0022 connector manifest +
   provider implementation; artifact-library groundwork did NOT naturally fall out of this
   phase and remains untouched (next roadmap slice).
+
+## Phase 11f — release lock: review fixes + browser QA (pre-push)
+
+- **Date:** 2026-06-11 · amends ADR-0021 §2
+- **Review fixes:** (1) approval-gate bypass closed — on an opted-in daemon the runner
+  executes for real regardless of the caller's `real` flag, so the gate now keys on daemon
+  posture: EVERY non-dry run under `forward` policy is gated (regression test added);
+  (2) telegram runner `stop()` now aborts the in-flight long-poll (was: up to 25 s shutdown
+  hang) and a failing `handleUpdate` no longer drops the rest of the batch; (3) the GitHub
+  probe timer is cleared after a fast probe (a claimed unhandled-rejection crash was refuted
+  empirically — `Promise.race` subscribes to both promises).
+- **Browser QA (Playwright, temp DB):** ApprovalsPanel verified live — real-flag start and
+  non-real start on an opted-in daemon both raise `lane.run-real`; Deny dismisses the card
+  and the lane shows `exit aborted · real run denied by operator` (runner never invoked).
+  Setup Hub verified — GitHub card shows `needs setup` with the missing env NAME and exact
+  export command when the daemon has no token. Allow path remains unit-test-covered only
+  (allowing in the browser would launch a real Claude Code run).

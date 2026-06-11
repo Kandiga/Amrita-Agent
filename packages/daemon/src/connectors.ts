@@ -39,6 +39,10 @@ const PROBE_TIMEOUT_MS = 3000;
 async function probeGithub(fetchImpl: FetchLike): Promise<'ok' | 'rejected' | 'unknown'> {
   const token = process.env.GITHUB_TOKEN;
   if (!token) return 'unknown';
+  // The race subscribes to the timeout promise, so a late rejection is never
+  // "unhandled" — but the timer must still be cleared or it keeps the event
+  // loop alive for the full window after a fast probe.
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const res = await Promise.race([
       fetchImpl('https://api.github.com/rate_limit', {
@@ -49,15 +53,17 @@ async function probeGithub(fetchImpl: FetchLike): Promise<'ok' | 'rejected' | 'u
           'user-agent': 'amrita-daemon',
         },
       }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('probe timeout')), PROBE_TIMEOUT_MS),
-      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('probe timeout')), PROBE_TIMEOUT_MS);
+      }),
     ]);
     if (res.ok) return 'ok';
     if (res.status === 401 || res.status === 403) return 'rejected';
     return 'unknown';
   } catch {
     return 'unknown';
+  } finally {
+    clearTimeout(timer);
   }
 }
 

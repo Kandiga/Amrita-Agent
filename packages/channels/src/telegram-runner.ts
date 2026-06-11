@@ -14,7 +14,7 @@ import { TelegramChannel } from './telegram.ts';
 
 export type TelegramFetchLike = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string },
+  init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 export interface TelegramRunnerOptions {
@@ -80,11 +80,17 @@ export function startTelegramRunner(
 
   let stopped = false;
   let offset = 0;
+  // Aborts the in-flight long-poll on stop() — otherwise shutdown would block
+  // for up to `pollTimeout` seconds waiting for the poll to come back empty.
+  const aborter = new AbortController();
 
   const loop = (async () => {
     while (!stopped) {
       try {
-        const res = await fetchImpl(`${api('getUpdates')}?timeout=${pollTimeout}&offset=${offset}`);
+        const res = await fetchImpl(
+          `${api('getUpdates')}?timeout=${pollTimeout}&offset=${offset}`,
+          { signal: aborter.signal },
+        );
         if (!res.ok) {
           await delay(2000);
           continue;
@@ -94,13 +100,20 @@ export function startTelegramRunner(
         for (const u of updates) {
           offset = Math.max(offset, u.update_id + 1);
           const normalized = normalize(u);
-          if (normalized) await channel.handleUpdate(normalized);
+          if (!normalized) continue;
+          try {
+            await channel.handleUpdate(normalized);
+          } catch {
+            // One bad update (e.g. a transient sendMessage failure) must not
+            // drop the rest of the batch or crash the loop. The offset has
+            // advanced — Telegram will not redeliver — so we move on.
+          }
         }
         // Idle breather: with a short/zero poll timeout an empty batch must not
         // busy-spin the event loop.
         if (updates.length === 0 && !stopped) await delay(25);
       } catch {
-        // transient network failure: back off, never crash the daemon
+        // transient network failure (or the stop() abort): back off, never crash
         if (!stopped) await delay(2000);
       }
     }
@@ -109,6 +122,7 @@ export function startTelegramRunner(
   return {
     async stop() {
       stopped = true;
+      aborter.abort();
       await loop;
     },
   };
