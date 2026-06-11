@@ -729,34 +729,37 @@ export const COMMANDS: Record<string, Command> = {
   },
 
   'role list': {
-    describe: 'show fast/main/deep role bindings and what each resolves to',
-    async run(client) {
+    describe: 'show fast/main/deep role bindings (add --project for project scope)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const projectId = project ? await resolveProjectId(client, project) : undefined;
       const r = await client.call<{
         roles: {
           role: string;
           binding: { provider: string; model?: string } | null;
+          projectBinding: { provider: string; model?: string } | null;
           resolvesTo: string;
+          model?: string;
           via: string;
         }[];
-      }>('providers.roles');
+      }>('providers.roles', projectId ? { projectId } : {});
       return {
         result: r,
         summary: r.roles
-          .map(
-            (x) =>
-              `${x.role}\t→ ${x.resolvesTo}${x.binding?.model ? ` (${x.binding.model})` : ''}\t[${x.via}]`,
-          )
+          .map((x) => `${x.role}\t→ ${x.resolvesTo}${x.model ? ` (${x.model})` : ''}\t[${x.via}]`)
           .join('\n'),
       };
     },
   },
   'role set': {
-    describe: 'bind a role (fast|main|deep) to a provider (optionally a model)',
+    describe: 'bind a role to a provider — globally, or for one project with --project',
     async run(client, { positionals, flags }) {
       const role = positionals[0];
       const provider = positionals[1];
       if (!role || !provider || !['fast', 'main', 'deep'].includes(role)) {
-        throw new CliError('usage: amrita role set <fast|main|deep> <provider> [--model MODEL]');
+        throw new CliError(
+          'usage: amrita role set <fast|main|deep> <provider> [--model MODEL] [--project ID_OR_SLUG]',
+        );
       }
       const known = await client.call<{ id: string }[]>('providers.list');
       if (!known.some((p) => p.id === provider)) {
@@ -765,34 +768,51 @@ export const COMMANDS: Record<string, Command> = {
         );
       }
       const model = strFlag(flags, 'model');
-      const ctx = await resolveWriteContext(client, {});
+      const project = strFlag(flags, 'project');
+      const scopeProjectId = project ? await resolveProjectId(client, project) : undefined;
+      const ctx = await resolveWriteContext(client, project ? { project } : {});
       await client.call('settings.update', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
-        key: `providers.role.${role}`,
+        key: scopeProjectId
+          ? `project.${scopeProjectId}.providers.role.${role}`
+          : `providers.role.${role}`,
         value: { provider, ...(model ? { model } : {}) },
       });
+      const scope = scopeProjectId ? ` (project ${project})` : '';
       return {
-        result: { role, provider, ...(model ? { model } : {}) },
-        summary: `role ${role} → ${provider}${model ? ` (${model})` : ''}`,
+        result: {
+          role,
+          provider,
+          ...(model ? { model } : {}),
+          ...(scopeProjectId ? { projectId: scopeProjectId } : {}),
+        },
+        summary: `role ${role} → ${provider}${model ? ` (${model})` : ''}${scope}`,
       };
     },
   },
   'role clear': {
-    describe: 'remove a role binding (the role falls back to auto)',
-    async run(client, { positionals }) {
+    describe: 'remove a role binding (global, or one project with --project)',
+    async run(client, { positionals, flags }) {
       const role = positionals[0];
       if (!role || !['fast', 'main', 'deep'].includes(role)) {
-        throw new CliError('usage: amrita role clear <fast|main|deep>');
+        throw new CliError('usage: amrita role clear <fast|main|deep> [--project ID_OR_SLUG]');
       }
-      const ctx = await resolveWriteContext(client, {});
+      const project = strFlag(flags, 'project');
+      const scopeProjectId = project ? await resolveProjectId(client, project) : undefined;
+      const ctx = await resolveWriteContext(client, project ? { project } : {});
       await client.call('settings.update', {
         projectId: ctx.projectId,
         conversationId: ctx.conversationId,
-        key: `providers.role.${role}`,
+        key: scopeProjectId
+          ? `project.${scopeProjectId}.providers.role.${role}`
+          : `providers.role.${role}`,
         value: null,
       });
-      return { result: { role, cleared: true }, summary: `role ${role} → auto` };
+      return {
+        result: { role, cleared: true },
+        summary: `role ${role} → ${scopeProjectId ? 'global/auto (project override cleared)' : 'auto'}`,
+      };
     },
   },
 

@@ -46,12 +46,12 @@ import {
   type ProviderInfo,
   type ProviderRole,
   REAL_PROVIDERS,
-  ROLE_SETTING_PREFIX,
   type RoleBinding,
   defaultFetch,
   envPresent,
   parseRoleBinding,
   readEnvSecret,
+  roleSettingKey,
 } from './provider.ts';
 import { clean } from './util.ts';
 
@@ -346,17 +346,26 @@ export class AmritaKernel {
     ];
   }
 
-  /** The settings-backed role binding for a role, if one is set and well-formed. */
-  getRoleBinding(role: ProviderRole): RoleBinding | undefined {
-    return parseRoleBinding(this.store.getSetting(`${ROLE_SETTING_PREFIX}${role}`));
+  /** The settings-backed role binding at a scope, if set and well-formed. */
+  getRoleBinding(role: ProviderRole, projectId?: string): RoleBinding | undefined {
+    return parseRoleBinding(this.store.getSetting(roleSettingKey(role, projectId)));
   }
 
   /**
    * Resolve a ROLE to a concrete provider id (+ optional model) — D5/ADR-0017.
-   * A settings binding wins; otherwise `auto`: the first *available* real
-   * provider (bound account + env present), else the deterministic mock.
+   * Scope order: the project's binding (when a projectId is given) wins over
+   * the global binding; otherwise `auto`: the first *available* real provider
+   * (bound account + env present), else the deterministic mock. Deterministic
+   * and secret-free; the chosen path is reported in `via`.
    */
-  resolveRole(role: ProviderRole): { provider: string; model?: string; via: 'binding' | 'auto' } {
+  resolveRole(
+    role: ProviderRole,
+    projectId?: string,
+  ): { provider: string; model?: string; via: 'project' | 'binding' | 'auto' } {
+    if (projectId) {
+      const project = this.getRoleBinding(role, projectId);
+      if (project) return { ...project, via: 'project' };
+    }
     const binding = this.getRoleBinding(role);
     if (binding) return { ...binding, via: 'binding' };
     const firstReal = this.listProviders().find((p) => p.kind === 'real' && p.available);
@@ -369,7 +378,10 @@ export class AmritaKernel {
    * adapter; the value never leaves this method. Throws a structured, secret-free
    * `ProviderError` for any config/availability problem.
    */
-  private resolveChatProvider(input: ChatTurnInput): {
+  private resolveChatProvider(
+    input: ChatTurnInput,
+    projectId?: string,
+  ): {
     providerId: string;
     model: string;
     provider: ChatProvider;
@@ -387,7 +399,7 @@ export class AmritaKernel {
     let roleModel: string | undefined;
     let requested = input.provider ?? account?.provider;
     if (!requested && input.role) {
-      const resolved = this.resolveRole(input.role);
+      const resolved = this.resolveRole(input.role, projectId);
       requested = resolved.provider;
       roleModel = resolved.model;
     }
@@ -510,8 +522,9 @@ export class AmritaKernel {
     }
     const projectId = conv.projectId;
 
-    // Resolve the provider first — a config error records nothing.
-    const { providerId, model, provider, role } = this.resolveChatProvider(input);
+    // Resolve the provider first — a config error records nothing. Role
+    // resolution is project-aware (project binding > global > auto).
+    const { providerId, model, provider, role } = this.resolveChatProvider(input, projectId);
     const turnId = newId();
     const channel = input.channel;
 

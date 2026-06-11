@@ -288,6 +288,19 @@ describe('amrita CLI', () => {
     expect(turn.provider).toBe('mock');
     expect(turn.role).toBe('main');
 
+    // project-scoped override: wins inside the project, invisible outside it
+    expect(
+      (await cli(['role', 'set', 'deep', 'mock', '--model', 'mock-deep', '--project', 'crm'])).code,
+    ).toBe(0);
+    expect((await cli(['role', 'list', '--project', 'crm'])).out).toMatch(
+      /deep\t→ mock \(mock-deep\)\t\[project\]/,
+    );
+    expect((await cli(['role', 'list'])).out).toMatch(/deep\t→ mock\t\[auto\]/);
+    expect((await cli(['role', 'clear', 'deep', '--project', 'crm'])).out).toContain(
+      'project override cleared',
+    );
+    expect((await cli(['role', 'list', '--project', 'crm'])).out).toMatch(/deep\t→ mock\t\[auto\]/);
+
     expect((await cli(['role', 'clear', 'main'])).out).toContain('main → auto');
     expect((await cli(['role', 'list'])).out).toMatch(/main\t→ mock\t\[auto\]/);
 

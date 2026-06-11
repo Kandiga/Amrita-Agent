@@ -378,11 +378,20 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
     (k, p) => k.runChatTurn(clean(p)),
   ),
-  'providers.roles': def(z.object({}).optional(), (k) => ({
+  'providers.roles': def(z.object({ projectId: z.string().optional() }).optional(), (k, p) => ({
     roles: (['fast', 'main', 'deep'] as const).map((role) => {
-      const binding = k.getRoleBinding(role);
-      const resolved = k.resolveRole(role);
-      return { role, binding: binding ?? null, resolvesTo: resolved.provider, via: resolved.via };
+      const projectId = p?.projectId;
+      const globalBinding = k.getRoleBinding(role) ?? null;
+      const projectBinding = projectId ? (k.getRoleBinding(role, projectId) ?? null) : null;
+      const resolved = k.resolveRole(role, projectId);
+      return {
+        role,
+        binding: globalBinding,
+        projectBinding,
+        resolvesTo: resolved.provider,
+        ...(resolved.model ? { model: resolved.model } : {}),
+        via: resolved.via,
+      };
     }),
   })),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),

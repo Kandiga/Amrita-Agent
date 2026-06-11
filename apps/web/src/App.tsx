@@ -3,6 +3,7 @@ import {
   type AmritaEventLite,
   type CompanionState,
   type DecisionRowLite,
+  type RoleResolutionLite,
   RpcClient,
   RpcError,
 } from './api.ts';
@@ -25,6 +26,7 @@ import {
   transcriptMessages,
 } from './live-transcript.ts';
 import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
+import { buildSurfaceArtifacts } from './surface.ts';
 
 type Project = { id: string; slug: string; name: string };
 type Conversation = { id: string; projectId: string; title?: string | null; createdAt?: string };
@@ -125,6 +127,8 @@ export function App() {
   const [milestoneTarget, setMilestoneTarget] = useState('');
   // One evidence/reason input per open question/risk row, keyed by row id.
   const [evidence, setEvidence] = useState<Record<string, string>>({});
+  /** Effective fast/main/deep model resolution for the open project (§2.8). */
+  const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -164,6 +168,21 @@ export function App() {
   }, [transcript, pending]);
 
   const laneViews = useMemo(() => lanesList(lanes), [lanes]);
+
+  // Stage-A native surface: deterministic artifacts derived from typed state
+  // (docs/strategy/native-interactive-surface.md). Empty project = empty surface.
+  const surfaceArtifacts = useMemo(
+    () =>
+      selectedProject
+        ? buildSurfaceArtifacts({
+            projectId: selectedProject.id,
+            brief: companion?.brief ?? null,
+            milestones: companion?.milestones ?? [],
+            tasks,
+          })
+        : [],
+    [selectedProject, companion, tasks],
+  );
 
   // Rule-based next-best actions over typed state — never an LLM guess.
   const companionActions = useMemo(
@@ -326,15 +345,17 @@ export function App() {
     setDecisions(await client.decisionsList({ projectId }));
   }
 
-  /** Load the Project Brain aggregate + the derived activity timeline. */
+  /** Load the Project Brain aggregate, activity timeline, and model resolution. */
   async function loadCompanion(projectId = selectedProject?.id) {
     if (!projectId) return;
-    const [state, events] = await Promise.all([
+    const [state, events, roles] = await Promise.all([
       client.companionGet(projectId),
       client.timelineList(projectId, 30),
+      client.providersRoles(projectId),
     ]);
     setCompanion(state);
     setTimeline(events);
+    setRoleInfo(roles.roles);
   }
 
   function startBriefEdit(): void {
@@ -864,6 +885,68 @@ export function App() {
             </div>
           )}
         </section>
+        <section className="card surface-card">
+          <h2>Surface</h2>
+          {surfaceArtifacts.length === 0 ? (
+            <p className="empty-note">
+              Structured previews of this project render here — capture a brief or add milestones
+              and the Surface comes alive. Built from typed project state, never sample data.
+            </p>
+          ) : (
+            surfaceArtifacts.map((a) => {
+              if (a.kind === 'brief-summary') {
+                return (
+                  <article key={a.id} className="artifact artifact-brief">
+                    <span className="artifact-kind">brief</span>
+                    <h3 dir={textDir(a.goal)}>{a.goal}</h3>
+                    {a.audience ? <p className="artifact-sub">for {a.audience}</p> : null}
+                    {a.successCriteria.length > 0 ? (
+                      <ul>
+                        {a.successCriteria.map((s) => (
+                          <li key={s} dir={textDir(s)}>
+                            {s}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {a.scope.length > 0 || a.noScope.length > 0 ? (
+                      <p className="artifact-sub">
+                        {a.scope.length > 0 ? `in: ${a.scope.join(' · ')}` : ''}
+                        {a.scope.length > 0 && a.noScope.length > 0 ? '  —  ' : ''}
+                        {a.noScope.length > 0 ? `out: ${a.noScope.join(' · ')}` : ''}
+                      </p>
+                    ) : null}
+                  </article>
+                );
+              }
+              return (
+                <article key={a.id} className="artifact artifact-board">
+                  <span className="artifact-kind">milestones</span>
+                  <div className="board-rows">
+                    {a.items.map((m) => (
+                      <div key={m.id} className={`board-row board-${m.status}`}>
+                        <span className="board-title" dir={textDir(m.title)}>
+                          {m.title}
+                        </span>
+                        <span className="board-meta">
+                          {m.status}
+                          {m.targetDate ? ` · → ${m.targetDate}` : ''}
+                          {m.openTasks > 0 ? ` · ${m.openTasks} open` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {a.unassignedOpenTasks > 0 ? (
+                    <p className="artifact-sub">
+                      {a.unassignedOpenTasks} open task{a.unassignedOpenTasks > 1 ? 's' : ''} not
+                      assigned to a milestone
+                    </p>
+                  ) : null}
+                </article>
+              );
+            })
+          )}
+        </section>
         <section className="card">
           <h2>Runtime</h2>
           {doctor ? (
@@ -919,6 +1002,18 @@ export function App() {
               ? 'streams replies live (model.delta)'
               : 'replies arrive whole — live streaming for this provider is not built yet'}
           </p>
+          {roleInfo.length > 0 ? (
+            <p className="role-line">
+              {roleInfo
+                .map(
+                  (r) =>
+                    `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
+                      r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
+                    }`,
+                )
+                .join(' · ')}
+            </p>
+          ) : null}
         </section>
         <section className="card">
           <h2>Memory</h2>

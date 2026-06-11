@@ -121,6 +121,16 @@ export interface CompanionState {
   milestones: MilestoneLite[];
 }
 
+/** One role's resolution: project binding > global binding > auto (ADR-0017, §2.8). */
+export interface RoleResolutionLite {
+  role: 'fast' | 'main' | 'deep';
+  binding: { provider: string; model?: string } | null;
+  projectBinding: { provider: string; model?: string } | null;
+  resolvesTo: string;
+  model?: string;
+  via: 'project' | 'binding' | 'auto';
+}
+
 export interface BriefUpdateParams {
   projectId: string;
   conversationId: string;
@@ -343,6 +353,13 @@ export class RpcClient {
     milestoneId: string;
   }): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('projects.milestones.complete', params);
+  }
+
+  providersRoles(projectId?: string): Promise<{ roles: RoleResolutionLite[] }> {
+    return this.call<{ roles: RoleResolutionLite[] }>(
+      'providers.roles',
+      projectId ? { projectId } : {},
+    );
   }
 
   timelineList(projectId: string, limit?: number): Promise<AmritaEventLite[]> {

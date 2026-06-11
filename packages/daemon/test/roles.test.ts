@@ -142,6 +142,70 @@ describe('role policy (D5/ADR-0017)', () => {
     expect(kernel.resolveRole('fast').via).toBe('auto');
   });
 
+  it('a PROJECT binding beats the global binding and reports via=project', async () => {
+    const c = ctx(kernel);
+    bindAnthropic(kernel, c);
+    kernel.updateSetting({ ...c, key: 'providers.role.main', value: { provider: 'anthropic' } });
+    kernel.updateSetting({
+      ...c,
+      key: `project.${c.projectId}.providers.role.main`,
+      value: { provider: 'mock', model: 'mock-fastpath' },
+    });
+    // project scope wins for this project…
+    expect(kernel.resolveRole('main', c.projectId)).toEqual({
+      provider: 'mock',
+      model: 'mock-fastpath',
+      via: 'project',
+    });
+    // …the global binding still applies elsewhere, and without a projectId
+    expect(kernel.resolveRole('main')).toEqual({ provider: 'anthropic', via: 'binding' });
+    const other = kernel.ensureProject({ slug: 'other', name: 'Other' }).id;
+    expect(kernel.resolveRole('main', other)).toEqual({ provider: 'anthropic', via: 'binding' });
+
+    // a role turn in this project's conversation uses the project override
+    const turn = await kernel.runChatTurn({
+      conversationId: c.conversationId,
+      text: 'hi',
+      role: 'main',
+    });
+    expect(turn.provider).toBe('mock');
+    expect(turn.model).toBe('mock-fastpath');
+
+    // clearing the project override falls back to global
+    kernel.updateSetting({
+      ...c,
+      key: `project.${c.projectId}.providers.role.main`,
+      value: null,
+    });
+    expect(kernel.resolveRole('main', c.projectId).via).toBe('binding');
+  });
+
+  it('providers.roles accepts projectId and reports both scopes', async () => {
+    const c = ctx(kernel);
+    kernel.updateSetting({
+      ...c,
+      key: `project.${c.projectId}.providers.role.deep`,
+      value: { provider: 'mock' },
+    });
+    const r = await dispatch(kernel, {
+      id: 1,
+      method: 'providers.roles',
+      params: { projectId: c.projectId },
+    });
+    expect(isErrorResponse(r)).toBe(false);
+    if (!isErrorResponse(r)) {
+      const roles = (
+        r.result as {
+          roles: { role: string; via: string; projectBinding: unknown; binding: unknown }[];
+        }
+      ).roles;
+      const deep = roles.find((x) => x.role === 'deep');
+      expect(deep?.via).toBe('project');
+      expect(deep?.projectBinding).toEqual({ provider: 'mock' });
+      expect(deep?.binding).toBeNull();
+    }
+  });
+
   it('providers.roles RPC reports bindings and resolution; bad roles are invalid_params', async () => {
     const c = ctx(kernel);
     const r = await dispatch(kernel, { id: 1, method: 'providers.roles' });

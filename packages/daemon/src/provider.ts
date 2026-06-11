@@ -66,6 +66,17 @@ export type ProviderRole = (typeof PROVIDER_ROLES)[number];
 /** Settings key for a role binding: `providers.role.<role>` → RoleBinding. */
 export const ROLE_SETTING_PREFIX = 'providers.role.';
 
+/**
+ * Settings key for a role binding at a given scope. Scopes resolve
+ * project > global > auto (docs/strategy/native-interactive-surface.md §2.8);
+ * lane/task and session scopes are additive keys on the same resolver later.
+ */
+export function roleSettingKey(role: ProviderRole, projectId?: string): string {
+  return projectId
+    ? `project.${projectId}.${ROLE_SETTING_PREFIX}${role}`
+    : `${ROLE_SETTING_PREFIX}${role}`;
+}
+
 /** A role's configured target. Stored in `settings` (non-secret by definition). */
 export interface RoleBinding {
   provider: string;

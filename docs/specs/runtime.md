@@ -96,10 +96,14 @@ configured account for that provider, else a safe `not_found`. Errors are struct
 `streaming` is true only for providers that actually implement `generateStream`, ADR-0016; never
 faked for the real adapters until SSE lands).
 
-**Role policy (ADR-0017):** `chat.turn {role: fast|main|deep}` resolves via the
-`providers.role.<role>` settings binding, else `auto` (first available real provider, else mock).
-An explicit `provider` always wins. The resolved role is persisted on `model.request` and
-returned on the result.
+**Role policy (ADR-0017 + §2.8 of the native-surface strategy):** `chat.turn {role:
+fast|main|deep}` resolves **project binding > global binding > auto** — the project binding is
+`project.<projectId>.providers.role.<role>` in settings (the turn's project comes from its
+conversation), the global one is `providers.role.<role>`, and `auto` is the first *available*
+real provider, else mock. An explicit `provider` always wins. `providers.roles {projectId?}`
+reports both scopes plus the effective resolution (`via: project|binding|auto`). The resolved
+role is persisted on `model.request` and returned on the result. Lane/task and session scopes
+are additive keys on the same resolver (future).
 
 Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the originating/system
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to
