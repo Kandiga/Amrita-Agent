@@ -424,10 +424,18 @@ export const COMMANDS: Record<string, Command> = {
   },
 
   'channel list': {
-    describe: 'list channel surfaces',
+    describe: 'list channel surfaces and their honest readiness',
     async run(client) {
-      const cs = await client.call<{ id: string; kind: string }[]>('channels.list');
-      return { result: cs, summary: cs.map((c) => `${c.id}\t${c.kind}`).join('\n') };
+      const cs =
+        await client.call<{ id: string; kind: string; status?: string; note?: string }[]>(
+          'channels.list',
+        );
+      return {
+        result: cs,
+        summary: cs
+          .map((c) => `${c.id}\t${c.status ?? c.kind}${c.note ? `\t${c.note}` : ''}`)
+          .join('\n'),
+      };
     },
   },
   'channel pair': {

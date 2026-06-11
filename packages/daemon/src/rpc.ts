@@ -269,9 +269,24 @@ export const METHODS: Record<string, RpcMethod> = {
   ),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
 
+  // Honest readiness: `ready` only when the surface actually works end-to-end
+  // from this daemon today. Telegram's transport is implemented and tested, but
+  // no live bot runner ships yet — so it reports needs_setup, never "ready".
   'channels.list': def(z.object({}).optional(), () => [
-    { id: 'web', kind: 'web' },
-    { id: 'telegram', kind: 'telegram' },
+    {
+      id: 'web',
+      kind: 'web',
+      ready: true,
+      status: 'ready',
+      note: 'served by this daemon (HTTP + WS, bearer-token gated)',
+    },
+    {
+      id: 'telegram',
+      kind: 'telegram',
+      ready: false,
+      status: 'needs_setup',
+      note: 'transport + owner allowlist tested; live bot runner not bundled yet',
+    },
   ]),
   'channels.pairing.create': def(
     z.object({

@@ -200,6 +200,14 @@ describe('amrita CLI', () => {
     const list = await cli(['channel', 'list']);
     expect(list.code).toBe(0);
     expect(list.out).toContain('telegram');
+    // honest readiness: web is served by the daemon, telegram needs setup
+    expect(list.out).toMatch(/web\tready/);
+    expect(list.out).toMatch(/telegram\tneeds_setup/);
+    const channels = json<{ id: string; ready: boolean }[]>(
+      await cli(['channel', 'list', '--json']),
+    );
+    expect(channels.find((c) => c.id === 'web')?.ready).toBe(true);
+    expect(channels.find((c) => c.id === 'telegram')?.ready).toBe(false);
     const pair = json<{ code: string }>(
       await cli(['channel', 'pair', '--project', 'crm', '--channel', 'telegram', '--json']),
     );
