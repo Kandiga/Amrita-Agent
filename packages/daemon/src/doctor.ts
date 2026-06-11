@@ -184,14 +184,26 @@ function channelSection(): DoctorSection {
         status: 'ok',
         detail: 'served by this daemon (HTTP + WS, bearer-token gated)',
       },
-      {
-        id: 'channel.telegram',
-        label: 'telegram',
-        status: 'warn',
-        detail:
-          'needs setup — transport + owner allowlist are implemented and tested, but a live bot runner is not bundled yet',
-        fix: 'amrita --db <PATH> channel pair --project <SLUG>  # pairing codes work today; bot runner is a future WO',
-      },
+      ...(envPresent('TELEGRAM_BOT_TOKEN') && envPresent('AMRITA_TELEGRAM_ALLOWED_IDS')
+        ? [
+            {
+              id: 'channel.telegram',
+              label: 'telegram',
+              status: 'ok' as const,
+              detail:
+                'token + owner allowlist present (presence-checked only) — start the runner with: amritad --http --telegram',
+            },
+          ]
+        : [
+            {
+              id: 'channel.telegram',
+              label: 'telegram',
+              status: 'warn' as const,
+              detail:
+                'needs setup — the operator runner exists but requires TELEGRAM_BOT_TOKEN and AMRITA_TELEGRAM_ALLOWED_IDS (comma-separated numeric ids)',
+              fix: 'export TELEGRAM_BOT_TOKEN=<bot token> AMRITA_TELEGRAM_ALLOWED_IDS=<your id>  # then: amritad --http --telegram',
+            },
+          ]),
     ],
   };
 }

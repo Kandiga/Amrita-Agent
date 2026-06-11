@@ -213,6 +213,8 @@ export class AmritaKernel {
     { info: PendingApproval; settle: (d: 'allow' | 'deny' | 'timeout') => void }
   >();
   private readonly approvalTimeoutMs: number;
+  /** Channel runners the composition root has actually started (e.g. 'telegram'). */
+  private readonly activeChannelRunners = new Set<string>();
   private closed = false;
 
   private constructor(
@@ -1152,6 +1154,16 @@ export class AmritaKernel {
     } catch {
       // auditing must never break the waiter
     }
+  }
+
+  /** The composition root (amritad bin) marks a channel runner as live. */
+  markChannelRunnerActive(channel: string, active = true): void {
+    if (active) this.activeChannelRunners.add(channel);
+    else this.activeChannelRunners.delete(channel);
+  }
+
+  isChannelRunnerActive(channel: string): boolean {
+    return this.activeChannelRunners.has(channel);
   }
 
   /** Pending approvals, oldest first. Runtime state; the log holds the audit trail. */

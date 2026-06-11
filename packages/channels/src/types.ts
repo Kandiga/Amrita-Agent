@@ -16,7 +16,7 @@ export interface InboundUpdate {
   text: string;
 }
 
-export type ChannelOutcome = 'denied' | 'unpaired' | 'paired' | 'replied' | 'error';
+export type ChannelOutcome = 'denied' | 'unpaired' | 'paired' | 'replied' | 'command' | 'error';
 
 /** The result of handling one inbound update. Carries no secret value. */
 export interface ChannelResult {

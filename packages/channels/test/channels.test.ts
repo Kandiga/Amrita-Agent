@@ -150,3 +150,148 @@ describe('WebChannel', () => {
     expect(r.error).not.toMatch(/\bat \//); // no stack
   });
 });
+
+describe('telegram operator commands (ADR-0021)', () => {
+  async function pairedChannel(): Promise<{
+    ch: TelegramChannel;
+    projectId: string;
+    conv: string;
+  }> {
+    const projectId = kernel.ensureProject({ slug: 'crm', name: 'CRM' }).id;
+    const conv = kernel.createConversation({ projectId }).id;
+    const { code } = kernel.createPairing({ channel: 'telegram', projectId, conversationId: conv });
+    const ch = new TelegramChannel(kernel, sender, { allowedUserIds: [42] });
+    await ch.handleUpdate({ kind: 'message', userId: '42', chatId: 'c', text: `/pair ${code}` });
+    return { ch, projectId, conv };
+  }
+
+  it('/status reports honest project numbers; /help lists commands', async () => {
+    const { ch, projectId, conv } = await pairedChannel();
+    kernel.upsertBrief({ projectId, conversationId: conv, goal: 'ship operator mode' });
+    kernel.openQuestion({ projectId, conversationId: conv, text: 'which polling interval?' });
+    kernel.createTask({ projectId, conversationId: conv, title: 'wire runner' });
+
+    const r = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/status',
+    });
+    expect(r.outcome).toBe('command');
+    const reply = r.replies.join('\n');
+    expect(reply).toContain('goal: ship operator mode');
+    expect(reply).toContain('tasks: 1 open / 1 total');
+    expect(reply).toContain('questions: 1 open');
+    expect(reply).toContain('approvals: 0 pending');
+
+    const help = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/help',
+    });
+    expect(help.replies.join('')).toContain('/approve');
+  });
+
+  it('/approvals lists pending; /approve resolves it (prefix-matched, project-scoped)', async () => {
+    const { ch, projectId, conv } = await pairedChannel();
+    // a pending approval raised by the kernel (e.g. a real lane gate)
+    const decision = kernel.requestApproval(
+      { projectId, conversationId: conv },
+      'lane.run-real',
+      'deploy the fix',
+    );
+    const list = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/approvals',
+    });
+    expect(list.replies.join('\n')).toContain('lane.run-real');
+    expect(list.replies.join('\n')).toContain('deploy the fix');
+
+    const id = kernel.listPendingApprovals()[0]?.approvalId ?? '';
+    const approve = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: `/approve ${id.slice(0, 8).toLowerCase()}`, // prefix, case-insensitive
+    });
+    expect(approve.replies.join('')).toContain('approved');
+    await expect(decision).resolves.toBe('allow');
+    expect(kernel.listPendingApprovals()).toEqual([]);
+  });
+
+  it('/deny refuses; approvals from OTHER projects are invisible', async () => {
+    const { ch, projectId, conv } = await pairedChannel();
+    const otherProject = kernel.ensureProject({ slug: 'other', name: 'Other' }).id;
+    const otherConv = kernel.createConversation({ projectId: otherProject }).id;
+    const foreign = kernel.requestApproval(
+      { projectId: otherProject, conversationId: otherConv },
+      'lane.run-real',
+      'foreign work',
+    );
+    const mine = kernel.requestApproval(
+      { projectId, conversationId: conv },
+      'lane.run-real',
+      'my work',
+    );
+
+    const list = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/approvals',
+    });
+    expect(list.replies.join('\n')).toContain('my work');
+    expect(list.replies.join('\n')).not.toContain('foreign work'); // project isolation
+
+    const myId =
+      kernel.listPendingApprovals().find((a) => a.projectId === projectId)?.approvalId ?? '';
+    const deny = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: `/deny ${myId.slice(0, 10)}`,
+    });
+    expect(deny.replies.join('')).toContain('denied');
+    await expect(mine).resolves.toBe('deny');
+    // the foreign approval is untouched
+    expect(kernel.listPendingApprovals().map((a) => a.projectId)).toEqual([otherProject]);
+    kernel.resolveApproval(kernel.listPendingApprovals()[0]?.approvalId ?? '', 'deny');
+    await foreign;
+  });
+
+  it('commands stay owner-gated and /lanes//stop answer honestly when empty', async () => {
+    const { ch } = await pairedChannel();
+    const stranger = await ch.handleUpdate({
+      kind: 'message',
+      userId: '999',
+      chatId: 'x',
+      text: '/status',
+    });
+    expect(stranger.outcome).toBe('denied');
+
+    const lanes = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/lanes',
+    });
+    expect(lanes.replies.join('')).toContain('no lanes yet');
+    const stop = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/stop zzz',
+    });
+    expect(stop.replies.join('')).toContain('no active lane');
+    const unknown = await ch.handleUpdate({
+      kind: 'message',
+      userId: '42',
+      chatId: 'c',
+      text: '/bogus',
+    });
+    expect(unknown.replies.join('')).toContain('/help');
+  });
+});

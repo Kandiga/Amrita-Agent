@@ -66,6 +66,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@amrita/channels':
+        specifier: workspace:*
+        version: link:../channels
       '@amrita/lanes':
         specifier: workspace:*
         version: link:../lanes

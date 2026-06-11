@@ -5,19 +5,28 @@ import { AmritaKernel, dispatch, isErrorResponse, runDoctor } from '../src/index
 const DUMMY_ENV_VALUE = 'placeholder-value-for-doctor-tests';
 const TEST_ENV_NAME = 'AMRITA_DOCTOR_TEST_KEY';
 const AUTH_ENV = 'AMRITA_AUTH_TOKEN';
+const TG_ENVS = ['TELEGRAM_BOT_TOKEN', 'AMRITA_TELEGRAM_ALLOWED_IDS'];
 
 let kernel: AmritaKernel;
 let savedAuthToken: string | undefined;
+const savedTg: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   kernel = AmritaKernel.open({ dbPath: ':memory:' });
   savedAuthToken = process.env[AUTH_ENV];
   delete process.env[AUTH_ENV]; // deterministic auth posture
+  for (const name of TG_ENVS) {
+    savedTg[name] = process.env[name];
+    delete process.env[name]; // deterministic telegram posture
+  }
 });
 afterEach(() => {
   kernel.close();
   delete process.env[TEST_ENV_NAME];
   if (savedAuthToken !== undefined) process.env[AUTH_ENV] = savedAuthToken;
+  for (const name of TG_ENVS) {
+    if (savedTg[name] !== undefined) process.env[name] = savedTg[name];
+  }
 });
 
 function section(title: string) {
@@ -88,8 +97,10 @@ describe('doctor', () => {
     const channels = section('channels');
     expect(channels.checks.find((c) => c.id === 'channel.web')?.status).toBe('ok');
     const tg = channels.checks.find((c) => c.id === 'channel.telegram');
-    expect(tg?.status).toBe('warn'); // honest: live bot runner not bundled
-    expect(tg?.detail).toContain('not bundled');
+    // honest: the runner exists but needs env (presence-only check)
+    expect(tg?.status).toBe('warn');
+    expect(tg?.detail).toContain('TELEGRAM_BOT_TOKEN');
+    expect(tg?.fix).toContain('--telegram');
   });
 
   it('auth posture: env token ok, missing token warns with a fix', () => {

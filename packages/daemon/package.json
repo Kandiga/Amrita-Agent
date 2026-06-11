@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "amritad — Amrita's local kernel and JSON-RPC control daemon (no provider/tool execution yet)",
+  "description": "amritad \u2014 Amrita's local kernel and JSON-RPC control daemon (no provider/tool execution yet)",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -15,7 +15,8 @@
     "@amrita/protocol": "workspace:*",
     "@amrita/store": "workspace:*",
     "ws": "^8.18.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "@amrita/channels": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "^8.5.13"

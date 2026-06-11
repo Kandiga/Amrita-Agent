@@ -469,9 +469,8 @@ export const METHODS: Record<string, RpcMethod> = {
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
 
   // Honest readiness: `ready` only when the surface actually works end-to-end
-  // from this daemon today. Telegram's transport is implemented and tested, but
-  // no live bot runner ships yet — so it reports needs_setup, never "ready".
-  'channels.list': def(z.object({}).optional(), () => [
+  // from THIS daemon right now. Telegram is ready only while its runner is live.
+  'channels.list': def(z.object({}).optional(), (k) => [
     {
       id: 'web',
       kind: 'web',
@@ -479,13 +478,21 @@ export const METHODS: Record<string, RpcMethod> = {
       status: 'ready',
       note: 'served by this daemon (HTTP + WS, bearer-token gated)',
     },
-    {
-      id: 'telegram',
-      kind: 'telegram',
-      ready: false,
-      status: 'needs_setup',
-      note: 'transport + owner allowlist tested; live bot runner not bundled yet',
-    },
+    k.isChannelRunnerActive('telegram')
+      ? {
+          id: 'telegram',
+          kind: 'telegram',
+          ready: true,
+          status: 'ready',
+          note: 'operator runner live (owner-gated long poll)',
+        }
+      : {
+          id: 'telegram',
+          kind: 'telegram',
+          ready: false,
+          status: 'needs_setup',
+          note: 'runner available — set TELEGRAM_BOT_TOKEN + AMRITA_TELEGRAM_ALLOWED_IDS, start amritad --telegram',
+        },
   ]),
   'channels.pairing.create': def(
     z.object({

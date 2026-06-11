@@ -20,9 +20,10 @@ interface Args {
   dbPath: string;
   http: boolean;
   port: number;
+  telegram: boolean;
 }
 function parseArgs(argv: string[]): Args {
-  const args: Args = { dbPath: ':memory:', http: false, port: 7460 };
+  const args: Args = { dbPath: ':memory:', http: false, port: 7460, telegram: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((a === '--db' || a === '-d') && argv[i + 1]) {
@@ -31,6 +32,8 @@ function parseArgs(argv: string[]): Args {
       args.dbPath = a.slice('--db='.length);
     } else if (a === '--http') {
       args.http = true;
+    } else if (a === '--telegram') {
+      args.telegram = true;
     } else if (a === '--port' && argv[i + 1]) {
       args.port = Number(argv[++i]);
     } else if (a?.startsWith('--port=')) {
@@ -41,8 +44,27 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function main(): Promise<void> {
-  const { dbPath, http, port } = parseArgs(process.argv.slice(2));
+  const { dbPath, http, port, telegram } = parseArgs(process.argv.slice(2));
   const kernel = AmritaKernel.open({ dbPath });
+
+  // Telegram operator runner (ADR-0021): strictly opt-in, refuses to start
+  // without the token env var AND a non-empty owner allowlist. Never fakes.
+  let telegramRunner: { stop(): Promise<void> } | null = null;
+  if (telegram) {
+    const { startTelegramRunner, parseAllowedIds } = await import('@amrita/channels');
+    const allowedUserIds = parseAllowedIds(process.env.AMRITA_TELEGRAM_ALLOWED_IDS);
+    try {
+      telegramRunner = startTelegramRunner(kernel, { allowedUserIds });
+      kernel.markChannelRunnerActive('telegram');
+      process.stderr.write(
+        `amritad: telegram operator runner enabled (${allowedUserIds.length} allowed id(s))\n`,
+      );
+    } catch (e) {
+      process.stderr.write(
+        `amritad: telegram runner NOT started — ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    }
+  }
 
   // Make lane execution posture visible at startup (never silently real). On
   // stdio it goes to stderr so it cannot corrupt the JSON-lines protocol.
@@ -64,10 +86,12 @@ async function main(): Promise<void> {
     }
     process.stdout.write(laneStatus);
     const shutdown = (): void => {
-      void running.close().then(() => {
-        kernel.close();
-        process.exit(0);
-      });
+      void (telegramRunner?.stop() ?? Promise.resolve()).then(() =>
+        running.close().then(() => {
+          kernel.close();
+          process.exit(0);
+        }),
+      );
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
