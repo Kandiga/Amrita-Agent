@@ -85,4 +85,42 @@ describe('RpcClient', () => {
       expect(String(e)).not.toMatch(/tok-|Bearer/);
     }
   });
+
+  it('sends typed lane RPC payloads with the auth header', async () => {
+    const calls: Array<{
+      body: { method: string; params: unknown };
+      headers: Record<string, string>;
+    }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        calls.push({
+          body: JSON.parse(String(init?.body)),
+          headers: (init?.headers ?? {}) as Record<string, string>,
+        });
+        return jsonResponse({ result: { laneId: 'L1', status: 'running' } });
+      }) as typeof fetch,
+    });
+    client.setAuthToken('tok-1');
+    await client.lanesStart({
+      conversationId: 'c1',
+      goal: 'tidy',
+      dryRun: false,
+      real: true,
+      detach: true,
+      budget: { maxTurns: 3 },
+    });
+    await client.lanesCancel('L1');
+    expect(calls[0]?.body).toMatchObject({
+      method: 'lanes.start',
+      params: {
+        conversationId: 'c1',
+        goal: 'tidy',
+        real: true,
+        detach: true,
+        budget: { maxTurns: 3 },
+      },
+    });
+    expect(calls[0]?.headers.authorization).toBe('Bearer tok-1');
+    expect(calls[1]?.body).toMatchObject({ method: 'lanes.cancel', params: { laneId: 'L1' } });
+  });
 });

@@ -22,7 +22,54 @@ export interface AmritaEventLite {
   seq: number;
   ts: string;
   type: string;
+  /** Envelope lane id (present on lane.* events; payload may omit it for progress). */
+  laneId?: string;
   payload: Record<string, unknown>;
+}
+
+export interface LaneRowLite {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  kind: string;
+  status: string;
+  mandateJson: string;
+  budgetJson?: string | null;
+  mergeJson?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LaneBudgetInput {
+  maxTurns?: number;
+  maxMinutes?: number;
+  maxTokens?: number;
+  maxUsd?: number;
+}
+
+export interface LaneStartParams {
+  conversationId: string;
+  goal: string;
+  kind?: string;
+  dryRun?: boolean;
+  real?: boolean;
+  detach?: boolean;
+  budget?: LaneBudgetInput;
+}
+
+export interface LaneStartResultLite {
+  laneId: string;
+  status: string;
+  dryRun: boolean;
+  detached: boolean;
+  report: { exit: string; summary?: string } | null;
+  error?: string;
+}
+
+export interface LaneCancelResultLite {
+  laneId: string;
+  cancelled: boolean;
+  status: string | null;
 }
 
 interface RpcEnvelope {
@@ -84,5 +131,29 @@ export class RpcClient {
     }
     const body = (await res.json()) as { events?: AmritaEventLite[] };
     return body.events ?? [];
+  }
+
+  // ── lanes (typed wrappers; auth header is applied by call()) ────────────────
+
+  lanesList(
+    params: {
+      projectId?: string;
+      conversationId?: string;
+      status?: string;
+    } = {},
+  ): Promise<LaneRowLite[]> {
+    return this.call<LaneRowLite[]>('lanes.list', params);
+  }
+
+  lanesStart(params: LaneStartParams): Promise<LaneStartResultLite> {
+    return this.call<LaneStartResultLite>('lanes.start', params);
+  }
+
+  lanesGet(laneId: string): Promise<LaneRowLite | null> {
+    return this.call<LaneRowLite | null>('lanes.get', { laneId });
+  }
+
+  lanesCancel(laneId: string): Promise<LaneCancelResultLite> {
+    return this.call<LaneCancelResultLite>('lanes.cancel', { laneId });
   }
 }

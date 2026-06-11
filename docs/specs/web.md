@@ -1,6 +1,6 @@
 # Amrita Web UI
 
-Status: WO#4.2 — live event stream.
+Status: WO#5.2 — lanes panel over the live event stream.
 
 The web app is a React/Vite operator UI over the `amritad` HTTP control surface. It is intentionally thin: all persistence, provider calls, memory search, task state and event replay stay in the daemon/kernel. The transcript is driven by the daemon's **live event stream** (WebSocket), not by polling.
 
@@ -52,7 +52,7 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 - Provider selector and status card.
 - Memory search panel.
 - Tasks panel.
-- Lane placeholder for future tool/Claude Code/Telegram surfaces.
+- Lanes panel — start/observe/cancel Claude Code lanes (see below).
 
 The UI uses `dir="auto"`-style helpers for Hebrew/English mixed text and keeps raw protocol/debug details out of the primary chat flow.
 
@@ -69,9 +69,25 @@ The daemon's control surface requires a bearer token (see [runtime.md](runtime.m
   “Unauthorized” banner) instead of a raw error line; a successful load clears it;
 - saving an empty token clears it. The token is *local control-surface config*, not a provider secret.
 
+## Lanes panel (WO#5.2)
+
+`src/lanes-state.ts` is a pure reducer over `lane.*` events; `App.tsx` renders a Lanes panel fed from
+the **same live event stream** as the transcript (lane events are folded in `onEvent` alongside the
+transcript reducer, and re-folded by the manual replay). De-dupe is by event id, so reconnects don't
+duplicate lanes or progress.
+
+- **Start form:** a goal field, optional budget (`max turns` / `max minutes`), a **Dry run** checkbox
+  that is **ON by default** (safe — records the mandate only), and a **Run for real** checkbox that is
+  disabled while dry-run is on and labelled "daemon opt-in required" unless `health.lanes.realExecution`
+  is true. Starts always use `detach: true`, so the panel observes the lane live.
+- **Lane cards:** status badge (spawned/running/merging/completed/aborted), goal, the latest progress
+  note, and the final `exit` + summary/reason. A **Cancel** button appears for active lanes and calls
+  `lanes.cancel` (a cancelled lane reports `exit: 'cancelled'`).
+- Lane RPC calls (`lanesList`/`lanesStart`/`lanesGet`/`lanesCancel` on `RpcClient`) carry the bearer
+  token like every other call. No secret value is sent or rendered; lane payloads are secret-free.
+
 ## Deferred
 
 - Real token streaming (`model.delta` emission from the daemon; the client renders it already).
-- Tool-call/lane UI.
-- Telegram pairing screens.
+- Tool-call UI; Telegram pairing screens.
 - Production reverse-proxy and static asset deployment.

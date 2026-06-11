@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type AmritaEventLite, RpcClient, RpcError } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import {
+  type LanesState,
+  emptyLanes,
+  foldLaneEvents,
+  isActive,
+  lanesList,
+  reduceLaneEvent,
+} from './lanes-state.ts';
 import { type ChatMessage, formatUsage, safeErrorMessage, textDir } from './lib.ts';
 import {
   type TranscriptState,
@@ -72,6 +80,14 @@ export function App() {
   const [authToken, setAuthToken] = useState<string | undefined>(() => loadToken());
   const [tokenDraft, setTokenDraft] = useState('');
   const [unauthorized, setUnauthorized] = useState(false);
+  const [lanes, setLanes] = useState<LanesState>(emptyLanes());
+  const [laneGoal, setLaneGoal] = useState('');
+  const [laneDryRun, setLaneDryRun] = useState(true);
+  const [laneReal, setLaneReal] = useState(false);
+  const [laneMaxTurns, setLaneMaxTurns] = useState('');
+  const [laneMaxMinutes, setLaneMaxMinutes] = useState('');
+  const [realExecAvailable, setRealExecAvailable] = useState(false);
+  const [laneBusy, setLaneBusy] = useState(false);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -110,17 +126,24 @@ export function App() {
     return [...committed, ...pending.filter((p) => !echoed(p.text))];
   }, [transcript, pending]);
 
-  // Live subscription: (re)open whenever the selected conversation changes.
+  const laneViews = useMemo(() => lanesList(lanes), [lanes]);
+
+  // Live subscription: (re)open whenever the selected conversation changes. The
+  // same event stream feeds the transcript and the Lanes panel.
   useEffect(() => {
     if (!conversationId) return;
     setTranscript(emptyTranscript());
+    setLanes(emptyLanes());
     setPending([]);
     setStreamState('connecting');
     let handle: EventStreamHandle | null = null;
     handle = openEventStream(
       conversationId,
       {
-        onEvent: (ev) => setTranscript((s) => reduceEvent(s, ev)),
+        onEvent: (ev) => {
+          setTranscript((s) => reduceEvent(s, ev));
+          setLanes((s) => reduceLaneEvent(s, ev));
+        },
         onState: (s) => setStreamState(s),
       },
       { sinceSeq: 0, ...(authToken ? { token: authToken } : {}) },
@@ -130,13 +153,16 @@ export function App() {
 
   async function refreshBase() {
     setError('');
-    const [projectResult, providerResult] = await Promise.all([
+    const [projectResult, providerResult, healthResult] = await Promise.all([
       client.call('project.list'),
       client.call('providers.list'),
+      client.call('health'),
     ]);
     const nextProjects = extractArray<Project>(projectResult, ['projects']);
     setProjects(nextProjects);
     setProviders(extractArray<Provider>(providerResult, ['providers']));
+    const health = healthResult as { lanes?: { realExecution?: boolean } };
+    setRealExecAvailable(!!health.lanes?.realExecution);
     setUnauthorized(false); // a successful load means the token (if any) is accepted
     if (nextProjects.length > 0 && !nextProjects.some((p) => p.slug === projectSlug))
       setProjectSlug(nextProjects[0]?.slug ?? 'system');
@@ -183,12 +209,47 @@ export function App() {
     setConversationId(id);
   }
 
-  /** Manual replay fallback — folds `GET /events` into the reducer (de-duped). */
+  /** Manual replay fallback — folds `GET /events` into the reducers (de-duped). */
   async function refreshTranscript() {
     if (!conversationId) return;
     try {
       const replay = await client.events(conversationId, 0);
       setTranscript(foldEvents(emptyTranscript(), replay));
+      setLanes(foldLaneEvents(emptyLanes(), replay));
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function startLane(): Promise<void> {
+    if (!laneGoal.trim() || !conversationId || laneBusy) return;
+    setLaneBusy(true);
+    setError('');
+    try {
+      const budget: { maxTurns?: number; maxMinutes?: number } = {};
+      const turns = Number.parseInt(laneMaxTurns, 10);
+      const minutes = Number.parseInt(laneMaxMinutes, 10);
+      if (Number.isFinite(turns) && turns > 0) budget.maxTurns = turns;
+      if (Number.isFinite(minutes) && minutes > 0) budget.maxMinutes = minutes;
+      await client.lanesStart({
+        conversationId,
+        goal: laneGoal.trim(),
+        dryRun: laneDryRun,
+        real: laneReal,
+        detach: true, // observe via the live event stream
+        ...(Object.keys(budget).length > 0 ? { budget } : {}),
+      });
+      setLaneGoal('');
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setLaneBusy(false);
+    }
+  }
+
+  async function cancelLane(laneId: string): Promise<void> {
+    try {
+      await client.lanesCancel(laneId);
     } catch (e) {
       reportError(e);
     }
@@ -468,11 +529,99 @@ export function App() {
             ))
           )}
         </section>
-        <section className="card">
+        <section className="card lanes-card">
           <h2>Lanes</h2>
-          <p>
-            Claude Code, Telegram and tool lanes are reserved for the next production checkpoints.
-          </p>
+          <form
+            className="lane-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void startLane();
+            }}
+          >
+            <textarea
+              value={laneGoal}
+              onChange={(e) => setLaneGoal(e.target.value)}
+              dir={textDir(laneGoal)}
+              placeholder="Lane goal (e.g. tidy the repo)"
+              rows={2}
+            />
+            <div className="lane-budget">
+              <input
+                type="number"
+                min="1"
+                value={laneMaxTurns}
+                onChange={(e) => setLaneMaxTurns(e.target.value)}
+                placeholder="max turns"
+              />
+              <input
+                type="number"
+                min="1"
+                value={laneMaxMinutes}
+                onChange={(e) => setLaneMaxMinutes(e.target.value)}
+                placeholder="max min"
+              />
+            </div>
+            <label className="lane-check">
+              <input
+                type="checkbox"
+                checked={laneDryRun}
+                onChange={(e) => setLaneDryRun(e.target.checked)}
+              />
+              Dry run (record mandate only)
+            </label>
+            <label
+              className="lane-check"
+              title="Real execution must be enabled on the daemon (AMRITA_LANES_ALLOW_REAL_EXECUTION)."
+            >
+              <input
+                type="checkbox"
+                checked={laneReal}
+                disabled={laneDryRun}
+                onChange={(e) => setLaneReal(e.target.checked)}
+              />
+              Run for real {realExecAvailable ? '' : '(daemon opt-in required)'}
+            </label>
+            <button type="submit" disabled={laneBusy || !laneGoal.trim() || !conversationId}>
+              {laneBusy ? '…' : 'Start lane'}
+            </button>
+          </form>
+          <div className="lane-list">
+            {laneViews.length === 0 ? (
+              <p>No lanes yet.</p>
+            ) : (
+              laneViews.map((lane) => (
+                <article key={lane.id} className={`lane lane-${lane.status}`}>
+                  <div className="lane-head">
+                    <span className={`lane-badge lane-badge-${lane.status}`}>{lane.status}</span>
+                    <small>{lane.id.slice(0, 12)}</small>
+                    {isActive(lane) ? (
+                      <button
+                        type="button"
+                        className="lane-cancel"
+                        onClick={() => void cancelLane(lane.id)}
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                  {lane.goal ? (
+                    <p className="lane-goal" dir={textDir(lane.goal)}>
+                      {lane.goal}
+                    </p>
+                  ) : null}
+                  {lane.progress.length > 0 ? (
+                    <p className="lane-progress">{lane.progress.at(-1)?.note}</p>
+                  ) : null}
+                  {lane.exit ? (
+                    <p className="lane-exit">
+                      exit {lane.exit}
+                      {lane.summary ? ` · ${lane.summary}` : lane.reason ? ` · ${lane.reason}` : ''}
+                    </p>
+                  ) : null}
+                </article>
+              ))
+            )}
+          </div>
         </section>
       </aside>
     </main>
