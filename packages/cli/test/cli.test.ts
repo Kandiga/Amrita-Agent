@@ -190,6 +190,35 @@ describe('amrita CLI', () => {
     expect(timeline.out).toContain('milestone.created');
   });
 
+  it('brand set/get: honest empty, ;-lists, full-document replace', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    expect((await cli(['brand', 'get', '--project', 'crm'])).out).toContain('no brand memory yet');
+    expect(
+      (
+        await cli([
+          'brand',
+          'set',
+          '--project',
+          'crm',
+          '--name',
+          'Nimbus',
+          '--tone',
+          'premium, calm',
+          '--palette',
+          '#0EA5E9 cyan;near-black surfaces',
+          '--avoid',
+          'no neon gradients',
+        ])
+      ).code,
+    ).toBe(0);
+    const b = await cli(['brand', 'get', '--project', 'crm']);
+    expect(b.out).toContain('name: Nimbus');
+    expect(b.out).toContain('palette: #0EA5E9 cyan · near-black surfaces');
+    expect(b.out).toContain('do not use: no neon gradients');
+    // an empty set is a safe error, not an empty row
+    expect((await cli(['brand', 'set', '--project', 'crm'])).code).toBe(1);
+  });
+
   it('decision record', async () => {
     await cli(['project', 'ensure', 'crm']);
     const d = await cli(['decision', 'record', '--project', 'crm', '--text', 'use SQLite + WAL']);

@@ -26,6 +26,8 @@ import {
   type MilestoneStatus,
   type OpenQuestionRow,
   type PairingRow,
+  type PreviewApprovalRow,
+  type ProjectBrandRow,
   type ProjectBriefRow,
   type ProviderConfigStatus,
   type QuestionStatus,
@@ -726,16 +728,51 @@ export class AmritaKernel {
   /** Everything the Project Brain needs in one read. No fake data: empty is empty. */
   getCompanion(projectId: string): {
     brief: ProjectBriefRow | null;
+    brand: ProjectBrandRow | null;
     questions: OpenQuestionRow[];
     risks: RiskRow[];
     milestones: MilestoneRow[];
+    previewApprovals: PreviewApprovalRow[];
   } {
     return {
       brief: this.store.getBrief(projectId) ?? null,
+      brand: this.store.getBrand(projectId) ?? null,
       questions: this.store.listQuestions({ projectId }),
       risks: this.store.listRisks({ projectId }),
       milestones: this.store.listMilestones({ projectId }),
+      previewApprovals: this.store.listPreviewApprovals(projectId),
     };
+  }
+
+  upsertBrand(
+    input: {
+      projectId: string;
+      conversationId: string;
+      name?: string;
+      audience?: string;
+      tone?: string;
+      styleNotes?: string[];
+      palette?: string[];
+      typography?: string;
+      doNotUse?: string[];
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.upsertBrand(input);
+    return { ok: true };
+  }
+
+  approvePreview(
+    input: {
+      projectId: string;
+      conversationId: string;
+      previewId: string;
+      contentHash: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.approvePreview(input);
+    return { ok: true };
   }
 
   upsertBrief(

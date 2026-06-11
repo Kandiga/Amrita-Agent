@@ -25,7 +25,14 @@ describe('project companion over RPC (ADR-0018)', () => {
     const empty = await call<{ brief: unknown; questions: unknown[] }>('projects.companion.get', {
       projectId: c.projectId,
     });
-    expect(empty).toEqual({ brief: null, questions: [], risks: [], milestones: [] });
+    expect(empty).toEqual({
+      brief: null,
+      brand: null,
+      questions: [],
+      risks: [],
+      milestones: [],
+      previewApprovals: [],
+    });
 
     await call('projects.brief.update', {
       ...c,
@@ -113,6 +120,42 @@ describe('project companion over RPC (ADR-0018)', () => {
       params: { ...c, title: 'x', milestoneId: 'NOSUCHMILESTONE9999999999' },
     });
     expect(isErrorResponse(bad)).toBe(true);
+  });
+
+  it('brand + preview approvals round-trip through RPC, project-scoped (ADR-0020)', async () => {
+    const c = ctx();
+    await call('projects.brand.update', {
+      ...c,
+      name: 'Nimbus',
+      tone: 'premium, calm',
+      palette: ['#0EA5E9 cyan'],
+      doNotUse: ['no neon gradients'],
+    });
+    const previewId = `html-preview:${c.projectId}`;
+    await call('projects.previews.approve', { ...c, previewId, contentHash: 'h1' });
+
+    const full = await call<{
+      brand: { name: string; tone: string; palette: string[] } | null;
+      previewApprovals: { previewId: string; contentHash: string }[];
+    }>('projects.companion.get', { projectId: c.projectId });
+    expect(full.brand).toMatchObject({ name: 'Nimbus', tone: 'premium, calm' });
+    expect(full.previewApprovals[0]).toMatchObject({ previewId, contentHash: 'h1' });
+
+    // empty brand write → safe invalid_params (deep refine), nothing stored
+    const other = kernel.ensureProject({ slug: 'comp-other', name: 'Other' }).id;
+    const bad = await dispatch(kernel, {
+      id: 9,
+      method: 'projects.brand.update',
+      params: { projectId: other, conversationId: c.conversationId },
+    });
+    expect(isErrorResponse(bad) && bad.error.code).toBe('invalid_params');
+    // cross-project isolation: the other project sees nothing
+    const otherState = await call<{ brand: unknown; previewApprovals: unknown[] }>(
+      'projects.companion.get',
+      { projectId: other },
+    );
+    expect(otherState.brand).toBeNull();
+    expect(otherState.previewApprovals).toEqual([]);
   });
 
   it('timeline.list returns the derived project activity, newest first and bounded', async () => {

@@ -167,6 +167,31 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
     (k, p) => k.upsertBrief(clean(p)),
   ),
+  'projects.brand.update': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      name: z.string().min(1).max(200).optional(),
+      audience: z.string().min(1).max(500).optional(),
+      tone: z.string().min(1).max(500).optional(),
+      styleNotes: z.array(z.string().min(1).max(300)).max(20).optional(),
+      palette: z.array(z.string().min(1).max(100)).max(12).optional(),
+      typography: z.string().min(1).max(500).optional(),
+      doNotUse: z.array(z.string().min(1).max(300)).max(20).optional(),
+      sourceMessageId: z.string().optional(),
+    }),
+    (k, p) => k.upsertBrand(clean(p)),
+  ),
+  'projects.previews.approve': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      previewId: z.string().min(1).max(120),
+      contentHash: z.string().min(1).max(64),
+      sourceMessageId: z.string().optional(),
+    }),
+    (k, p) => k.approvePreview(clean(p)),
+  ),
   'projects.questions.open': def(
     z.object({
       ...convCtx,

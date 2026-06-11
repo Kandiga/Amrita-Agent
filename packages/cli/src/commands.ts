@@ -88,6 +88,15 @@ interface CompanionLite {
     scope: string[];
     noScope: string[];
   } | null;
+  brand: {
+    name: string | null;
+    audience: string | null;
+    tone: string | null;
+    styleNotes: string[];
+    palette: string[];
+    typography: string | null;
+    doNotUse: string[];
+  } | null;
   questions: { id: string; text: string; status: string }[];
   risks: { id: string; text: string; status: string; severity: string | null }[];
   milestones: { id: string; title: string; status: string; targetDate: string | null }[];
@@ -359,6 +368,63 @@ export const COMMANDS: Record<string, Command> = {
         noScope: list('no-scope'),
       });
       return { result: { ok: true, goal }, summary: `brief set · ${goal}` };
+    },
+  },
+
+  'brand get': {
+    describe: 'show the project brand memory (honest empty when unset)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita brand get --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<CompanionLite>('projects.companion.get', { projectId });
+      if (!c.brand) {
+        return { result: null, summary: '(no brand memory yet — set one with: amrita brand set)' };
+      }
+      const b = c.brand;
+      const lines = [
+        ...(b.name ? [`name: ${b.name}`] : []),
+        ...(b.audience ? [`audience: ${b.audience}`] : []),
+        ...(b.tone ? [`tone: ${b.tone}`] : []),
+        ...(b.palette.length ? [`palette: ${b.palette.join(' · ')}`] : []),
+        ...(b.styleNotes.length ? [`style: ${b.styleNotes.join(' · ')}`] : []),
+        ...(b.typography ? [`typography: ${b.typography}`] : []),
+        ...(b.doNotUse.length ? [`do not use: ${b.doNotUse.join(' · ')}`] : []),
+      ];
+      return { result: b, summary: lines.join('\n') };
+    },
+  },
+  'brand set': {
+    describe: 'create/replace the project brand memory (lists are ;-separated)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) {
+        throw new CliError(
+          'usage: amrita brand set --project <ID_OR_SLUG> [--name N] [--audience A] [--tone T] [--style a;b] [--palette a;b] [--typography T] [--avoid a;b]',
+        );
+      }
+      const list = (name: string) =>
+        (strFlag(flags, name) ?? '')
+          .split(';')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+      const ctx = await resolveWriteContext(client, { project });
+      const name = strFlag(flags, 'name');
+      const audience = strFlag(flags, 'audience');
+      const tone = strFlag(flags, 'tone');
+      const typography = strFlag(flags, 'typography');
+      await client.call('projects.brand.update', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        ...(name ? { name } : {}),
+        ...(audience ? { audience } : {}),
+        ...(tone ? { tone } : {}),
+        ...(typography ? { typography } : {}),
+        styleNotes: list('style'),
+        palette: list('palette'),
+        doNotUse: list('avoid'),
+      });
+      return { result: { ok: true }, summary: `brand set${name ? ` · ${name}` : ''}` };
     },
   },
 
