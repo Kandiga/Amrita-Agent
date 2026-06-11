@@ -208,6 +208,40 @@ export interface CodingRuntimeLite {
   nextCommand?: string;
 }
 
+/** Live connector status (ADR-0022). `connected` only ever follows a real probe. */
+export interface ConnectorStatusLite {
+  manifest: {
+    slug: string;
+    kind: 'source' | 'tool';
+    title: string;
+    description: string;
+    capabilities: string[];
+    requiredEnv: string[];
+    setupCommands: string[];
+    docsUrl?: string;
+    experimental?: boolean;
+  };
+  state:
+    | 'connected'
+    | 'configured_but_failing'
+    | 'needs_setup'
+    | 'needs_install'
+    | 'status_unknown'
+    | 'experimental';
+  detail: string;
+  missingEnv: string[];
+  nextCommand?: string;
+}
+
+/** Result of a one-way GitHub issues → tasks import (ADR-0022). */
+export interface GithubImportLite {
+  repo: string;
+  imported: number;
+  skipped: number;
+  total: number;
+  tasks: { taskId: string; externalRef: string; title: string }[];
+}
+
 /** The Settings & Runtime Hub aggregate (runtime.status). */
 export interface RuntimeStatusLite {
   roles: RoleResolutionLite[];
@@ -481,6 +515,22 @@ export class RpcClient {
 
   runtimeStatus(projectId?: string): Promise<RuntimeStatusLite> {
     return this.call<RuntimeStatusLite>('runtime.status', projectId ? { projectId } : {});
+  }
+
+  // ── connectors + GitHub import (ADR-0022) ───────────────────────────────
+
+  connectorsStatus(): Promise<ConnectorStatusLite[]> {
+    return this.call<ConnectorStatusLite[]>('connectors.status');
+  }
+
+  githubImport(params: {
+    projectId: string;
+    conversationId: string;
+    repo: string;
+    state?: 'open' | 'all';
+    limit?: number;
+  }): Promise<GithubImportLite> {
+    return this.call<GithubImportLite>('github.importIssues', { ...params, channel: 'web' });
   }
 
   roleSet(params: {

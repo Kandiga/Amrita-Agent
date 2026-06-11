@@ -80,6 +80,14 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
   source_message_id?, approved_at, PK(project_id, preview_id))` — durable approvals for
   deterministic surface previews; re-approval upserts.
 
+### Task provenance (migration `0006_task_external_ref`, ADR-0022)
+
+- **tasks.external_ref?** (≤200 chars) — provenance to an external system, e.g.
+  `github:owner/repo#123`, written by `task.created`'s optional `externalRef`.
+- **uq_tasks_project_external_ref** — partial UNIQUE index on `(project_id, external_ref)
+  WHERE external_ref IS NOT NULL`: import idempotency is a database guarantee, and the same
+  external item may still be imported into different projects.
+
 ## Migrations (`migrate.ts`)
 
 - `MIGRATIONS` is an ordered, append-only list. Never edit a shipped migration; add the next one.
@@ -87,7 +95,8 @@ recorded as ADR-0001 D3; revisit if/when reads dominate.
 - `migrateDown(db, toVersion?)` reverts highest-first using the paired `.down.sql`.
 - `currentVersion(db)` reports the highest applied version (or -1).
 - Migrations: `0000_init` (spine), `0001_full_store_schema` (entity baseline), `0002_memory_fts`
-  (memory FTS5), `0003_channel_pairings`, `0004_companion` (ADR-0018), `0005_brand_previews` (ADR-0020).
+  (memory FTS5), `0003_channel_pairings`, `0004_companion` (ADR-0018), `0005_brand_previews`
+  (ADR-0020), `0006_task_external_ref` (ADR-0022).
 - **Acceptance:** up → down → up across all migrations leaves an identical schema and an idempotent
   second `up` applies 0; targeted `migrateDown(db, N)` reverts only versions above `N` (e.g. down to 1
   drops `memory_entries_fts` but keeps `memory_entries`).

@@ -62,7 +62,9 @@ deterministic and free of provider/tool/lane execution.
 | `accounts.list` | — | account rows (`secretRef` is an env-NAME) |
 | `accounts.bindSecretRef` | `{accountId, envName}` | `{ok}` |
 | `accounts.configStatus` | `{accountId}` | `{status}` |
-| `connectors.list` | — | connector rows |
+| `connectors.list` | — | connector rows (store-backed; reserved for user-installed connectors) |
+| `connectors.status` | — | live states for code-registered manifests (ADR-0022): `connected` only after a real probe; `needs_setup` lists missing env NAMES + exact commands; inconclusive probes are `status_unknown`, never green |
+| `github.importIssues` | `{projectId, conversationId, repo: owner/name, state?: open\|all, limit?, origin?, channel?}` | `{repo, imported, skipped, total, tasks[]}` — one-way, idempotent (skips existing `github:owner/repo#N` externalRefs; DB unique index backstop); missing token → `missing_env_value` naming `GITHUB_TOKEN` |
 | `lanes.list` | `{projectId?, conversationId?, status?}` | lane rows |
 | `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |

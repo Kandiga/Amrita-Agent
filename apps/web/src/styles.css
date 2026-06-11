@@ -707,7 +707,13 @@ section h2,
 .hub-future {
   opacity: 0.75;
 }
+.hub-import {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
 .hub-connectors {
+  margin-top: 12px;
   display: grid;
   gap: 10px;
 }

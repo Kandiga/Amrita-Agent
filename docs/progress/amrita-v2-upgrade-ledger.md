@@ -254,3 +254,36 @@ One ledger, updated per phase — no scattered notes.
   could proactively notify owners: next slice); remaining roadmap items (Setup Hub manifests,
   research lanes, artifact library, GitHub import, tool registry, installer scaffold)
   untouched this session — next session should start at Setup Hub + GitHub one-way import.
+
+## Phase 11 — Setup Hub connector manifests + GitHub one-way issue import
+
+- **Date:** 2026-06-11 · **ADR:** 0022 · **Migration:** 0006_task_external_ref (schema v6)
+- **What landed:**
+  - `@amrita/protocol`: `connectorManifestSchema` (slug/kind/title/capabilities/requiredEnv
+    NAMES-only/setupCommands/docsUrl), `connectorRuntimeStateSchema` (connected ·
+    configured_but_failing · needs_setup · needs_install · status_unknown · experimental),
+    `connectorStatusReportSchema`; `task.created` gains optional `externalRef` + `body`
+    (additive on strict — old events replay unchanged).
+  - store: `tasks.external_ref` + partial UNIQUE `(project_id, external_ref)` — import
+    idempotency is a DB guarantee; `createTask` provenance fields; `listTaskExternalRefs`.
+  - daemon: code-registered manifest registry (GitHub first; channels deliberately stay in
+    channels.list — one concept, one truth); `connectors.status` RPC with a live bounded
+    `/rate_limit` probe through the kernel's injected fetch — `connected` is impossible
+    without a probe; doctor `connectors` section (presence-only, says so); `github.ts`
+    adapter (official REST, PRs excluded, token read at call time, value-free GithubError →
+    structured RPC codes); kernel `importGithubIssues` (skip-existing idempotency,
+    `github:owner/repo#N` provenance, issue URL in body).
+  - CLI: `connectors status`, `github import --project --repo [--state] [--limit]`.
+  - web: Setup Hub connectors card (live states, exact export commands, inline one-way
+    GitHub import that refreshes Tasks), `connectorsStatus`/`githubImport` wrappers
+    (channel: web provenance).
+- **Honesty checks:** no fake green (connected ⇔ live probe ok; inconclusive = status
+  unknown); env NAMES only end-to-end (schema-enforced in the manifest itself); import is
+  one-way — Amrita never writes to GitHub; missing token errors name `GITHUB_TOKEN`, never a
+  value; tests use injected fetch + labeled fake token, zero real network.
+- **Verification:** full gates + web build in the session report; CLI e2e covers the
+  no-token path without network.
+- **Limitations / next:** re-import skips changed issues (no title sync — future refresh
+  semantics); no `connector.installed` store rows used yet (reserved for user-installed
+  connectors); Setup Hub card not browser-click verified this session; research-lane seam +
+  artifact library are the next roadmap slices.

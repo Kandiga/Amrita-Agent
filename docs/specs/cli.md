@@ -66,6 +66,9 @@ amrita lane list [--project ID_OR_SLUG] [--conversation ID] [--status STATUS] --
 amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run] [--real] --db PATH
 amrita lane get <LANE_ID> --db PATH
 amrita lane cancel <LANE_ID> --db PATH
+
+amrita connectors status --db PATH                         # live probe-backed states (ADR-0022), never fake green
+amrita github import --project <ID_OR_SLUG> --repo <owner/name> [--state open|all] [--limit N] --db PATH
 ```
 
 `amrita lane start` records a lane mandate and (unless `--dry-run`) runs it through the kernel's lane
@@ -78,9 +81,16 @@ lane with its report exit; `lane cancel` stops a running lane (it reports `exit:
 value, and no secret (including `ANTHROPIC_API_KEY`) is ever forwarded into a lane.
 
 `amrita doctor` renders the kernel's `doctor` report (PLAN §5.4): grouped `◆` sections (store,
-providers, lanes, channels, auth) with warn-vs-fail scoping — unconfigured is a *warning* ("needs
-setup"), an account bound to a missing env var is a *failure* — and a numbered "run this exact
-command" footer. Env checks are presence-only; no value is ever read or printed.
+providers, lanes, channels, connectors, auth) with warn-vs-fail scoping — unconfigured is a
+*warning* ("needs setup"), an account bound to a missing env var is a *failure* — and a numbered
+"run this exact command" footer. Env checks are presence-only; no value is ever read or printed.
+
+`amrita connectors status` prints each code-registered connector's live state (ADR-0022):
+`connected` only after a real probe, `configured_but_failing` when the API rejects the token,
+`needs_setup` with missing env NAMES and the exact export command. `amrita github import` is the
+one-way issues → tasks import: idempotent (`skipped` counts re-runs), provenance-tagged
+(`github:owner/repo#N`), PRs excluded, and the token is read from `GITHUB_TOKEN` at call time —
+errors name the env var, never a value.
 
 `amrita chat` runs one turn through the kernel: it records your message, calls the provider boundary
 (default **`mock`**, deterministic), and prints the assistant reply plus a `(provider · model · in/out

@@ -159,6 +159,32 @@ describe('RpcClient', () => {
     expect(bodies[4]?.params).toEqual({ role: 'deep' });
   });
 
+  it('sends typed connector + github-import RPC payloads (ADR-0022)', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: [] });
+      }) as typeof fetch,
+    });
+    await client.connectorsStatus();
+    await client.githubImport({
+      projectId: 'P1',
+      conversationId: 'C1',
+      repo: 'octo/repo',
+      limit: 25,
+    });
+    expect(bodies.map((b) => b.method)).toEqual(['connectors.status', 'github.importIssues']);
+    // web provenance: the import is stamped channel: web
+    expect(bodies[1]?.params).toEqual({
+      projectId: 'P1',
+      conversationId: 'C1',
+      repo: 'octo/repo',
+      limit: 25,
+      channel: 'web',
+    });
+  });
+
   it('sends typed companion RPC payloads (brief/questions/risks/milestones/timeline)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
     const client = new RpcClient({

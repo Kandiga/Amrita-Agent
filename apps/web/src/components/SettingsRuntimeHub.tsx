@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CodingRuntimeLite, RuntimeStatusLite } from '../api.ts';
+import type {
+  CodingRuntimeLite,
+  ConnectorStatusLite,
+  GithubImportLite,
+  RuntimeStatusLite,
+} from '../api.ts';
 import { client } from '../client.ts';
 
 const ROLES = ['fast', 'main', 'deep'] as const;
@@ -19,9 +24,26 @@ const RUNTIME_STATE_LABEL: Record<CodingRuntimeLite['state'], string> = {
   status_unknown: 'status unknown',
 };
 
+const CONNECTOR_STATE_LABEL: Record<ConnectorStatusLite['state'], string> = {
+  connected: 'connected',
+  configured_but_failing: 'configured but failing',
+  needs_setup: 'needs setup',
+  needs_install: 'needs install',
+  status_unknown: 'status unknown',
+  experimental: 'experimental',
+};
+
+function connectorBadgeClass(state: ConnectorStatusLite['state']): string {
+  if (state === 'connected') return 'runtime-ok';
+  if (state === 'configured_but_failing') return 'runtime-warn';
+  return 'runtime-off';
+}
+
 interface SettingsRuntimeHubProps {
   projectId?: string | undefined;
   projectName?: string | undefined;
+  writeCtx: { projectId: string; conversationId: string } | null;
+  onTasksChanged: () => void;
   onError: (e: unknown) => void;
 }
 
@@ -31,18 +53,32 @@ interface SettingsRuntimeHubProps {
  * future connector categories are labeled future — never green. No secret
  * value ever reaches this component: status booleans and env NAMES only.
  */
-export function SettingsRuntimeHub({ projectId, projectName, onError }: SettingsRuntimeHubProps) {
+export function SettingsRuntimeHub({
+  projectId,
+  projectName,
+  writeCtx,
+  onTasksChanged,
+  onError,
+}: SettingsRuntimeHubProps) {
   const [status, setStatus] = useState<RuntimeStatusLite | null>(null);
+  const [connectors, setConnectors] = useState<ConnectorStatusLite[] | null>(null);
   const [drafts, setDrafts] = useState<Record<Role, { provider: string; model: string }>>({
     fast: { provider: '', model: '' },
     main: { provider: '', model: '' },
     deep: { provider: '', model: '' },
   });
   const [busy, setBusy] = useState(false);
+  const [repoDraft, setRepoDraft] = useState('');
+  const [importNote, setImportNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       setStatus(await client.runtimeStatus(projectId));
+    } catch (e) {
+      onError(e);
+    }
+    try {
+      setConnectors(await client.connectorsStatus());
     } catch (e) {
       onError(e);
     }
@@ -64,6 +100,24 @@ export function SettingsRuntimeHub({ projectId, projectName, onError }: Settings
         ...(scope === 'project' && projectId ? { projectId } : {}),
       });
       await refresh();
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importGithub(): Promise<void> {
+    const repo = repoDraft.trim();
+    if (!writeCtx || !repo || busy) return;
+    setBusy(true);
+    setImportNote(null);
+    try {
+      const r: GithubImportLite = await client.githubImport({ ...writeCtx, repo });
+      setImportNote(
+        `${r.repo}: imported ${r.imported}, skipped ${r.skipped} already present (of ${r.total} open issues)`,
+      );
+      if (r.imported > 0) onTasksChanged();
     } catch (e) {
       onError(e);
     } finally {
@@ -217,7 +271,56 @@ export function SettingsRuntimeHub({ projectId, projectName, onError }: Settings
       </section>
 
       <section className="card">
-        <h2>Connectors</h2>
+        <h2>Setup Hub — connectors</h2>
+        <p className="hub-note">
+          External sources and tools, each from a typed manifest. "Connected" only ever follows a
+          live probe — never a presence check, never a fake green badge.
+        </p>
+        {connectors === null ? (
+          <p className="empty-note">Probing connector status…</p>
+        ) : (
+          connectors.map((c) => (
+            <div key={c.manifest.slug} className="hub-runtime">
+              <div className="hub-role-head">
+                <strong>{c.manifest.title}</strong>
+                <span className={`doc-badge ${connectorBadgeClass(c.state)}`}>
+                  {CONNECTOR_STATE_LABEL[c.state]}
+                </span>
+              </div>
+              <small>
+                {c.manifest.kind} · {c.manifest.capabilities.join(', ') || 'no capabilities yet'}
+              </small>
+              <p className="hub-detail">{c.detail}</p>
+              {c.state === 'needs_setup' && c.nextCommand ? (
+                <code className="hub-cmd">{c.nextCommand}</code>
+              ) : null}
+              {c.manifest.slug === 'github' && c.state !== 'needs_setup' ? (
+                <div className="hub-import">
+                  <div className="hub-role-controls">
+                    <input
+                      value={repoDraft}
+                      onChange={(e) => setRepoDraft(e.target.value)}
+                      placeholder="owner/repo"
+                      aria-label="GitHub repository to import issues from"
+                    />
+                    <button
+                      type="button"
+                      disabled={busy || !writeCtx || !repoDraft.trim()}
+                      onClick={() => void importGithub()}
+                    >
+                      Import open issues{projectName ? ` into ${projectName}` : ''}
+                    </button>
+                  </div>
+                  <small>
+                    One-way and idempotent: each issue becomes a task tagged github:owner/repo#N;
+                    already-imported issues are skipped. Amrita never writes to GitHub.
+                  </small>
+                  {importNote ? <p className="hub-detail">{importNote}</p> : null}
+                </div>
+              ) : null}
+            </div>
+          ))
+        )}
         {(() => {
           const real = status.providers.filter((p) => p.kind === 'real');
           const configured = real.filter((p) => p.configuredAccounts > 0).length;
@@ -230,10 +333,6 @@ export function SettingsRuntimeHub({ projectId, projectName, onError }: Settings
                   {real.map((p) => p.id).join(', ')} — {configured} configured, {available} ready
                   (keys live as env names only; see Runtime panel for exact setup commands)
                 </small>
-              </div>
-              <div className="hub-connector">
-                <strong>Local runtime</strong>
-                <small>mock — deterministic, always available, streams live</small>
               </div>
               <div className="hub-connector">
                 <strong>Subscription connectors</strong>

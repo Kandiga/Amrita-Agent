@@ -579,6 +579,8 @@ export function App() {
           <SettingsRuntimeHub
             projectId={selectedProject?.id}
             projectName={selectedProject?.name}
+            writeCtx={writeCtx}
+            onTasksChanged={() => void loadTasks()}
             onError={reportError}
           />
         ) : (

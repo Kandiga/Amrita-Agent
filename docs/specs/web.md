@@ -113,9 +113,13 @@ A topbar toggle switches the inspector between Project Brain and the Hub:
 - **Coding runtimes** — Claude Code as one honestly-probed card (state, version, real-exec
   posture, exact next command), visible **regardless of which model is the brain**; future
   bridges (Codex/OpenCode/local) labeled *future*, never green.
-- **Connectors** — categories listed honestly (API providers with configured/ready counts,
-  local mock, subscription via Claude Code's own login, Hermes/MCP future). No secret value
-  ever reaches the component; status booleans and env names only.
+- **Setup Hub — connectors (ADR-0022)** — live, probe-backed cards from `connectors.status`:
+  state badge (`connected` only ever after a real probe; `configured but failing` on an
+  explicit rejection; `needs setup` with the exact `export` command and missing env NAMES;
+  `status unknown` on an inconclusive probe — never green), capabilities, and for GitHub an
+  inline one-way **issue import** (`owner/repo` → `github.importIssues`, idempotent, refreshes
+  the Tasks panel). Provider/subscription/future categories remain listed honestly below. No
+  secret value ever reaches the component; status booleans and env names only.
 
 ## Surface Stage B: the `html-preview` artifact (ADR-0020)
 

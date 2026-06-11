@@ -145,6 +145,27 @@ Press **Settings** in the top bar. The inspector becomes the Runtime Hub:
   `/approve <id>`, `/deny <id>`, `/stop <lane>`, `/help`. Doctor and `channels.list` show
   telegram `ready` only while the runner is actually running.
 
+## 5d. Setup Hub connectors + GitHub issue import (ADR-0022)
+
+- In **Settings** the **Setup Hub — connectors** card lists code-registered connectors from
+  typed manifests. Without `GITHUB_TOKEN` the GitHub card says **needs setup** and shows the
+  exact `export GITHUB_TOKEN=…` command (env NAME only — the value never enters Amrita).
+- `pnpm amrita -- connectors status --db ~/.amrita/amrita.db` prints the same states.
+  "connected" appears **only** after a live probe against `api.github.com` succeeds; a token
+  the API rejects shows **configured but failing**; a network hiccup shows **status unknown**
+  — never a fake green.
+- With a token set in the daemon's shell, import open issues one-way into tasks:
+
+```bash
+pnpm amrita -- github import --project demo --repo <owner>/<repo> --db ~/.amrita/amrita.db
+```
+
+Each issue becomes a task `#N · <title>` tagged `github:owner/repo#N` (visible provenance;
+the issue URL is in the task body). Re-running the import reports `skipped` for everything
+already present — idempotent by construction (a DB unique index backs it). Pull requests are
+never imported, and Amrita never writes to GitHub. The same import is available in the Setup
+Hub card once the connector is configured.
+
 ## 6. Inspect runtime status
 
 - **Web:** the **Runtime** panel shows the doctor report — per-section chips (`ok` / `needs
