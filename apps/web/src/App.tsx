@@ -26,6 +26,7 @@ type Provider = {
   available?: boolean;
   configuredAccounts?: number;
   envReady?: boolean;
+  streaming?: boolean;
 };
 type Task = { id: string; title: string; status?: string };
 type DoctorCheck = { id: string; label: string; status: 'ok' | 'warn' | 'fail'; detail?: string };
@@ -598,6 +599,14 @@ export function App() {
           ) : (
             <p>Runtime checks not loaded yet.</p>
           )}
+          {doctor && doctor.fixes.length > 0 ? (
+            <details className="doctor-fixes">
+              <summary>How to fix ({doctor.fixes.length})</summary>
+              {doctor.fixes.map((fix) => (
+                <code key={fix}>{fix}</code>
+              ))}
+            </details>
+          ) : null}
         </section>
         <section className="card">
           <h2>Provider status</h2>
@@ -608,6 +617,11 @@ export function App() {
           <p>
             configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
             {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
+          </p>
+          <p>
+            {selectedProvider?.streaming
+              ? 'streams replies live (model.delta)'
+              : 'replies arrive whole — live streaming for this provider is not built yet'}
           </p>
         </section>
         <section className="card">

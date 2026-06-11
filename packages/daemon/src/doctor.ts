@@ -1,5 +1,5 @@
 import type { AmritaKernel } from './kernel.ts';
-import { envPresent } from './provider.ts';
+import { PROVIDER_ROLES, envPresent } from './provider.ts';
 
 /**
  * Doctor — grouped setup/health checks over the kernel (PLAN §5.4).
@@ -126,6 +126,27 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
         fix: 'amrita --db <PATH> account bind-secret <ACCOUNT_ID> <ENV_NAME>',
       });
     }
+  }
+  // Role policy (D5/ADR-0017): unconfigured `auto` is a warning, not a failure.
+  const bindings = PROVIDER_ROLES.map((role) => ({ role, binding: kernel.getRoleBinding(role) }));
+  if (bindings.some((b) => b.binding)) {
+    checks.push({
+      id: 'provider.roles',
+      label: 'role policy',
+      status: 'ok',
+      detail: bindings
+        .map((b) => `${b.role} → ${b.binding ? b.binding.provider : 'auto'}`)
+        .join(' · '),
+    });
+  } else {
+    checks.push({
+      id: 'provider.roles',
+      label: 'role policy',
+      status: 'warn',
+      detail:
+        'no role bindings — role turns resolve via auto (first available real provider, else mock)',
+      fix: 'amrita --db <PATH> role set main <provider>',
+    });
   }
   return { title: 'providers', checks };
 }

@@ -57,6 +57,32 @@ export class ProviderError extends Error {
 
 export const MOCK_PROVIDER_ID = 'mock';
 
+// ── role policy (D5) ─────────────────────────────────────────────────────────
+
+/** The provider roles a turn can ask for instead of a concrete provider. */
+export const PROVIDER_ROLES = ['fast', 'main', 'deep'] as const;
+export type ProviderRole = (typeof PROVIDER_ROLES)[number];
+
+/** Settings key for a role binding: `providers.role.<role>` → RoleBinding. */
+export const ROLE_SETTING_PREFIX = 'providers.role.';
+
+/** A role's configured target. Stored in `settings` (non-secret by definition). */
+export interface RoleBinding {
+  provider: string;
+  model?: string;
+}
+
+/** Narrow an unknown settings value to a RoleBinding, or undefined. */
+export function parseRoleBinding(value: unknown): RoleBinding | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.provider !== 'string' || obj.provider.length === 0) return undefined;
+  return {
+    provider: obj.provider,
+    ...(typeof obj.model === 'string' && obj.model.length > 0 ? { model: obj.model } : {}),
+  };
+}
+
 /** A deterministic provider for tests and local dev. No clock, no randomness, no I/O. */
 export class MockProvider implements ChatProvider {
   readonly id = MOCK_PROVIDER_ID;
@@ -256,11 +282,19 @@ export function createOpenaiProvider(opts: AdapterOptions): ChatProvider {
 export interface RealProviderSpec {
   id: string;
   defaultModel: string;
+  /** Whether the adapter implements `generateStream` (live `model.delta`). */
+  streaming: boolean;
   create(opts: AdapterOptions): ChatProvider;
 }
 export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
-  { id: 'anthropic', defaultModel: 'claude-sonnet-4-5', create: createAnthropicProvider },
-  { id: 'openai', defaultModel: 'gpt-4o-mini', create: createOpenaiProvider },
+  // streaming: false until real SSE adapters land — reported honestly, never faked.
+  {
+    id: 'anthropic',
+    defaultModel: 'claude-sonnet-4-5',
+    streaming: false,
+    create: createAnthropicProvider,
+  },
+  { id: 'openai', defaultModel: 'gpt-4o-mini', streaming: false, create: createOpenaiProvider },
 ];
 
 /** Provider availability, computed by the kernel from account config + env presence. */
@@ -273,4 +307,6 @@ export interface ProviderInfo {
   configuredAccounts: number;
   /** Whether at least one bound account's env var is present (boolean only). */
   envReady: boolean;
+  /** Whether replies stream live as `model.delta` (ADR-0016); never faked. */
+  streaming: boolean;
 }

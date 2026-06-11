@@ -37,19 +37,30 @@ import {
   MockProvider,
   ProviderError,
   type ProviderInfo,
+  type ProviderRole,
   REAL_PROVIDERS,
+  ROLE_SETTING_PREFIX,
+  type RoleBinding,
   defaultFetch,
   envPresent,
+  parseRoleBinding,
   readEnvSecret,
 } from './provider.ts';
 import { clean } from './util.ts';
 
-/** A non-streaming chat turn request. */
+/** A chat turn request. */
 export interface ChatTurnInput {
   conversationId: string;
   text: string;
   provider?: string;
   model?: string;
+  /**
+   * A provider ROLE instead of a concrete provider (D5/ADR-0017). Resolution:
+   * an explicit `provider` always wins; otherwise the role's settings binding
+   * (`providers.role.<role>`); otherwise `auto` — the first available real
+   * provider, else the deterministic mock. Never silently a broken provider.
+   */
+  role?: ProviderRole;
   /** Request a real provider account — currently returns a safe "not implemented" error. */
   accountId?: string;
   /** Record the user message and stop before invoking the provider. */
@@ -62,6 +73,8 @@ export interface ChatTurnResult {
   turnId: string;
   provider: string;
   model: string;
+  /** The role this turn ran under (`main` when none was requested). */
+  role: ProviderRole;
   userMessageId: string;
   userEvent: AmritaEvent;
   dryRun: boolean;
@@ -309,6 +322,7 @@ export class AmritaKernel {
         available: true,
         configuredAccounts: 0,
         envReady: false,
+        streaming: true, // MockProvider implements generateStream (ADR-0016)
       },
       ...REAL_PROVIDERS.map((spec): ProviderInfo => {
         const bound = accounts.filter((a) => a.provider === spec.id && a.secretRef);
@@ -319,9 +333,27 @@ export class AmritaKernel {
           available: envReady,
           configuredAccounts: bound.length,
           envReady,
+          streaming: spec.streaming,
         };
       }),
     ];
+  }
+
+  /** The settings-backed role binding for a role, if one is set and well-formed. */
+  getRoleBinding(role: ProviderRole): RoleBinding | undefined {
+    return parseRoleBinding(this.store.getSetting(`${ROLE_SETTING_PREFIX}${role}`));
+  }
+
+  /**
+   * Resolve a ROLE to a concrete provider id (+ optional model) — D5/ADR-0017.
+   * A settings binding wins; otherwise `auto`: the first *available* real
+   * provider (bound account + env present), else the deterministic mock.
+   */
+  resolveRole(role: ProviderRole): { provider: string; model?: string; via: 'binding' | 'auto' } {
+    const binding = this.getRoleBinding(role);
+    if (binding) return { ...binding, via: 'binding' };
+    const firstReal = this.listProviders().find((p) => p.kind === 'real' && p.available);
+    return { provider: firstReal?.id ?? MOCK_PROVIDER_ID, via: 'auto' };
   }
 
   /**
@@ -334,14 +366,25 @@ export class AmritaKernel {
     providerId: string;
     model: string;
     provider: ChatProvider;
+    role: ProviderRole;
   } {
+    const role: ProviderRole = input.role ?? 'main';
     let account = input.accountId
       ? this.store.listAccounts().find((a) => a.id === input.accountId)
       : undefined;
     if (input.accountId && !account) {
       throw new ProviderError('not_found', `no such account: ${input.accountId}`);
     }
-    const providerId = input.provider ?? account?.provider ?? MOCK_PROVIDER_ID;
+    // An explicit provider/account always wins; otherwise an explicit role
+    // resolves via its settings binding or `auto` (D5/ADR-0017).
+    let roleModel: string | undefined;
+    let requested = input.provider ?? account?.provider;
+    if (!requested && input.role) {
+      const resolved = this.resolveRole(input.role);
+      requested = resolved.provider;
+      roleModel = resolved.model;
+    }
+    const providerId = requested ?? MOCK_PROVIDER_ID;
     if (account && input.provider && input.provider !== account.provider) {
       throw new ProviderError(
         'unknown_provider',
@@ -350,7 +393,12 @@ export class AmritaKernel {
     }
 
     if (providerId === MOCK_PROVIDER_ID) {
-      return { providerId, model: input.model ?? 'mock-default', provider: this.mock };
+      return {
+        providerId,
+        model: input.model ?? roleModel ?? 'mock-default',
+        provider: this.mock,
+        role,
+      };
     }
 
     const spec = REAL_PROVIDERS.find((p) => p.id === providerId);
@@ -373,11 +421,12 @@ export class AmritaKernel {
     if (!apiKey) {
       throw new ProviderError('missing_env_value', `env var ${account.secretRef} is not set`);
     }
-    const model = input.model ?? spec.defaultModel;
+    const model = input.model ?? roleModel ?? spec.defaultModel;
     return {
       providerId,
       model,
       provider: spec.create({ apiKey, model, fetchImpl: this.fetchImpl }),
+      role,
     };
   }
 
@@ -455,7 +504,7 @@ export class AmritaKernel {
     const projectId = conv.projectId;
 
     // Resolve the provider first — a config error records nothing.
-    const { providerId, model, provider } = this.resolveChatProvider(input);
+    const { providerId, model, provider, role } = this.resolveChatProvider(input);
     const turnId = newId();
     const channel = input.channel;
 
@@ -472,6 +521,7 @@ export class AmritaKernel {
         turnId,
         provider: providerId,
         model,
+        role,
         userMessageId: user.message.id,
         userEvent: user.event,
         dryRun: true,
@@ -489,7 +539,7 @@ export class AmritaKernel {
     this.emitTurnEvent(projectId, input.conversationId, turnId, 'model.request', {
       provider: providerId,
       model,
-      role: 'main',
+      role,
     });
 
     // Provider call — pure side effect, outside any store transaction.
@@ -534,6 +584,7 @@ export class AmritaKernel {
       turnId,
       provider: providerId,
       model,
+      role,
       userMessageId: user.message.id,
       userEvent: user.event,
       dryRun: false,

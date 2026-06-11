@@ -384,7 +384,7 @@ export const COMMANDS: Record<string, Command> = {
       const text = positionals.join(' ');
       if (!text) {
         throw new CliError(
-          'usage: amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock|anthropic|openai] [--model MODEL]',
+          'usage: amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock|anthropic|openai] [--role fast|main|deep] [--model MODEL]',
         );
       }
       const ctx = await resolveWriteContext(client, {
@@ -392,17 +392,87 @@ export const COMMANDS: Record<string, Command> = {
         conversation: strFlag(flags, 'conversation'),
       });
       const provider = strFlag(flags, 'provider');
+      const role = strFlag(flags, 'role');
       const model = strFlag(flags, 'model');
       const turn = await client.call<ChatTurnLite>('chat.turn', {
         conversationId: ctx.conversationId,
         text,
         channel: 'cli',
         ...(provider ? { provider } : {}),
+        ...(role ? { role } : {}),
         ...(model ? { model } : {}),
       });
       const u = turn.usage;
       const meta = `(${turn.provider} · ${turn.model}${u ? ` · ${u.inputTokens}/${u.outputTokens} tok` : ''})`;
       return { result: turn, summary: `${turn.text ?? '(no reply)'}\n${meta}` };
+    },
+  },
+
+  'role list': {
+    describe: 'show fast/main/deep role bindings and what each resolves to',
+    async run(client) {
+      const r = await client.call<{
+        roles: {
+          role: string;
+          binding: { provider: string; model?: string } | null;
+          resolvesTo: string;
+          via: string;
+        }[];
+      }>('providers.roles');
+      return {
+        result: r,
+        summary: r.roles
+          .map(
+            (x) =>
+              `${x.role}\t→ ${x.resolvesTo}${x.binding?.model ? ` (${x.binding.model})` : ''}\t[${x.via}]`,
+          )
+          .join('\n'),
+      };
+    },
+  },
+  'role set': {
+    describe: 'bind a role (fast|main|deep) to a provider (optionally a model)',
+    async run(client, { positionals, flags }) {
+      const role = positionals[0];
+      const provider = positionals[1];
+      if (!role || !provider || !['fast', 'main', 'deep'].includes(role)) {
+        throw new CliError('usage: amrita role set <fast|main|deep> <provider> [--model MODEL]');
+      }
+      const known = await client.call<{ id: string }[]>('providers.list');
+      if (!known.some((p) => p.id === provider)) {
+        throw new CliError(
+          `unknown provider '${provider}' (known: ${known.map((p) => p.id).join(', ')})`,
+        );
+      }
+      const model = strFlag(flags, 'model');
+      const ctx = await resolveWriteContext(client, {});
+      await client.call('settings.update', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        key: `providers.role.${role}`,
+        value: { provider, ...(model ? { model } : {}) },
+      });
+      return {
+        result: { role, provider, ...(model ? { model } : {}) },
+        summary: `role ${role} → ${provider}${model ? ` (${model})` : ''}`,
+      };
+    },
+  },
+  'role clear': {
+    describe: 'remove a role binding (the role falls back to auto)',
+    async run(client, { positionals }) {
+      const role = positionals[0];
+      if (!role || !['fast', 'main', 'deep'].includes(role)) {
+        throw new CliError('usage: amrita role clear <fast|main|deep>');
+      }
+      const ctx = await resolveWriteContext(client, {});
+      await client.call('settings.update', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        key: `providers.role.${role}`,
+        value: null,
+      });
+      return { result: { role, cleared: true }, summary: `role ${role} → auto` };
     },
   },
 

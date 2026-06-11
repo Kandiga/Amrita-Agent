@@ -187,6 +187,32 @@ describe('amrita CLI', () => {
     expect(r.out).not.toMatch(/sk-[a-z]/i);
   });
 
+  it('role set / list / clear binds providers to roles, chat --role uses them', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    // unbound: everything resolves via auto (mock — nothing real configured)
+    const before = await cli(['role', 'list']);
+    expect(before.code).toBe(0);
+    expect(before.out).toMatch(/main\t→ mock\t\[auto\]/);
+
+    expect((await cli(['role', 'set', 'main', 'mock'])).code).toBe(0);
+    const after = await cli(['role', 'list']);
+    expect(after.out).toMatch(/main\t→ mock\t\[binding\]/);
+
+    // a role turn works end-to-end (mock binding)
+    const turn = json<{ provider: string; role: string }>(
+      await cli(['chat', 'route me', '--project', 'crm', '--role', 'main', '--json']),
+    );
+    expect(turn.provider).toBe('mock');
+    expect(turn.role).toBe('main');
+
+    expect((await cli(['role', 'clear', 'main'])).out).toContain('main → auto');
+    expect((await cli(['role', 'list'])).out).toMatch(/main\t→ mock\t\[auto\]/);
+
+    // guard rails: unknown provider / bad role are usage errors
+    expect((await cli(['role', 'set', 'main', 'nope'])).code).toBe(2);
+    expect((await cli(['role', 'set', 'galactic', 'mock'])).code).toBe(2);
+  });
+
   it('chat with an unconfigured real provider fails non-zero, safely', async () => {
     await cli(['project', 'ensure', 'crm']);
     const r = await cli(['chat', 'hi', '--project', 'crm', '--provider', 'anthropic']);

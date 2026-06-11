@@ -491,6 +491,27 @@ section h2,
   color: var(--muted);
   font-size: 13px;
 }
+.doctor-fixes {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.doctor-fixes summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.doctor-fixes code {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-strong) 70%, transparent);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre;
+  direction: ltr;
+}
 .task-row {
   display: flex;
   align-items: center;

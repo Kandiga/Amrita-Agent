@@ -261,12 +261,20 @@ export const METHODS: Record<string, RpcMethod> = {
       text: z.string().min(1),
       provider: z.string().optional(),
       model: z.string().optional(),
+      role: z.enum(['fast', 'main', 'deep']).optional(),
       accountId: z.string().optional(),
       dryRun: z.boolean().optional(),
       channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
     }),
     (k, p) => k.runChatTurn(clean(p)),
   ),
+  'providers.roles': def(z.object({}).optional(), (k) => ({
+    roles: (['fast', 'main', 'deep'] as const).map((role) => {
+      const binding = k.getRoleBinding(role);
+      const resolved = k.resolveRole(role);
+      return { role, binding: binding ?? null, resolvesTo: resolved.provider, via: resolved.via };
+    }),
+  })),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
 
   // Honest readiness: `ready` only when the surface actually works end-to-end

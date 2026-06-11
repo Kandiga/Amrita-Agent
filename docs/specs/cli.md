@@ -49,8 +49,11 @@ amrita account connect --provider PROVIDER [--label LABEL] [--auth-mode MODE] --
 amrita account bind-secret <ACCOUNT_ID> <ENV_NAME> --db PATH
 amrita account status <ACCOUNT_ID> --db PATH
 
-amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--model MODEL] --db PATH
+amrita chat <TEXT> [--project ID_OR_SLUG] [--conversation ID] [--provider mock] [--role fast|main|deep] [--model MODEL] --db PATH
 amrita provider list --db PATH
+amrita role list --db PATH                                 # fast/main/deep → provider [binding|auto]
+amrita role set <fast|main|deep> <provider> [--model M] --db PATH
+amrita role clear <fast|main|deep> --db PATH               # back to auto
 
 amrita lane list [--project ID_OR_SLUG] [--conversation ID] [--status STATUS] --db PATH
 amrita lane start --goal TEXT [--project ID_OR_SLUG] [--conversation ID] [--kind claude-code] [--dry-run] [--real] --db PATH

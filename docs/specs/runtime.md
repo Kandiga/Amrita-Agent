@@ -67,8 +67,9 @@ deterministic and free of provider/tool/lane execution.
 | `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |
 | `lanes.cancel` | `{laneId}` | `{laneId, cancelled, status}` |
-| `chat.turn` | `{conversationId, text, provider?, model?, accountId?, dryRun?, channel?}` | turn result (secret-free) |
-| `providers.list` | — | provider availability (no secret values) |
+| `chat.turn` | `{conversationId, text, provider?, model?, role?, accountId?, dryRun?, channel?}` | turn result (secret-free; includes the resolved `role`) |
+| `providers.list` | — | provider availability incl. honest `streaming` capability (no secret values) |
+| `providers.roles` | — | per-role `{binding\|null, resolvesTo, via: binding\|auto}` (ADR-0017) |
 
 A **chat turn** records the user message, `await`s the provider boundary (default `mock`), and
 persists the assistant message + `turn.*`/`model.*` events (ADR-0011/0012). The assistant message is a
@@ -81,7 +82,14 @@ whose env var is present; the secret **value** is read only at adapter construct
 events/RPC/CLI/logs. Selection: `provider=anthropic|openai` uses the given `accountId` or the first
 configured account for that provider, else a safe `not_found`. Errors are structured and value-free:
 `missing_secret_ref` · `missing_env_value` · `not_found` · `provider_unavailable` · `provider_error`.
-`providers.list` reports `available`/`configuredAccounts`/`envReady` (booleans only).
+`providers.list` reports `available`/`configuredAccounts`/`envReady`/`streaming` (booleans only —
+`streaming` is true only for providers that actually implement `generateStream`, ADR-0016; never
+faked for the real adapters until SSE lands).
+
+**Role policy (ADR-0017):** `chat.turn {role: fast|main|deep}` resolves via the
+`providers.role.<role>` settings binding, else `auto` (first available real provider, else mock).
+An explicit `provider` always wins. The resolved role is persisted on `model.request` and
+returned on the result.
 
 Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the originating/system
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to
