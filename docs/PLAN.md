@@ -10,7 +10,7 @@
 - **Conversation is the interface.** One chat pane; a sidebar of projects and sessions.
 - **Projects are the unit of memory.** Opening a project talks to an Amrita that knows its brief,
   decisions, tasks, history, and git state.
-- **Connectors, not shells.** Claude Code (and later Codex/Gemini/Open Design) are optional lanes
+- **Connectors, not shells.** Claude Code (and later Codex/Gemini/other coding agents) are optional lanes
   that open beside the chat and keep working if you close them.
 - **Honest integrations.** Only official auth paths. Unconfigured shows "needs setup"; nothing is
   ever faked. No OAuth-token harvesting, ever.
