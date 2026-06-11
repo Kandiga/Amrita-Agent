@@ -79,7 +79,10 @@ deterministic and free of provider/tool/lane execution.
 | `projects.timeline.list` | `{projectId, limit?}` | events, newest first — derived from the log |
 | `chat.turn` | `{conversationId, text, provider?, model?, role?, accountId?, dryRun?, channel?}` | turn result (secret-free; includes the resolved `role`) |
 | `providers.list` | — | provider availability incl. honest `streaming` capability (no secret values) |
-| `providers.roles` | — | per-role `{binding\|null, resolvesTo, via: binding\|auto}` (ADR-0017) |
+| `providers.roles` | `{projectId?}` | per-role `{binding, projectBinding, resolvesTo, model?, via: project\|binding\|auto}` (ADR-0017/0019) |
+| `runtime.status` | `{projectId?}` | the Settings-Hub aggregate: `{roles, providers, codingRuntimes}` — coding runtimes probed with bounded no-shell commands, classified honestly (ADR-0019 §6), never green on an inconclusive probe |
+| `providers.role.set` | `{role, provider, model?, projectId?}` | `{ok}` — THE validated role-binding write path (provider checked against the catalog, project must exist) |
+| `providers.role.clear` | `{role, projectId?}` | `{ok}` — resolution falls back (project→global→auto) |
 
 A **chat turn** records the user message, `await`s the provider boundary (default `mock`), and
 persists the assistant message + `turn.*`/`model.*` events (ADR-0011/0012). The assistant message is a
@@ -102,8 +105,12 @@ fast|main|deep}` resolves **project binding > global binding > auto** — the pr
 conversation), the global one is `providers.role.<role>`, and `auto` is the first *available*
 real provider, else mock. An explicit `provider` always wins. `providers.roles {projectId?}`
 reports both scopes plus the effective resolution (`via: project|binding|auto`). The resolved
-role is persisted on `model.request` and returned on the result. Lane/task and session scopes
-are additive keys on the same resolver (future).
+role **and its scope provenance** are persisted on `model.request` (`via:
+explicit|project|binding|auto|default`, ADR-0019) and returned on the result — so switching
+the brain never rewrites history: each turn keeps the provider/model/scope it actually ran
+under, and project memory/conversations are provider-independent by construction (enforced by
+`test/invariance.test.ts`). Lane/task and session scopes are additive keys on the same
+resolver (future).
 
 Global-config writes (`settings`/`accounts`) still carry a `conversationId` (the originating/system
 conversation) because every event has an envelope (ADR-0007). Entity writes default `origin` to

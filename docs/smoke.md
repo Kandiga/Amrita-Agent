@@ -103,6 +103,22 @@ lane**. A lane card appears from the live event stream with the mandate recorded
 unless the daemon was started with `AMRITA_LANES_ALLOW_REAL_EXECUTION=1`. Active lanes show a
 **Cancel** button (`exit: cancelled`).
 
+## 5b. The Settings & Runtime Hub (ADR-0019)
+
+Press **Settings** in the top bar. The inspector becomes the Runtime Hub:
+
+- **Amrita brain** — set `main` to `mock` with model `my-brain` for the open project; the row
+  shows `→ mock (my-brain)` with a `project` badge. Go back to **Project**, send a message: the
+  turn metadata shows the new model. **Switching changed nothing else** — transcript, brief,
+  questions, milestones, and timeline are all exactly as you left them (this invariance is also
+  enforced by the daemon test suite). Each older turn keeps the model it actually ran under —
+  check the Activity panel's `model.request` entries.
+- **Coding runtimes** — the Claude Code card shows a probed, honest state (`ready` only when
+  both the version and auth probes succeed; otherwise not-logged-in / not-installed / unknown,
+  each with the exact next command). It is visible no matter which provider is the brain.
+- CLI equivalents: `pnpm amrita -- runtime status --project system --db ~/.amrita/amrita.db`,
+  `pnpm amrita -- role set main mock --model my-brain --project system --db ~/.amrita/amrita.db`.
+
 ## 6. Inspect runtime status
 
 - **Web:** the **Runtime** panel shows the doctor report — per-section chips (`ok` / `needs

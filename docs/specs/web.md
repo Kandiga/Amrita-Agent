@@ -93,6 +93,36 @@ The daemon's control surface requires a bearer token (see [runtime.md](runtime.m
   “Unauthorized” banner) instead of a raw error line; a successful load clears it;
 - saving an empty token clears it. The token is *local control-surface config*, not a provider secret.
 
+## Component layout (Phase 8 split)
+
+`App.tsx` owns shell state (auth, stream, chat, knowledge writes); presentational/self-contained
+panels live in `src/components/`: `NextActionsPanel`, `RuntimePanel` (doctor), `SurfacePanel`,
+`TimelinePanel`, `LanesPanel` (owns its own form state), and `SettingsRuntimeHub`. The RPC
+client is a shared singleton in `src/client.ts` (one token-bearing instance for all callers).
+Remaining knowledge panels (brief/questions/risks/milestones/tasks/memory/decisions) stay in
+App pending a state-context refactor (ledger debt).
+
+## Settings & Runtime Hub (ADR-0019)
+
+A topbar toggle switches the inspector between Project Brain and the Hub:
+
+- **Amrita brain** — per-role (fast/main/deep) effective resolution with `via` scope badges;
+  set/clear controls at global and per-project scope through `providers.role.set/clear`. Copy
+  states the invariance promise: switching never touches project memory.
+- **Coding runtimes** — Claude Code as one honestly-probed card (state, version, real-exec
+  posture, exact next command), visible **regardless of which model is the brain**; future
+  bridges (Codex/OpenCode/local) labeled *future*, never green.
+- **Connectors** — categories listed honestly (API providers with configured/ready counts,
+  local mock, subscription via Claude Code's own login, Hermes/MCP future). No secret value
+  ever reaches the component; status booleans and env names only.
+
+## Surface Stage-B harness (`src/sandbox.ts`)
+
+Shipped before any preview UI: `PREVIEW_SANDBOX` (never `allow-same-origin` — asserted),
+zero-network CSP baked into every srcdoc, a 256 KB inline budget that throws toward the D9
+spill path, and `assertSafeSandbox` guarding future call sites. No renderer exists yet — rich
+previews land only with the approval flow (strategy §2.3 Stage B/C).
+
 ## Lanes panel (WO#5.2)
 
 `src/lanes-state.ts` is a pure reducer over `lane.*` events; `App.tsx` renders a Lanes panel fed from

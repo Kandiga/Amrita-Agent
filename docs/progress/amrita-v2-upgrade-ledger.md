@@ -130,4 +130,48 @@ One ledger, updated per phase — no scattered notes.
   (health/401/brief/evidence-enforcement/risk/milestone/timeline) executed this session; roles
   + surface verified through unit/CLI layers.
 - **Push:** attempted; sandbox has denied `git push` in all prior sessions — exact command for
-  Boni recorded in the session report if it repeats.
+  Boni recorded in the session report if it repeats. (Boni pushed successfully and verified
+  `7f6e615` == origin/v2-main.)
+
+## Phase 8 — Settings & Runtime Hub / Surface Stage B prep
+- **Start commit:** `7f6e615` (== origin/v2-main, clean tree, all gates green: 229 root / 43
+  web at start).
+- **Scope:** the next-phase directive — App split, runtime-selection contract (ADR-0019),
+  Settings & Runtime Hub, memory/session invariance proofs, Stage-B sandbox harness,
+  lane-receipt artifact, CLI parity.
+- **Reality inspection:** no dirty state; no failures; debt list from Phase 7 confirmed
+  current (App.tsx split was the top item — paid this phase).
+- **Files changed:**
+  - split (`df9fa72`): `src/components/{NextActionsPanel,RuntimePanel,SurfacePanel,
+    TimelinePanel,LanesPanel}.tsx`, `src/client.ts` singleton, doctor types → `api.ts`;
+    App.tsx ~1500→~1190 lines, behavior preserved (43→44 web tests green through the split);
+    `lane-receipt` Stage-A artifact added with tests.
+  - backend (`540f1d9`): ADR-0019; `src/runtimes.ts` (bounded no-shell probes, injectable
+    prober, 5 honest states); `runtime.status` + `providers.role.set/clear` RPC (single
+    validated write path; CLI switched off raw settings keys); kernel `systemWriteContext`;
+    `model.request.via` provenance (protocol change per ADR); `amrita runtime status`.
+  - hub (`e063068`): `SettingsRuntimeHub.tsx` + topbar Project/Settings toggle; typed
+    `runtimeStatus/roleSet/roleClear` wrappers + tests; hub CSS (stacked cards, mobile-safe).
+  - invariance + harness (`5c09aaf`): `test/invariance.test.ts` (8 invariants from the
+    directive proven); `src/sandbox.ts` + tests (Stage-B contract shipped before any preview
+    UI exists).
+- **Runtime architecture decisions:** one resolver, no vendor specials; brain ⊥ execution
+  (coding-runtime card independent of brain bindings); probe-or-unknown honesty; official
+  routes only (no "Claude Max API", no scraping — ADR-0019 §8); `via` provenance on every turn.
+- **Memory/session invariance checks:** same conversation across switch ✓ · state intact ✓ ·
+  new turn uses new resolution ✓ · old turns keep original provenance ✓ · timeline spans both ✓
+  · no hidden provider state needed ✓ · no cross-project leak ✓ · clear falls back without
+  deleting ✓.
+- **UI behavior:** Hub honest by construction (probed states, future-labeled categories, no
+  green without proof); brain copy states the invariance promise; mobile reflow inherited.
+- **Tests/gates:** final counts in the session report; all green before push attempt. CLI
+  `runtime status` has no CLI-layer test by design — the default prober would probe the real
+  machine (nondeterministic); the logic is covered at the daemon layer with injected probers.
+- **Live smoke:** see session report (HTTP: health/401/role-set via Hub path/switch-
+  continuity/runtime.status).
+- **Limitations:** review/QA/planning runtime roles are documented-reserved, not selectable;
+  no lane/task/session scope keys yet (same resolver, additive); no preview renderer (harness
+  only, by design); brand memory B1 deferred → next phase; Hermes bridge remains
+  discovery-based future.
+- **Next phase:** Brand memory B1 + first sandboxed `html-preview` behind an approval state +
+  knowledge-panel componentization (the remaining App.tsx debt).
