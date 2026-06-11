@@ -1,6 +1,7 @@
 import { ClaudeCodeLaneRunner, type LaneRunner } from '@amrita/lanes';
 import {
   type AmritaEvent,
+  type ConnectorStatusReport,
   type ConversationRow,
   type MergeReport,
   type ProjectRow,
@@ -38,6 +39,8 @@ import {
   type TaskStatus,
   openStore,
 } from '@amrita/store';
+import { connectorStatuses } from './connectors.ts';
+import { fetchGithubIssues } from './github.ts';
 import {
   type ChatProvider,
   type ChatUsage,
@@ -1028,6 +1031,66 @@ export class AmritaKernel {
 
   listConnectors(): ConnectorRow[] {
     return this.store.listConnectors();
+  }
+
+  /** Live connector states (ADR-0022). Probes run through the injected fetch. */
+  connectorStatus(): Promise<ConnectorStatusReport[]> {
+    return connectorStatuses(this.fetchImpl);
+  }
+
+  /**
+   * One-way GitHub issues → tasks import (ADR-0022). Idempotent: issues whose
+   * `externalRef` already exists in the project are skipped, and the partial
+   * unique index backs that up at the database level. Never writes to GitHub.
+   */
+  async importGithubIssues(
+    input: {
+      projectId: string;
+      conversationId: string;
+      repo: string;
+      state?: 'open' | 'all';
+      limit?: number;
+    } & EntityWriteOpts,
+  ): Promise<{
+    repo: string;
+    imported: number;
+    skipped: number;
+    total: number;
+    tasks: { taskId: string; externalRef: string; title: string }[];
+  }> {
+    const issues = await fetchGithubIssues(this.fetchImpl, {
+      repo: input.repo,
+      ...(input.state ? { state: input.state } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+    const existing = this.store.listTaskExternalRefs(input.projectId);
+    const created: { taskId: string; externalRef: string; title: string }[] = [];
+    let skipped = 0;
+    for (const issue of issues) {
+      const externalRef = `github:${input.repo}#${issue.number}`;
+      if (existing.has(externalRef)) {
+        skipped++;
+        continue;
+      }
+      const title = `#${issue.number} · ${issue.title}`;
+      const { taskId } = this.store.createTask({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        title,
+        body: `Imported from ${issue.url}`,
+        externalRef,
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.channel ? { channel: input.channel } : {}),
+      });
+      created.push({ taskId, externalRef, title });
+    }
+    return {
+      repo: input.repo,
+      imported: created.length,
+      skipped,
+      total: issues.length,
+      tasks: created,
+    };
   }
 
   listLanes(filters: {

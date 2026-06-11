@@ -44,6 +44,20 @@ interface ProviderInfoLite {
   configuredAccounts: number;
   envReady: boolean;
 }
+interface ConnectorStatusLite {
+  manifest: { slug: string; title: string };
+  state: string;
+  detail: string;
+  missingEnv: string[];
+  nextCommand?: string;
+}
+interface GithubImportLite {
+  repo: string;
+  imported: number;
+  skipped: number;
+  total: number;
+  tasks: { taskId: string; externalRef: string; title: string }[];
+}
 interface HealthLite {
   schemaVersion: number;
   dbPath: string;
@@ -297,6 +311,52 @@ export const COMMANDS: Record<string, Command> = {
         task.conversationId ?? (await ensureDefaultConversation(client, task.projectId));
       await client.call('tasks.complete', { projectId: task.projectId, conversationId, taskId });
       return { result: { ok: true, taskId }, summary: `completed ${taskId}` };
+    },
+  },
+
+  'connectors status': {
+    describe: 'live connector states (ADR-0022) — probe-backed, never fake green',
+    async run(client) {
+      const reports = await client.call<ConnectorStatusLite[]>('connectors.status');
+      const lines = reports.map((r) => {
+        const head = `${r.manifest.title} (${r.manifest.slug})  ${r.state}`;
+        const cmd = r.nextCommand ? `\n  fix: ${r.nextCommand}` : '';
+        return `${head}\n  ${r.detail}${cmd}`;
+      });
+      return { result: reports, summary: lines.join('\n') || '(no connectors registered)' };
+    },
+  },
+
+  'github import': {
+    describe: 'one-way import of GitHub issues into tasks (idempotent, provenance-tagged)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const repo = strFlag(flags, 'repo');
+      if (!project || !repo) {
+        throw new CliError(
+          'usage: amrita github import --project <ID_OR_SLUG> --repo <owner/name> [--state open|all] [--limit N]',
+        );
+      }
+      const ctx = await resolveWriteContext(client, {
+        project,
+        conversation: strFlag(flags, 'conversation'),
+      });
+      const state = strFlag(flags, 'state');
+      const limit = strFlag(flags, 'limit');
+      const r = await client.call<GithubImportLite>('github.importIssues', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        repo,
+        ...(state === 'open' || state === 'all' ? { state } : {}),
+        ...(limit ? { limit: Number(limit) } : {}),
+        channel: 'cli',
+      });
+      const listing = r.tasks.map((t) => `  + ${t.title}  (${t.externalRef})`).join('\n');
+      const head = `${r.repo}: imported ${r.imported}, skipped ${r.skipped} (already present), of ${r.total} issues`;
+      return {
+        result: r,
+        summary: listing ? `${head}\n${listing}` : head,
+      };
     },
   },
 

@@ -42,7 +42,13 @@ describe('amrita CLI', () => {
     const r = await cli(['health']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('amritad');
-    expect(r.out).toContain('schema v5');
+    expect(r.out).toContain('schema v6');
+  });
+
+  it('tolerates the bare -- separator pnpm inserts (`pnpm amrita -- doctor`)', async () => {
+    const r = await cli(['--', 'health']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('amritad');
   });
 
   it('doctor renders grouped sections with marks and a numbered fix footer', async () => {
@@ -270,7 +276,7 @@ describe('amrita CLI', () => {
 
   it('--json emits structured output and errors', async () => {
     const h = await cli(['health', '--json']);
-    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(5);
+    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(6);
     const bad = await cli(['bogus', 'command', '--json']);
     expect(bad.code).toBe(2);
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');
@@ -429,6 +435,30 @@ describe('amrita CLI', () => {
     const cancel = await cli(['lane', 'cancel', started.laneId]);
     expect(cancel.code).toBe(0);
     expect(cancel.out).toContain('not active');
+  });
+
+  it('connectors status + github import are honest without a token (no network attempted)', async () => {
+    // determinism: the host may have a real GITHUB_TOKEN — remove it for the test
+    const ghEnv = 'GITHUB_TOKEN';
+    const saved = process.env[ghEnv];
+    delete process.env[ghEnv];
+    try {
+      const status = await cli(['connectors', 'status']);
+      expect(status.code).toBe(0);
+      expect(status.out).toContain('GitHub (github)  needs_setup');
+      expect(status.out).toContain('GITHUB_TOKEN');
+
+      await cli(['project', 'ensure', 'gh']);
+      const imp = await cli(['github', 'import', '--project', 'gh', '--repo', 'octo/repo']);
+      expect(imp.code).not.toBe(0);
+      expect(imp.err).toContain('GITHUB_TOKEN'); // env NAME in the error, never a value
+
+      const usage = await cli(['github', 'import', '--project', 'gh']);
+      expect(usage.code).toBe(2);
+      expect(usage.err).toContain('--repo');
+    } finally {
+      if (saved !== undefined) process.env[ghEnv] = saved;
+    }
   });
 
   it('usage errors exit non-zero', async () => {

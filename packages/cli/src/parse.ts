@@ -13,6 +13,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
+    // a bare `--` is pnpm's script/args separator (`pnpm amrita -- doctor ...`) — skip it,
+    // otherwise it reads as an empty flag that swallows the command word
+    if (a === '--') continue;
     if (a.startsWith('--')) {
       const body = a.slice(2);
       const eq = body.indexOf('=');

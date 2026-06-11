@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { runDoctor } from './doctor.ts';
+import { GithubError } from './github.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { ProviderError } from './provider.ts';
 import { clean } from './util.ts';
@@ -343,6 +344,21 @@ export const METHODS: Record<string, RpcMethod> = {
   })),
 
   'connectors.list': def(z.object({}).optional(), (k) => k.listConnectors()),
+  // live, probe-backed states for code-registered connector manifests (ADR-0022)
+  'connectors.status': def(z.object({}).optional(), (k) => k.connectorStatus()),
+
+  // ── GitHub import (ADR-0022, one-way) ─────────────────────────────────────
+  'github.importIssues': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
+      repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'expected owner/repo'),
+      state: z.enum(['open', 'all']).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    (k, p) => k.importGithubIssues(clean(p)),
+  ),
 
   'lanes.list': def(
     z.object({
@@ -551,6 +567,15 @@ export async function dispatch(kernel: AmritaKernel, raw: unknown): Promise<RpcR
     }
     if (e instanceof ProviderError) {
       const code = e.code === 'unknown_provider' ? 'invalid_params' : e.code;
+      return err(id, code, e.message);
+    }
+    if (e instanceof GithubError) {
+      const code: RpcErrorCode =
+        e.code === 'needs_setup'
+          ? 'missing_env_value'
+          : e.code === 'not_found'
+            ? 'not_found'
+            : 'provider_error';
       return err(id, code, e.message);
     }
     const message = e instanceof Error ? e.message : String(e);

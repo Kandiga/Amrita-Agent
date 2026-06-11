@@ -1,3 +1,4 @@
+import { CONNECTOR_MANIFESTS } from './connectors.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { PROVIDER_ROLES, envPresent } from './provider.ts';
 
@@ -208,6 +209,31 @@ function channelSection(): DoctorSection {
   };
 }
 
+function connectorSection(): DoctorSection {
+  const checks: DoctorCheck[] = CONNECTOR_MANIFESTS.map((m) => {
+    const missing = m.requiredEnv.filter((name) => !envPresent(name));
+    if (missing.length > 0) {
+      return {
+        id: `connector.${m.slug}`,
+        label: `${m.title} connector`,
+        status: 'warn' as const,
+        detail: `needs setup — missing env: ${missing.join(', ')}`,
+        ...(m.setupCommands[0] ? { fix: m.setupCommands[0] } : {}),
+      };
+    }
+    // Doctor is synchronous → presence-only. `connected` needs the live probe
+    // behind `connectors.status` (ADR-0022); never claim it from here.
+    return {
+      id: `connector.${m.slug}`,
+      label: `${m.title} connector`,
+      status: 'ok' as const,
+      detail:
+        'env configured (presence-checked only) — verify live with the connectors.status RPC / Setup Hub',
+    };
+  });
+  return { title: 'connectors', checks };
+}
+
 function authSection(): DoctorSection {
   const fromEnv = envPresent('AMRITA_AUTH_TOKEN');
   return {
@@ -235,6 +261,7 @@ export function runDoctor(kernel: AmritaKernel): DoctorReport {
     providerSection(kernel),
     laneSection(kernel),
     channelSection(),
+    connectorSection(),
     authSection(),
   ];
   const all = sections.flatMap((s) => s.checks);
