@@ -80,6 +80,32 @@ function laneGoal(lane: LaneLite): string {
   }
 }
 
+interface CompanionLite {
+  brief: {
+    goal: string;
+    audience: string | null;
+    successCriteria: string[];
+    scope: string[];
+    noScope: string[];
+  } | null;
+  questions: { id: string; text: string; status: string }[];
+  risks: { id: string; text: string; status: string; severity: string | null }[];
+  milestones: { id: string; title: string; status: string; targetDate: string | null }[];
+}
+
+interface TimelineEventLite {
+  ts: string;
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+/** A one-line human summary for a timeline event (no protocol details leaked). */
+function timelineSummary(e: TimelineEventLite): string {
+  const p = e.payload;
+  const text = p.text ?? p.title ?? p.goal ?? p.note ?? p.reason ?? p.resolution ?? '';
+  return typeof text === 'string' ? text.slice(0, 80) : '';
+}
+
 interface DoctorCheckLite {
   label: string;
   status: 'ok' | 'warn' | 'fail';
@@ -283,6 +309,300 @@ export const COMMANDS: Record<string, Command> = {
         text,
       });
       return { result: r, summary: `decision ${r.decisionId}` };
+    },
+  },
+
+  'brief get': {
+    describe: 'show the project brief (goal, success criteria, scope)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita brief get --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<CompanionLite>('projects.companion.get', { projectId });
+      if (!c.brief)
+        return { result: null, summary: '(no brief yet — set one with: amrita brief set)' };
+      const b = c.brief;
+      const lines = [
+        `goal: ${b.goal}`,
+        ...(b.audience ? [`audience: ${b.audience}`] : []),
+        ...(b.successCriteria.length ? [`success: ${b.successCriteria.join(' · ')}`] : []),
+        ...(b.scope.length ? [`scope: ${b.scope.join(' · ')}`] : []),
+        ...(b.noScope.length ? [`out of scope: ${b.noScope.join(' · ')}`] : []),
+      ];
+      return { result: b, summary: lines.join('\n') };
+    },
+  },
+  'brief set': {
+    describe: 'create/replace the project brief (lists are ;-separated)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const goal = strFlag(flags, 'goal');
+      if (!project || !goal) {
+        throw new CliError(
+          'usage: amrita brief set --project <ID_OR_SLUG> --goal TEXT [--audience TEXT] [--criteria a;b] [--scope a;b] [--no-scope a;b]',
+        );
+      }
+      const list = (name: string) =>
+        (strFlag(flags, name) ?? '')
+          .split(';')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+      const ctx = await resolveWriteContext(client, { project });
+      const audience = strFlag(flags, 'audience');
+      await client.call('projects.brief.update', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        goal,
+        ...(audience ? { audience } : {}),
+        successCriteria: list('criteria'),
+        scope: list('scope'),
+        noScope: list('no-scope'),
+      });
+      return { result: { ok: true, goal }, summary: `brief set · ${goal}` };
+    },
+  },
+
+  'question list': {
+    describe: 'list project questions (open/resolved/dropped)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita question list --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<CompanionLite>('projects.companion.get', { projectId });
+      return {
+        result: c.questions,
+        summary: c.questions.length
+          ? c.questions.map((q) => `[${q.status}] ${q.text}  ${q.id}`).join('\n')
+          : '(no questions yet)',
+      };
+    },
+  },
+  'question open': {
+    describe: 'record an open question for the project',
+    async run(client, { positionals, flags }) {
+      const project = strFlag(flags, 'project');
+      const text = positionals.join(' ');
+      if (!project || !text) {
+        throw new CliError('usage: amrita question open <TEXT> --project <ID_OR_SLUG>');
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      const r = await client.call<{ questionId: string }>('projects.questions.open', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        text,
+      });
+      return { result: r, summary: `question ${r.questionId}` };
+    },
+  },
+  'question resolve': {
+    describe: 'resolve a question with a note (--note) and/or a decision (--decision)',
+    async run(client, { positionals, flags }) {
+      const questionId = positionals[0];
+      const note = strFlag(flags, 'note');
+      const decision = strFlag(flags, 'decision');
+      const project = strFlag(flags, 'project');
+      if (!questionId || !project || (!note && !decision)) {
+        throw new CliError(
+          'usage: amrita question resolve <QUESTION_ID> --project <ID_OR_SLUG> (--note TEXT | --decision DECISION_ID)',
+        );
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      await client.call('projects.questions.resolve', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        questionId,
+        ...(note ? { resolution: note } : {}),
+        ...(decision ? { resolvedByDecisionId: decision } : {}),
+      });
+      return { result: { ok: true, questionId }, summary: `resolved ${questionId}` };
+    },
+  },
+  'question drop': {
+    describe: 'drop a question with a reason',
+    async run(client, { positionals, flags }) {
+      const questionId = positionals[0];
+      const reason = strFlag(flags, 'reason');
+      const project = strFlag(flags, 'project');
+      if (!questionId || !project || !reason) {
+        throw new CliError(
+          'usage: amrita question drop <QUESTION_ID> --project <ID_OR_SLUG> --reason TEXT',
+        );
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      await client.call('projects.questions.drop', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        questionId,
+        reason,
+      });
+      return { result: { ok: true, questionId }, summary: `dropped ${questionId}` };
+    },
+  },
+
+  'risk list': {
+    describe: 'list project risks',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita risk list --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<CompanionLite>('projects.companion.get', { projectId });
+      return {
+        result: c.risks,
+        summary: c.risks.length
+          ? c.risks
+              .map((r) => `[${r.status}]${r.severity ? ` (${r.severity})` : ''} ${r.text}  ${r.id}`)
+              .join('\n')
+          : '(no risks yet)',
+      };
+    },
+  },
+  'risk open': {
+    describe: 'record a risk (--severity low|medium|high)',
+    async run(client, { positionals, flags }) {
+      const project = strFlag(flags, 'project');
+      const text = positionals.join(' ');
+      if (!project || !text) {
+        throw new CliError(
+          'usage: amrita risk open <TEXT> --project <ID_OR_SLUG> [--severity low|medium|high]',
+        );
+      }
+      const severity = strFlag(flags, 'severity');
+      const ctx = await resolveWriteContext(client, { project });
+      const r = await client.call<{ riskId: string }>('projects.risks.open', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        text,
+        ...(severity ? { severity } : {}),
+      });
+      return { result: r, summary: `risk ${r.riskId}` };
+    },
+  },
+  'risk resolve': {
+    describe: 'resolve a risk with a note (--note) and/or a decision (--decision)',
+    async run(client, { positionals, flags }) {
+      const riskId = positionals[0];
+      const note = strFlag(flags, 'note');
+      const decision = strFlag(flags, 'decision');
+      const project = strFlag(flags, 'project');
+      if (!riskId || !project || (!note && !decision)) {
+        throw new CliError(
+          'usage: amrita risk resolve <RISK_ID> --project <ID_OR_SLUG> (--note TEXT | --decision DECISION_ID)',
+        );
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      await client.call('projects.risks.resolve', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        riskId,
+        ...(note ? { resolution: note } : {}),
+        ...(decision ? { resolvedByDecisionId: decision } : {}),
+      });
+      return { result: { ok: true, riskId }, summary: `resolved ${riskId}` };
+    },
+  },
+  'risk drop': {
+    describe: 'drop a risk with a reason',
+    async run(client, { positionals, flags }) {
+      const riskId = positionals[0];
+      const reason = strFlag(flags, 'reason');
+      const project = strFlag(flags, 'project');
+      if (!riskId || !project || !reason) {
+        throw new CliError(
+          'usage: amrita risk drop <RISK_ID> --project <ID_OR_SLUG> --reason TEXT',
+        );
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      await client.call('projects.risks.drop', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        riskId,
+        reason,
+      });
+      return { result: { ok: true, riskId }, summary: `dropped ${riskId}` };
+    },
+  },
+
+  'milestone list': {
+    describe: 'list project milestones',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita milestone list --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<CompanionLite>('projects.companion.get', { projectId });
+      return {
+        result: c.milestones,
+        summary: c.milestones.length
+          ? c.milestones
+              .map(
+                (m) =>
+                  `[${m.status}] ${m.title}${m.targetDate ? ` (→ ${m.targetDate})` : ''}  ${m.id}`,
+              )
+              .join('\n')
+          : '(no milestones yet)',
+      };
+    },
+  },
+  'milestone create': {
+    describe: 'create a milestone (--target YYYY-MM-DD)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const title = strFlag(flags, 'title');
+      if (!project || !title) {
+        throw new CliError(
+          'usage: amrita milestone create --project <ID_OR_SLUG> --title TITLE [--target YYYY-MM-DD] [--description TEXT]',
+        );
+      }
+      const target = strFlag(flags, 'target');
+      const description = strFlag(flags, 'description');
+      const ctx = await resolveWriteContext(client, { project });
+      const r = await client.call<{ milestoneId: string }>('projects.milestones.create', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        title,
+        ...(target ? { targetDate: target } : {}),
+        ...(description ? { description } : {}),
+      });
+      return { result: r, summary: `milestone ${r.milestoneId}` };
+    },
+  },
+  'milestone complete': {
+    describe: 'mark a milestone done',
+    async run(client, { positionals, flags }) {
+      const milestoneId = positionals[0];
+      const project = strFlag(flags, 'project');
+      if (!milestoneId || !project) {
+        throw new CliError(
+          'usage: amrita milestone complete <MILESTONE_ID> --project <ID_OR_SLUG>',
+        );
+      }
+      const ctx = await resolveWriteContext(client, { project });
+      await client.call('projects.milestones.complete', {
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId,
+        milestoneId,
+      });
+      return { result: { ok: true, milestoneId }, summary: `completed ${milestoneId}` };
+    },
+  },
+
+  timeline: {
+    describe: 'project activity, newest first (derived from the event log)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita timeline --project <ID_OR_SLUG> [--limit N]');
+      const projectId = await resolveProjectId(client, project);
+      const limitRaw = strFlag(flags, 'limit');
+      const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
+      const events = await client.call<TimelineEventLite[]>('projects.timeline.list', {
+        projectId,
+        ...(limit && Number.isFinite(limit) ? { limit } : {}),
+      });
+      return {
+        result: events,
+        summary: events.length
+          ? events.map((e) => `${e.ts}  ${e.type}  ${timelineSummary(e)}`).join('\n')
+          : '(no activity yet)',
+      };
     },
   },
 

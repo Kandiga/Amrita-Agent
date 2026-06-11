@@ -133,6 +133,7 @@ export const METHODS: Record<string, RpcMethod> = {
       ...writeOpts,
       title: z.string().min(1),
       status: z.enum(['now', 'later', 'done', 'dropped']).optional(),
+      milestoneId: z.string().optional(),
     }),
     (k, p) => k.createTask(clean(p)),
   ),
@@ -146,6 +147,115 @@ export const METHODS: Record<string, RpcMethod> = {
   ),
   'tasks.complete': def(z.object({ ...convCtx, ...writeOpts, taskId: z.string() }), (k, p) =>
     k.completeTask(clean(p)),
+  ),
+
+  // ── project companion (ADR-0018) ──────────────────────────────────────────
+
+  'projects.companion.get': def(z.object({ projectId: z.string() }), (k, p) =>
+    k.getCompanion(p.projectId),
+  ),
+  'projects.brief.update': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      goal: z.string().min(1).max(2000),
+      audience: z.string().min(1).max(500).optional(),
+      successCriteria: z.array(z.string().min(1).max(500)).max(20).optional(),
+      scope: z.array(z.string().min(1).max(500)).max(50).optional(),
+      noScope: z.array(z.string().min(1).max(500)).max(50).optional(),
+      sourceMessageId: z.string().optional(),
+    }),
+    (k, p) => k.upsertBrief(clean(p)),
+  ),
+  'projects.questions.open': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      text: z.string().min(1).max(2000),
+      sourceMessageId: z.string().optional(),
+    }),
+    (k, p) => k.openQuestion(clean(p)),
+  ),
+  'projects.questions.resolve': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      questionId: z.string(),
+      resolution: z.string().min(1).max(2000).optional(),
+      resolvedByDecisionId: z.string().optional(),
+    }),
+    (k, p) => k.resolveQuestion(clean(p)),
+  ),
+  'projects.questions.drop': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      questionId: z.string(),
+      reason: z.string().min(1).max(2000),
+    }),
+    (k, p) => k.dropQuestion(clean(p)),
+  ),
+  'projects.risks.open': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      text: z.string().min(1).max(2000),
+      severity: z.enum(['low', 'medium', 'high']).optional(),
+      sourceMessageId: z.string().optional(),
+    }),
+    (k, p) => k.openRisk(clean(p)),
+  ),
+  'projects.risks.resolve': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      riskId: z.string(),
+      resolution: z.string().min(1).max(2000).optional(),
+      resolvedByDecisionId: z.string().optional(),
+    }),
+    (k, p) => k.resolveRisk(clean(p)),
+  ),
+  'projects.risks.drop': def(
+    z.object({ ...convCtx, ...writeOpts, riskId: z.string(), reason: z.string().min(1).max(2000) }),
+    (k, p) => k.dropRisk(clean(p)),
+  ),
+  'projects.milestones.create': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      title: z.string().min(1).max(300),
+      description: z.string().min(1).max(2000).optional(),
+      targetDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+    }),
+    (k, p) => k.createMilestone(clean(p)),
+  ),
+  'projects.milestones.update': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      milestoneId: z.string(),
+      title: z.string().min(1).max(300).optional(),
+      description: z.string().min(1).max(2000).optional(),
+      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      targetDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .nullable()
+        .optional(),
+    }),
+    (k, p) => k.updateMilestone(clean(p)), // clean() keeps null (targetDate unset = null)
+  ),
+  'projects.milestones.complete': def(
+    z.object({ ...convCtx, ...writeOpts, milestoneId: z.string() }),
+    (k, p) => k.completeMilestone(clean(p)),
+  ),
+  'projects.timeline.list': def(
+    z.object({ projectId: z.string(), limit: z.number().int().positive().max(500).optional() }),
+    (k, p) => k.listProjectEvents(p.projectId, p.limit),
   ),
 
   'decisions.record': def(z.object({ ...convCtx, ...writeOpts, text: z.string().min(1) }), (k, p) =>

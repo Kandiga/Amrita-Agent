@@ -67,6 +67,16 @@ deterministic and free of provider/tool/lane execution.
 | `lanes.start` | `{conversationId, goal, kind?, dryRun?, real?, detach?, scope?, budget?, contextPack?, approvals?, deliverables?}` | `{laneId, status, dryRun, detached, report?, error?}` |
 | `lanes.get` | `{laneId}` | lane row or `null` |
 | `lanes.cancel` | `{laneId}` | `{laneId, cancelled, status}` |
+| `projects.companion.get` | `{projectId}` | `{brief\|null, questions[], risks[], milestones[]}` — the Project Brain aggregate (ADR-0018) |
+| `projects.brief.update` | `{projectId, conversationId, goal, audience?, successCriteria?, scope?, noScope?, sourceMessageId?}` | `{ok}` (full-document upsert) |
+| `projects.questions.open` | `{projectId, conversationId, text, sourceMessageId?}` | `{questionId}` |
+| `projects.questions.resolve` | `{…, questionId, resolution? \| resolvedByDecisionId?}` (≥1 required) | `{ok}` |
+| `projects.questions.drop` | `{…, questionId, reason}` | `{ok}` |
+| `projects.risks.open/resolve/drop` | mirror questions (+ optional `severity` on open) | `{riskId}` / `{ok}` |
+| `projects.milestones.create` | `{…, title, description?, targetDate?, status?}` | `{milestoneId}` |
+| `projects.milestones.update` | `{…, milestoneId, title?, description?, status?, targetDate?}` | `{ok}` |
+| `projects.milestones.complete` | `{…, milestoneId}` | `{ok}` |
+| `projects.timeline.list` | `{projectId, limit?}` | events, newest first — derived from the log |
 | `chat.turn` | `{conversationId, text, provider?, model?, role?, accountId?, dryRun?, channel?}` | turn result (secret-free; includes the resolved `role`) |
 | `providers.list` | — | provider availability incl. honest `streaming` capability (no secret values) |
 | `providers.roles` | — | per-role `{binding\|null, resolvesTo, via: binding\|auto}` (ADR-0017) |

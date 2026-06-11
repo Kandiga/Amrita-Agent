@@ -42,7 +42,7 @@ describe('amrita CLI', () => {
     const r = await cli(['health']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('amritad');
-    expect(r.out).toContain('schema v3');
+    expect(r.out).toContain('schema v4');
   });
 
   it('doctor renders grouped sections with marks and a numbered fix footer', async () => {
@@ -107,6 +107,89 @@ describe('amrita CLI', () => {
     expect(list[0]?.status).toBe('done');
   });
 
+  it('companion: brief set/get, question + risk lifecycles, milestones, timeline', async () => {
+    await cli(['project', 'ensure', 'crm']);
+    // brief: honest empty, then set + get
+    expect((await cli(['brief', 'get', '--project', 'crm'])).out).toContain('no brief yet');
+    expect(
+      (
+        await cli([
+          'brief',
+          'set',
+          '--project',
+          'crm',
+          '--goal',
+          'ship the CRM',
+          '--criteria',
+          'login works;export works',
+          '--scope',
+          'web app',
+          '--no-scope',
+          'mobile',
+        ])
+      ).code,
+    ).toBe(0);
+    const brief = await cli(['brief', 'get', '--project', 'crm']);
+    expect(brief.out).toContain('goal: ship the CRM');
+    expect(brief.out).toContain('login works · export works');
+    expect(brief.out).toContain('out of scope: mobile');
+
+    // question: open → resolve requires evidence → resolve with note
+    const q = json<{ questionId: string }>(
+      await cli(['question', 'open', 'which auth provider?', '--project', 'crm', '--json']),
+    );
+    const noEvidence = await cli(['question', 'resolve', q.questionId, '--project', 'crm']);
+    expect(noEvidence.code).toBe(2); // usage error: a note or decision is required
+    expect(
+      (
+        await cli([
+          'question',
+          'resolve',
+          q.questionId,
+          '--project',
+          'crm',
+          '--note',
+          'magic links',
+        ])
+      ).code,
+    ).toBe(0);
+    expect((await cli(['question', 'list', '--project', 'crm'])).out).toContain('[resolved]');
+
+    // risk: open with severity → drop with reason
+    const r = json<{ riskId: string }>(
+      await cli(['risk', 'open', 'data loss', '--project', 'crm', '--severity', 'high', '--json']),
+    );
+    expect((await cli(['risk', 'list', '--project', 'crm'])).out).toContain('(high) data loss');
+    await cli(['risk', 'drop', r.riskId, '--project', 'crm', '--reason', 'mitigated by WAL']);
+    expect((await cli(['risk', 'list', '--project', 'crm'])).out).toContain('[dropped]');
+
+    // milestone: create → complete
+    const m = json<{ milestoneId: string }>(
+      await cli([
+        'milestone',
+        'create',
+        '--project',
+        'crm',
+        '--title',
+        'Alpha',
+        '--target',
+        '2026-07-01',
+        '--json',
+      ]),
+    );
+    expect((await cli(['milestone', 'list', '--project', 'crm'])).out).toContain(
+      '[planned] Alpha (→ 2026-07-01)',
+    );
+    await cli(['milestone', 'complete', m.milestoneId, '--project', 'crm']);
+    expect((await cli(['milestone', 'list', '--project', 'crm'])).out).toContain('[done] Alpha');
+
+    // timeline: newest first, derived from the log
+    const timeline = await cli(['timeline', '--project', 'crm', '--limit', '5']);
+    expect(timeline.code).toBe(0);
+    expect(timeline.out.split('\n')[0]).toContain('milestone.completed');
+    expect(timeline.out).toContain('milestone.created');
+  });
+
   it('decision record', async () => {
     await cli(['project', 'ensure', 'crm']);
     const d = await cli(['decision', 'record', '--project', 'crm', '--text', 'use SQLite + WAL']);
@@ -158,7 +241,7 @@ describe('amrita CLI', () => {
 
   it('--json emits structured output and errors', async () => {
     const h = await cli(['health', '--json']);
-    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(3);
+    expect(json<{ schemaVersion: number }>(h).schemaVersion).toBe(4);
     const bad = await cli(['bogus', 'command', '--json']);
     expect(bad.code).toBe(2);
     expect(JSON.parse(bad.err).error.code).toBe('unknown_command');

@@ -22,8 +22,15 @@ import {
   type LaneStatus,
   type MemoryEntryRow,
   type MemoryScope,
+  type MilestoneRow,
+  type MilestoneStatus,
+  type OpenQuestionRow,
   type PairingRow,
+  type ProjectBriefRow,
   type ProviderConfigStatus,
+  type QuestionStatus,
+  type RiskRow,
+  type RiskSeverity,
   type Store,
   type TaskRow,
   type TaskStatus,
@@ -604,6 +611,7 @@ export class AmritaKernel {
       conversationId: string;
       title: string;
       status?: TaskStatus;
+      milestoneId?: string;
     } & EntityWriteOpts,
   ): { taskId: string } {
     return { taskId: this.store.createTask(input).taskId };
@@ -624,6 +632,164 @@ export class AmritaKernel {
   } {
     this.store.completeTask(input);
     return { ok: true };
+  }
+
+  // ── project companion (ADR-0018) ──────────────────────────────────────────
+
+  /** Everything the Project Brain needs in one read. No fake data: empty is empty. */
+  getCompanion(projectId: string): {
+    brief: ProjectBriefRow | null;
+    questions: OpenQuestionRow[];
+    risks: RiskRow[];
+    milestones: MilestoneRow[];
+  } {
+    return {
+      brief: this.store.getBrief(projectId) ?? null,
+      questions: this.store.listQuestions({ projectId }),
+      risks: this.store.listRisks({ projectId }),
+      milestones: this.store.listMilestones({ projectId }),
+    };
+  }
+
+  upsertBrief(
+    input: {
+      projectId: string;
+      conversationId: string;
+      goal: string;
+      audience?: string;
+      successCriteria?: string[];
+      scope?: string[];
+      noScope?: string[];
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.upsertBrief(input);
+    return { ok: true };
+  }
+
+  openQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      text: string;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { questionId: string } {
+    return { questionId: this.store.openQuestion(input).questionId };
+  }
+
+  resolveQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      questionId: string;
+      resolution?: string;
+      resolvedByDecisionId?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.resolveQuestion(input);
+    return { ok: true };
+  }
+
+  dropQuestion(
+    input: {
+      projectId: string;
+      conversationId: string;
+      questionId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.dropQuestion(input);
+    return { ok: true };
+  }
+
+  listQuestions(filters: { projectId?: string; status?: QuestionStatus }): OpenQuestionRow[] {
+    return this.store.listQuestions(filters);
+  }
+
+  openRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      text: string;
+      severity?: RiskSeverity;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { riskId: string } {
+    return { riskId: this.store.openRisk(input).riskId };
+  }
+
+  resolveRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      riskId: string;
+      resolution?: string;
+      resolvedByDecisionId?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.resolveRisk(input);
+    return { ok: true };
+  }
+
+  dropRisk(
+    input: {
+      projectId: string;
+      conversationId: string;
+      riskId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.dropRisk(input);
+    return { ok: true };
+  }
+
+  listRisks(filters: { projectId?: string; status?: QuestionStatus }): RiskRow[] {
+    return this.store.listRisks(filters);
+  }
+
+  createMilestone(
+    input: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+      description?: string;
+      targetDate?: string;
+      status?: MilestoneStatus;
+    } & EntityWriteOpts,
+  ): { milestoneId: string } {
+    return { milestoneId: this.store.createMilestone(input).milestoneId };
+  }
+
+  updateMilestone(
+    input: {
+      projectId: string;
+      conversationId: string;
+      milestoneId: string;
+      title?: string;
+      description?: string;
+      status?: MilestoneStatus;
+      targetDate?: string | null;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.updateMilestone(input);
+    return { ok: true };
+  }
+
+  completeMilestone(
+    input: { projectId: string; conversationId: string; milestoneId: string } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.completeMilestone(input);
+    return { ok: true };
+  }
+
+  listMilestones(filters: { projectId?: string; status?: MilestoneStatus }): MilestoneRow[] {
+    return this.store.listMilestones(filters);
+  }
+
+  /** The derived project timeline (bounded, newest first) — ADR-0018. */
+  listProjectEvents(projectId: string, limit?: number): AmritaEvent[] {
+    return this.store.listProjectEvents(projectId, limit !== undefined ? { limit } : {});
   }
 
   // ── decisions ─────────────────────────────────────────────────────────────

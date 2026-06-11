@@ -42,6 +42,13 @@ amrita task complete <TASK_ID> --db PATH
 
 amrita decision record --project <ID_OR_SLUG> --text TEXT [--conversation ID] --db PATH
 
+amrita brief get --project <ID_OR_SLUG> --db PATH
+amrita brief set --project <ID_OR_SLUG> --goal TEXT [--audience TEXT] [--criteria a;b] [--scope a;b] [--no-scope a;b] --db PATH
+amrita question list|open|resolve|drop ... --project <ID_OR_SLUG> --db PATH   # resolve needs --note or --decision; drop needs --reason
+amrita risk list|open|resolve|drop ... --project <ID_OR_SLUG> [--severity low|medium|high] --db PATH
+amrita milestone list|create|complete ... --project <ID_OR_SLUG> [--target YYYY-MM-DD] --db PATH
+amrita timeline --project <ID_OR_SLUG> [--limit N] --db PATH   # newest-first, derived from the event log
+
 amrita memory put --scope user|project --content TEXT [--project ID_OR_SLUG] --db PATH
 amrita memory search <QUERY> [--scope user|project] [--project ID_OR_SLUG] --db PATH
 
