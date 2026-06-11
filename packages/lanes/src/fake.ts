@@ -27,6 +27,8 @@ export interface FakeLaneScript {
   throwError?: string;
   /** Simulated spend; if it exceeds the mandate budget, `run()` returns `budget`. */
   spend?: BudgetSpend;
+  /** Block until the run is cancelled, then report `cancelled` (for cancel tests). */
+  block?: boolean;
 }
 
 export class FakeLaneRunner implements LaneRunner {
@@ -44,7 +46,17 @@ export class FakeLaneRunner implements LaneRunner {
       if (ctx?.signal?.aborted) break;
       ctx?.onProgress?.(p.note, p.pct);
     }
-    if (ctx?.signal?.aborted) return buildReport(mandate, 'aborted', 'aborted by caller');
+
+    // Stay "running" until cancelled — lets a test observe an active lane.
+    if (this.script.block) {
+      await new Promise<void>((resolve) => {
+        if (ctx?.signal?.aborted) return resolve();
+        ctx?.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return buildReport(mandate, 'cancelled', 'cancelled by operator');
+    }
+
+    if (ctx?.signal?.aborted) return buildReport(mandate, 'cancelled', 'cancelled by operator');
 
     const usage = this.script.usage ?? emptyUsage();
     if (this.script.spend) {

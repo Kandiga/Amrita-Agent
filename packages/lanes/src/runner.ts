@@ -1,9 +1,12 @@
 import {
+  type LaneExit,
   type LaneMandate,
   type MergeReport,
   type Usage,
   mergeReportSchema,
 } from '@amrita/protocol';
+
+export type { LaneExit };
 
 /**
  * The lane runner boundary. A *lane* is a delegated unit of real work (e.g. a
@@ -16,9 +19,6 @@ import {
  * takes a `ProcessRunner`, so tests (and CI) never spawn a child process. See
  * ADR-0014.
  */
-
-/** A lane's terminal disposition (mirrors the protocol merge-report `exit`). */
-export type LaneExit = 'done' | 'partial' | 'aborted' | 'budget';
 
 export interface LaneRunContext {
   /** Progress sink — the daemon forwards these to `lane.progress` events. */
@@ -42,12 +42,18 @@ export interface ProcessSpawnOptions {
   env: Record<string, string>;
   signal?: AbortSignal;
   onStdout?: (chunk: string) => void;
+  /** Wall-clock cap; the child is terminated and `timedOut` is set when exceeded. */
+  timeoutMs?: number;
 }
 
 export interface ProcessResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** The signal the child was killed with (e.g. on timeout/cancel), if any. */
+  signal?: string | null;
+  /** True when the child was terminated by the `timeoutMs` cap. */
+  timedOut?: boolean;
 }
 
 /** Runs a child process. Injected so the runner is testable without real exec. */

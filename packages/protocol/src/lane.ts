@@ -70,7 +70,10 @@ export const laneMandateSchema = z
   .strict();
 export type LaneMandate = z.infer<typeof laneMandateSchema>;
 
-export const laneExitSchema = z.enum(['done', 'partial', 'aborted', 'budget']);
+// `cancelled` = a manual stop (operator/UI), distinct from `aborted` (a failure)
+// and `budget` (a limit). See ADR-0015.
+export const laneExitSchema = z.enum(['done', 'partial', 'aborted', 'budget', 'cancelled']);
+export type LaneExit = z.infer<typeof laneExitSchema>;
 
 export const mergeArtifactSchema = z
   .object({
