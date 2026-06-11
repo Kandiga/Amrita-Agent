@@ -28,6 +28,13 @@ type Provider = {
   envReady?: boolean;
 };
 type Task = { id: string; title: string; status?: string };
+type DoctorCheck = { id: string; label: string; status: 'ok' | 'warn' | 'fail'; detail?: string };
+type DoctorReport = {
+  ok: boolean;
+  status: 'ok' | 'warn' | 'fail';
+  sections: { title: string; checks: DoctorCheck[] }[];
+  fixes: string[];
+};
 type Memory = { id: string; content: string; score?: number };
 type ChatResult = {
   conversationId: string;
@@ -88,6 +95,7 @@ export function App() {
   const [laneMaxMinutes, setLaneMaxMinutes] = useState('');
   const [realExecAvailable, setRealExecAvailable] = useState(false);
   const [laneBusy, setLaneBusy] = useState(false);
+  const [doctor, setDoctor] = useState<DoctorReport | null>(null);
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -153,16 +161,18 @@ export function App() {
 
   async function refreshBase() {
     setError('');
-    const [projectResult, providerResult, healthResult] = await Promise.all([
+    const [projectResult, providerResult, healthResult, doctorResult] = await Promise.all([
       client.call('project.list'),
       client.call('providers.list'),
       client.call('health'),
+      client.call<DoctorReport>('doctor'),
     ]);
     const nextProjects = extractArray<Project>(projectResult, ['projects']);
     setProjects(nextProjects);
     setProviders(extractArray<Provider>(providerResult, ['providers']));
     const health = healthResult as { lanes?: { realExecution?: boolean } };
     setRealExecAvailable(!!health.lanes?.realExecution);
+    setDoctor(doctorResult);
     setUnauthorized(false); // a successful load means the token (if any) is accepted
     if (nextProjects.length > 0 && !nextProjects.some((p) => p.slug === projectSlug))
       setProjectSlug(nextProjects[0]?.slug ?? 'system');
@@ -487,6 +497,38 @@ export function App() {
               Clear token
             </button>
           ) : null}
+        </section>
+        <section className="card">
+          <h2>Runtime</h2>
+          {doctor ? (
+            doctor.sections.map((s) => {
+              const worst = s.checks.some((c) => c.status === 'fail')
+                ? 'fail'
+                : s.checks.some((c) => c.status === 'warn')
+                  ? 'warn'
+                  : 'ok';
+              return (
+                <div key={s.title} className="doctor-section">
+                  <div className="doctor-head">
+                    <strong>{s.title}</strong>
+                    <span className={`doc-badge doc-${worst}`}>
+                      {worst === 'ok' ? 'ok' : worst === 'warn' ? 'needs setup' : 'failing'}
+                    </span>
+                  </div>
+                  {s.checks
+                    .filter((c) => c.status !== 'ok')
+                    .map((c) => (
+                      <p key={c.id} className="doctor-detail">
+                        {c.label}
+                        {c.detail ? ` — ${c.detail}` : ''}
+                      </p>
+                    ))}
+                </div>
+              );
+            })
+          ) : (
+            <p>Runtime checks not loaded yet.</p>
+          )}
         </section>
         <section className="card">
           <h2>Provider status</h2>

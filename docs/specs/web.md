@@ -50,6 +50,9 @@ The send path still calls `chat.turn` over RPC; the resulting events arrive over
 - Conversation list and creation.
 - Chat transcript and composer.
 - Provider selector and status card.
+- Runtime panel — the daemon's `doctor` report as per-section status chips (`ok` / `needs setup` /
+  `failing`) with the warn/fail check details inline. Honest: unconfigured surfaces say "needs
+  setup", never pretend readiness.
 - Memory search panel.
 - Tasks panel.
 - Lanes panel — start/observe/cancel Claude Code lanes (see below).

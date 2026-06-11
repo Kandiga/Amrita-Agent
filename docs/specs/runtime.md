@@ -39,6 +39,7 @@ deterministic and free of provider/tool/lane execution.
 |--------|--------|--------|
 | `ping` | — | `{ pong: true }` |
 | `health` | — | kernel health |
+| `doctor` | — | grouped setup/health checks (`{ok, status, sections[], fixes[]}`, PLAN §5.4; warn = needs setup, fail = explicitly configured but unusable; presence-only env checks, never a value) |
 | `project.ensure` | `{slug, name, root?}` | project row (create-or-get) |
 | `project.get` | `{id?, slug?}` | project row or `null` |
 | `project.list` | — | project rows |

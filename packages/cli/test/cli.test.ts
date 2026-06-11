@@ -45,6 +45,22 @@ describe('amrita CLI', () => {
     expect(r.out).toContain('schema v3');
   });
 
+  it('doctor renders grouped sections with marks and a numbered fix footer', async () => {
+    const r = await cli(['doctor']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('◆ store');
+    expect(r.out).toContain('◆ providers');
+    expect(r.out).toContain('✓ mock provider');
+    expect(r.out).toContain('! anthropic provider');
+    expect(r.out).toContain('Run these to fix:');
+    expect(r.out).toMatch(/ {2}1\. /);
+    expect(r.out).toContain('doctor: ok with warnings');
+    // --json returns the structured report
+    const j = json<{ ok: boolean; sections: { title: string }[] }>(await cli(['doctor', '--json']));
+    expect(j.ok).toBe(true);
+    expect(j.sections.map((s) => s.title)).toContain('channels');
+  });
+
   it('project ensure + list', async () => {
     expect((await cli(['project', 'ensure', 'crm', '--name', 'Secure CRM'])).code).toBe(0);
     expect((await cli(['project', 'ensure', 'crm'])).out).toContain('crm'); // idempotent

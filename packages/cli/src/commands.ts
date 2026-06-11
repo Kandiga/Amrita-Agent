@@ -80,6 +80,44 @@ function laneGoal(lane: LaneLite): string {
   }
 }
 
+interface DoctorCheckLite {
+  label: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail?: string;
+}
+interface DoctorReportLite {
+  ok: boolean;
+  status: string;
+  sections: { title: string; checks: DoctorCheckLite[] }[];
+  fixes: string[];
+}
+
+const DOCTOR_MARK: Record<DoctorCheckLite['status'], string> = {
+  ok: '✓',
+  warn: '!',
+  fail: '✗',
+};
+
+/** Render a doctor report: ◆ sections, ✓/!/✗ checks, numbered exact-fix footer (PLAN §5.4). */
+export function renderDoctor(r: DoctorReportLite): string {
+  const lines: string[] = [];
+  for (const section of r.sections) {
+    lines.push(`◆ ${section.title}`);
+    for (const c of section.checks) {
+      lines.push(`  ${DOCTOR_MARK[c.status]} ${c.label}${c.detail ? ` — ${c.detail}` : ''}`);
+    }
+  }
+  if (r.fixes.length > 0) {
+    lines.push('', 'Run these to fix:');
+    r.fixes.forEach((fix, i) => lines.push(`  ${i + 1}. ${fix}`));
+  }
+  lines.push(
+    '',
+    r.ok ? `doctor: ${r.status === 'ok' ? 'all good' : 'ok with warnings'}` : 'doctor: FAILING',
+  );
+  return lines.join('\n');
+}
+
 export const COMMANDS: Record<string, Command> = {
   health: {
     describe: 'show daemon health and row counts',
@@ -95,6 +133,14 @@ export const COMMANDS: Record<string, Command> = {
           `amritad · schema v${h.schemaVersion} · ${h.dbPath}\n` +
           `projects ${c.projects} · conversations ${c.conversations} · messages ${c.messages} · events ${c.events}${lanes}`,
       };
+    },
+  },
+
+  doctor: {
+    describe: 'grouped setup/health checks with exact fix commands',
+    async run(client) {
+      const r = await client.call<DoctorReportLite>('doctor');
+      return { result: r, summary: renderDoctor(r) };
     },
   },
 

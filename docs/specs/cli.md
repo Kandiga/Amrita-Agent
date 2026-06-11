@@ -26,6 +26,7 @@ each invocation and closed on exit; state persists when `--db` is a file path.
 
 ```bash
 amrita health --db PATH
+amrita doctor --db PATH        # grouped ◆ checks, ✓/!/✗ marks, numbered exact-fix footer
 
 amrita project ensure <slug> [--name NAME] --db PATH      # create-or-get
 amrita project list --db PATH
@@ -65,6 +66,11 @@ without running anything. `amrita lane list` shows each lane's status/kind/goal;
 lane with its report exit; `lane cancel` stops a running lane (it reports `exit: 'cancelled'`).
 `amrita health` shows whether lane real-execution is enabled. No lane command reads or prints a secret
 value, and no secret (including `ANTHROPIC_API_KEY`) is ever forwarded into a lane.
+
+`amrita doctor` renders the kernel's `doctor` report (PLAN §5.4): grouped `◆` sections (store,
+providers, lanes, channels, auth) with warn-vs-fail scoping — unconfigured is a *warning* ("needs
+setup"), an account bound to a missing env var is a *failure* — and a numbered "run this exact
+command" footer. Env checks are presence-only; no value is ever read or printed.
 
 `amrita chat` runs one turn through the kernel: it records your message, calls the provider boundary
 (default **`mock`**, deterministic), and prints the assistant reply plus a `(provider · model · in/out

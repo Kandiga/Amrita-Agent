@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { runDoctor } from './doctor.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { ProviderError } from './provider.ts';
 import { clean } from './util.ts';
@@ -80,6 +81,8 @@ export const METHODS: Record<string, RpcMethod> = {
   ping: def(z.object({}).optional(), () => ({ pong: true })),
 
   health: def(z.object({}).optional(), (k) => k.health()),
+
+  doctor: def(z.object({}).optional(), (k) => runDoctor(k)),
 
   'project.ensure': def(
     z.object({ slug: z.string().min(1), name: z.string().min(1), root: z.string().optional() }),
