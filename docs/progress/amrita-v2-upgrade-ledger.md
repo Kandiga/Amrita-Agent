@@ -348,3 +348,18 @@ One ledger, updated per phase — no scattered notes.
   `--db`); full suite green; `bash -n` on the installer; manual end-to-end below.
 - **Limitations / next:** installer untested on macOS; Windows remains the W1 Electron
   track; wizard is English-only (web surface owns i18n); no `amrita update`/uninstall yet.
+
+## Phase 12a — first-run hardening after laptop QA
+
+- **Date:** 2026-06-12 (evening) · amends ADR-0024
+- **Found in live WSL QA:** a first run that races another process (e.g. `amrita health`
+  next to `amritad`) could die with `SqliteError: table messages already exists`, and DB
+  open failures printed a raw stack trace in violation of the value-free-errors bar.
+- **What landed:** `migrateUp` takes the write lock up front (`BEGIN IMMEDIATE` — the
+  Hermes lesson already recorded in docs/hermes-architecture-notes.md) and re-checks the
+  applied-set INSIDE the transaction, so a racing migrator skips cleanly; both `amrita`
+  and `amritad` wrap kernel open in a structured `store_open_failed` error (CLI adds a
+  delete-and-re-run hint for partially-migrated files; no stack frames).
+- **Verification:** 3 new tests (2 migrate-concurrency, 1 poisoned-DB structured error);
+  suite 294/294. `better-sqlite3` (+types) added as @amrita/cli devDependency for the
+  poisoned-DB fixture.

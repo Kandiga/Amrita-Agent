@@ -70,7 +70,24 @@ export async function run(argv: string[], io: IO): Promise<number> {
     db = defaultDbPath();
   }
 
-  const kernel = AmritaKernel.open({ dbPath: db });
+  // Open failures (corrupt/partially-migrated DB, bad path) must surface as a
+  // structured error, never a raw stack trace (quality bar: value-free errors).
+  let kernel: AmritaKernel;
+  try {
+    kernel = AmritaKernel.open({ dbPath: db });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    io.err(
+      formatError(json, 'store_open_failed', `could not open the database at ${db}: ${message}`),
+    );
+    if (message.includes('already exists')) {
+      io.err(
+        'hint: this database looks partially migrated (an interrupted or concurrent first run). ' +
+          'If it holds nothing you care about yet, delete it and re-run.',
+      );
+    }
+    return 1;
+  }
   try {
     const { result, summary } = (await COMMANDS[matched.key]?.run(new InProcessClient(kernel), {
       positionals: matched.rest,

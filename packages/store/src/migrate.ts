@@ -50,15 +50,24 @@ function appliedVersions(db: DB): Set<number> {
   return new Set(rows.map((r) => r.version));
 }
 
-/** Apply every migration not yet recorded, in order. Idempotent. */
+/**
+ * Apply every migration not yet recorded, in order. Idempotent — and safe
+ * against CONCURRENT first runs: the write lock is taken up front
+ * (`BEGIN IMMEDIATE`, the Hermes lesson) and the applied-set is re-checked
+ * INSIDE the transaction, so a second process that lost the race sees the
+ * winner's commit and skips instead of failing with "table already exists".
+ */
 export function migrateUp(db: DB): number {
-  const applied = appliedVersions(db);
+  ensureMigrationsTable(db);
   let count = 0;
   const stamp = new Date().toISOString();
   for (const m of MIGRATIONS) {
-    if (applied.has(m.version)) continue;
-    db.exec('BEGIN');
+    db.exec('BEGIN IMMEDIATE');
     try {
+      if (appliedVersions(db).has(m.version)) {
+        db.exec('ROLLBACK');
+        continue;
+      }
       db.exec(m.up);
       db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
         m.version,

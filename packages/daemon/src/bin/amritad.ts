@@ -56,7 +56,14 @@ async function main(): Promise<void> {
     dbPath = defaultDbPath();
   }
   const { http, port, telegram } = args;
-  const kernel = AmritaKernel.open({ dbPath });
+  let kernel: AmritaKernel;
+  try {
+    kernel = AmritaKernel.open({ dbPath });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`amritad: could not open the database at ${dbPath}: ${message}\n`);
+    process.exit(1);
+  }
 
   // Telegram operator runner (ADR-0021): strictly opt-in, refuses to start
   // without the token env var AND a non-empty owner allowlist. Never fakes.

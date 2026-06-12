@@ -465,6 +465,30 @@ describe('amrita CLI', () => {
     expect((await cli(['task', 'create', '--project', 'crm'])).code).toBe(2); // missing --title
   });
 
+  it('a corrupt/partially-migrated DB fails with a structured error, never a stack', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const poisoned = join(dir, 'poisoned.db');
+    const raw = new Database(poisoned);
+    raw.exec('CREATE TABLE messages (id TEXT PRIMARY KEY)'); // table exists, no migration record
+    raw.close();
+
+    let out = '';
+    let err = '';
+    const code = await run(['health', '--db', poisoned], {
+      out: (l) => {
+        out += l;
+      },
+      err: (l) => {
+        err += `${l}\n`;
+      },
+    });
+    expect(code).toBe(1);
+    expect(err).toContain('store_open_failed');
+    expect(err).toContain('hint:'); // recovery guidance, not a stack trace
+    expect(err).not.toContain('    at '); // no stack frames
+    expect(out).toBe('');
+  });
+
   it('--db is optional: defaults to the amrita home database (ADR-0024)', async () => {
     const HOME_ENV = 'AMRITA_HOME';
     const home = join(dir, 'home');

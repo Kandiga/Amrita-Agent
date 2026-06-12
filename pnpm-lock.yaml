@@ -63,6 +63,13 @@ importers:
       '@amrita/daemon':
         specifier: workspace:*
         version: link:../daemon
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 7.6.13
+        version: 7.6.13
+      better-sqlite3:
+        specifier: 12.10.0
+        version: 12.10.0
 
   packages/daemon:
     dependencies:
