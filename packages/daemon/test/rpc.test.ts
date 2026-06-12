@@ -154,6 +154,9 @@ describe('stdio transport', () => {
     expect(lines[1].error.code).toBe('invalid_request');
   });
 
+  // Spawning node on the .ts entrypoint type-strips the whole dependency graph
+  // (~8s alone, worse under parallel-worker contention), so this end-to-end
+  // smoke needs more headroom than even the raised global timeout.
   it('the amritad executable answers over stdio and exits cleanly', () => {
     const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'bin', 'amritad.ts');
     const out = execFileSync(process.execPath, [bin, '--db', ':memory:'], {
@@ -162,5 +165,5 @@ describe('stdio transport', () => {
     });
     const first = JSON.parse(out.trim().split('\n')[0] ?? '{}');
     expect(first).toEqual({ id: 7, result: { pong: true } });
-  });
+  }, 60_000);
 });

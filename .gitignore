@@ -27,3 +27,6 @@ secrets.env
 
 # agent-local
 .claude/
+.claude-remote-logs/
+*.rvf
+*.rvf.lock
