@@ -1,4 +1,5 @@
 export * from './doctor.ts';
+export * from './home.ts';
 export * from './kernel.ts';
 export * from './runtimes.ts';
 export * from './provider.ts';

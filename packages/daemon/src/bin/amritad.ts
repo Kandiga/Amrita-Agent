@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolveAuthToken } from '../auth.ts';
+import { defaultDbPath, ensureHome, loadSecretsEnv } from '../home.ts';
 import { startHttpServer } from '../http.ts';
 import { AmritaKernel } from '../kernel.ts';
 import { createStdioServer } from '../stdio.ts';
@@ -7,9 +8,9 @@ import { createStdioServer } from '../stdio.ts';
 /**
  * `amritad` — serve the kernel over JSON-lines stdio (default) or HTTP/WS.
  *
- *   amritad --db ~/.amrita/amrita.db                 # stdio JSON-RPC
+ *   amritad                                          # stdio, ~/.amrita/amrita.db
  *   echo '{"id":1,"method":"ping"}' | amritad --db :memory:
- *   amritad --db ~/.amrita/amrita.db --http --port 7460   # HTTP + WS on localhost
+ *   amritad --http --port 7460                       # HTTP + WS on localhost
  *   amritad --http --port 0                          # OS-assigned port (printed)
  *
  * HTTP mode requires a bearer token on every route except `GET /health`. Set
@@ -17,13 +18,13 @@ import { createStdioServer } from '../stdio.ts';
  * prints it once at startup (never to a file).
  */
 interface Args {
-  dbPath: string;
+  dbPath: string | null;
   http: boolean;
   port: number;
   telegram: boolean;
 }
 function parseArgs(argv: string[]): Args {
-  const args: Args = { dbPath: ':memory:', http: false, port: 7460, telegram: false };
+  const args: Args = { dbPath: null, http: false, port: 7460, telegram: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((a === '--db' || a === '-d') && argv[i + 1]) {
@@ -44,7 +45,17 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function main(): Promise<void> {
-  const { dbPath, http, port, telegram } = parseArgs(process.argv.slice(2));
+  // Machine-local secrets file (ADR-0024): fills unset env vars (provider keys,
+  // telegram token) before anything reads them. Real process env always wins.
+  loadSecretsEnv();
+
+  const args = parseArgs(process.argv.slice(2));
+  let dbPath = args.dbPath;
+  if (dbPath === null) {
+    ensureHome();
+    dbPath = defaultDbPath();
+  }
+  const { http, port, telegram } = args;
   const kernel = AmritaKernel.open({ dbPath });
 
   // Telegram operator runner (ADR-0021): strictly opt-in, refuses to start

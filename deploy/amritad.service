@@ -1,0 +1,15 @@
+# Amrita daemon — systemd *user* service template (installed by scripts/install.sh).
+# __NODE__ and __DIR__ are substituted at install time. The daemon loads
+# ~/.amrita/secrets.env itself (ADR-0024), so no EnvironmentFile is needed.
+[Unit]
+Description=Amrita agent daemon (HTTP + Telegram)
+After=network-online.target
+
+[Service]
+ExecStart=__NODE__ __DIR__/packages/daemon/src/bin/amritad.ts --http --telegram
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

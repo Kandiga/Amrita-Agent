@@ -95,7 +95,7 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
         label: `${p.id} provider`,
         status: 'warn',
         detail: 'needs setup — no account connected',
-        fix: `amrita --db <PATH> account connect --provider ${p.id}`,
+        fix: `amrita setup  # or: amrita account connect --provider ${p.id}`,
       });
       continue;
     }
@@ -116,7 +116,7 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
         label: `${p.id} provider`,
         status: 'fail',
         detail: `account bound to ${envName}, but that env var is not set`,
-        fix: `export ${envName}=<your-key>  # set in the daemon's shell; Amrita never stores values`,
+        fix: `amrita setup  # writes ${envName} to ~/.amrita/secrets.env (0600); Amrita never stores values`,
       });
     } else {
       checks.push({
@@ -124,7 +124,7 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
         label: `${p.id} provider`,
         status: 'warn',
         detail: 'account connected but no secret_ref bound',
-        fix: 'amrita --db <PATH> account bind-secret <ACCOUNT_ID> <ENV_NAME>',
+        fix: 'amrita account bind-secret <ACCOUNT_ID> <ENV_NAME>',
       });
     }
   }
@@ -146,7 +146,7 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
       status: 'warn',
       detail:
         'no role bindings — role turns resolve via auto (first available real provider, else mock)',
-      fix: 'amrita --db <PATH> role set main <provider>',
+      fix: 'amrita role set main <provider>',
     });
   }
   return { title: 'providers', checks };
@@ -202,7 +202,7 @@ function channelSection(): DoctorSection {
               status: 'warn' as const,
               detail:
                 'needs setup — the operator runner exists but requires TELEGRAM_BOT_TOKEN and AMRITA_TELEGRAM_ALLOWED_IDS (comma-separated numeric ids)',
-              fix: 'export TELEGRAM_BOT_TOKEN=<bot token> AMRITA_TELEGRAM_ALLOWED_IDS=<your id>  # then: amritad --http --telegram',
+              fix: 'amrita setup  # telegram section; then: amritad --http --telegram',
             },
           ]),
     ],

@@ -1,4 +1,4 @@
-import { AmritaKernel } from '@amrita/daemon';
+import { AmritaKernel, defaultDbPath, ensureHome } from '@amrita/daemon';
 import { CliError, InProcessClient, RpcClientError } from './client.ts';
 import { COMMANDS, COMMAND_NAMES } from './commands.ts';
 import { parseArgs } from './parse.ts';
@@ -10,13 +10,13 @@ export interface IO {
 
 const USAGE = `amrita — local client for the amritad kernel (no provider/tool execution yet)
 
-Usage: amrita <command> [args] --db <PATH> [--json]
+Usage: amrita <command> [args] [--db <PATH>] [--json]
 
 Commands:
   ${COMMAND_NAMES.join('\n  ')}
 
 Global flags:
-  --db <PATH>   SQLite database path (or :memory:)   [required]
+  --db <PATH>   SQLite database path (or :memory:)   [default: ~/.amrita/amrita.db]
   --json        emit raw JSON result/error for scripting
 `;
 
@@ -61,10 +61,13 @@ export async function run(argv: string[], io: IO): Promise<number> {
     return 2;
   }
 
-  const db = flags.db;
+  // `--db` is optional since ADR-0024: default to the amrita home database so
+  // a fresh user never has to know about database paths. The home dir is only
+  // created when the default is actually used.
+  let db = flags.db;
   if (typeof db !== 'string' || db.length === 0) {
-    io.err(formatError(json, 'invalid_params', '--db <PATH> is required'));
-    return 2;
+    ensureHome();
+    db = defaultDbPath();
   }
 
   const kernel = AmritaKernel.open({ dbPath: db });

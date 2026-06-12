@@ -58,7 +58,7 @@ describe('doctor', () => {
     expect(r.fixes.some((f) => f.includes('account connect --provider anthropic'))).toBe(true);
   });
 
-  it('an account bound to a missing env var is a FAIL with an export fix', () => {
+  it('an account bound to a missing env var is a FAIL with a setup fix', () => {
     const projectId = kernel.ensureProject({ slug: 'p', name: 'P' }).id;
     const conversationId = kernel.createConversation({ projectId }).id;
     const { accountId } = kernel.connectProviderAccount({
@@ -75,7 +75,9 @@ describe('doctor', () => {
     const anth = section('providers').checks.find((c) => c.id === 'provider.anthropic');
     expect(anth?.status).toBe('fail');
     expect(anth?.detail).toContain(TEST_ENV_NAME);
-    expect(r.fixes.some((f) => f.startsWith(`export ${TEST_ENV_NAME}=`))).toBe(true);
+    expect(r.fixes.some((f) => f.startsWith('amrita setup') && f.includes(TEST_ENV_NAME))).toBe(
+      true,
+    );
 
     // setting the env var (presence only) turns the check ok
     process.env[TEST_ENV_NAME] = DUMMY_ENV_VALUE;

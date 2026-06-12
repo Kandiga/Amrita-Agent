@@ -39,10 +39,20 @@ streamed chat → project knowledge → safe lane → doctor.
 
 ## Quick start
 
+End-user install (Linux/macOS/WSL — checks prerequisites, installs launchers, optional service):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kandiga/Amrita-Agent/v2-main/scripts/install.sh | bash
+amrita setup     # connect a brain (API key) + telegram — the wizard does the rest
+amrita doctor    # verify everything, with exact fix commands
+```
+
+Developing in a checkout:
+
 ```bash
 pnpm install
 pnpm typecheck && pnpm lint && pnpm test
-pnpm amritad -- --db ~/.amrita/amrita.db --http --port 7460
+pnpm amritad -- --http --port 7460   # DB defaults to ~/.amrita/amrita.db (ADR-0024)
 pnpm --filter @amrita/web dev   # http://localhost:5173
 ```
 

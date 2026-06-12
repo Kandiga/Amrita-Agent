@@ -321,3 +321,30 @@ One ledger, updated per phase — no scattered notes.
   Setup Hub verified — GitHub card shows `needs setup` with the missing env NAME and exact
   export command when the daemon has no token. Allow path remains unit-test-covered only
   (allowing in the browser would launch a real Claude Code run).
+
+## Phase 12 — first-run onboarding: installer + setup wizard (ADR-0024)
+
+- **Date:** 2026-06-12 · ADR-0024
+- **Why:** fresh-install QA showed a working build but an unacceptable path to a usable
+  Amrita (SSH, hand-edited env files, four CLI calls, mandatory `--db`). Benchmarked against
+  Hermes Agent's installer (`/usr/local/lib/hermes-agent`, read-only) and Amrita v0.1's
+  `install.sh` + sectioned `amrita setup`; adopted their proven shape on v2's existing seams.
+- **What landed:** `~/.amrita` home helpers in `@amrita/daemon` (`home.ts`: default DB path,
+  `secrets.env` parse/load/write — atomic, 0600, names-validated, process-env-wins);
+  both executables load the secrets file at the process boundary only (in-process `run()`
+  never does — tests stay hermetic); `--db` optional everywhere (defaults to the home DB;
+  `amritad` no longer defaults to `:memory:`); new `amrita setup` wizard (provider key with
+  no-echo paste → account connect/bind/role via the same RPC as the individual commands →
+  telegram with LIVE getMe verification, injectable fetch → doctor summary; idempotent,
+  non-TTY refuses with exact equivalent commands); doctor fixes now lead with `amrita setup`
+  and drop the `--db` noise; `scripts/install.sh` one-liner (prereqs, clone-or-ff,
+  frozen-lockfile install, `~/.local/bin` launchers, opt-in systemd user service from
+  `deploy/amritad.service`).
+- **Honesty checks:** wizard re-probes provider availability after binding and reports the
+  truth; failing telegram tokens are reported and saved only on explicit confirmation; the
+  installer never collects secrets (Hermes lesson: defer to setup); store still holds env
+  NAMES only.
+- **Verification:** 13 new tests (8 home, 5 wizard) + 2 updated (doctor fix text, optional
+  `--db`); full suite green; `bash -n` on the installer; manual end-to-end below.
+- **Limitations / next:** installer untested on macOS; Windows remains the W1 Electron
+  track; wizard is English-only (web surface owns i18n); no `amrita update`/uninstall yet.

@@ -1,6 +1,7 @@
 import { CliError, type InProcessClient } from './client.ts';
 import { ensureDefaultConversation, resolveProjectId, resolveWriteContext } from './context.ts';
 import { strFlag } from './parse.ts';
+import { makeInteractiveDeps, nonInteractiveGuidance, runSetupWizard } from './setup.ts';
 
 export interface CommandCtx {
   positionals: string[];
@@ -190,6 +191,17 @@ export const COMMANDS: Record<string, Command> = {
     async run(client) {
       const r = await client.call<DoctorReportLite>('doctor');
       return { result: r, summary: renderDoctor(r) };
+    },
+  },
+
+  setup: {
+    describe: 'first-run wizard: provider key, main role, telegram (idempotent)',
+    async run(client) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new CliError(nonInteractiveGuidance());
+      }
+      await runSetupWizard(client, makeInteractiveDeps());
+      return { result: { ok: true }, summary: '' };
     },
   },
 

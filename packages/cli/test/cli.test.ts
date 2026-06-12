@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -463,15 +463,18 @@ describe('amrita CLI', () => {
 
   it('usage errors exit non-zero', async () => {
     expect((await cli(['task', 'create', '--project', 'crm'])).code).toBe(2); // missing --title
-    // missing --db entirely
-    let err = '';
-    const code = await run(['health'], {
-      out: () => {},
-      err: (l) => {
-        err += l;
-      },
-    });
-    expect(code).toBe(2);
-    expect(err).toContain('--db');
+  });
+
+  it('--db is optional: defaults to the amrita home database (ADR-0024)', async () => {
+    const HOME_ENV = 'AMRITA_HOME';
+    const home = join(dir, 'home');
+    process.env[HOME_ENV] = home;
+    try {
+      const code = await run(['health'], { out: () => {}, err: () => {} });
+      expect(code).toBe(0);
+      expect(existsSync(join(home, 'amrita.db'))).toBe(true);
+    } finally {
+      delete process.env[HOME_ENV];
+    }
   });
 });

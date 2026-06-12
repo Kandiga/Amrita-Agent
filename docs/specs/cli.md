@@ -10,13 +10,16 @@ and config surfaces only.
 ## Invocation
 
 ```bash
-pnpm amrita -- <command> [args] --db <PATH> [--json]
+pnpm amrita -- <command> [args] [--db <PATH>] [--json]
 # or directly:
-node packages/cli/src/bin/amrita.ts health --db ~/.amrita/amrita.db
+node packages/cli/src/bin/amrita.ts health
 ```
 
-`--db <PATH>` is **required** (use `:memory:` for a throwaway DB). The DB is opened and migrated on
-each invocation and closed on exit; state persists when `--db` is a file path.
+`--db <PATH>` is **optional** since ADR-0024: it defaults to `~/.amrita/amrita.db` (override the
+home with `AMRITA_HOME`; use `:memory:` for a throwaway DB). The DB is opened and migrated on each
+invocation and closed on exit; state persists when the DB is a file path. The `amrita` executable
+also loads `~/.amrita/secrets.env` (machine-local, 0600) into unset env vars at startup — real
+process env always wins, and the in-process `run()` used by tests never loads it.
 
 - **Exit codes:** `0` success · `1` RPC failure · `2` usage/validation error.
 - **Output:** concise human text by default; `--json` emits the raw JSON result (or `{error:{…}}`).
@@ -25,6 +28,7 @@ each invocation and closed on exit; state persists when `--db` is a file path.
 ## Commands
 
 ```bash
+amrita setup                   # first-run wizard: provider key → main role → telegram (ADR-0024)
 amrita health --db PATH
 amrita doctor --db PATH        # grouped ◆ checks, ✓/!/✗ marks, numbered exact-fix footer
 

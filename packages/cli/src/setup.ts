@@ -1,0 +1,311 @@
+import { secretsEnvPath, writeSecretsEnv } from '@amrita/daemon';
+import { CliError, type InProcessClient } from './client.ts';
+import { resolveWriteContext } from './context.ts';
+
+/**
+ * `amrita setup` — the first-run wizard (ADR-0024). Sectioned and idempotent
+ * like the v0.1 wizard: provider → telegram → summary. Secrets go to
+ * `~/.amrita/secrets.env` (0600); the store only ever sees env-var NAMES.
+ *
+ * Every effect goes through the same RPC methods as the individual commands
+ * (`accounts.connect`, `accounts.bindSecretRef`, `providers.role.set`), so the
+ * wizard can never do something the CLI cannot.
+ */
+
+/** Minimal fetch shape the telegram probe needs — injectable for tests. */
+export type ProbeFetch = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+}>;
+
+export interface SetupDeps {
+  /** Plain-text question; returns the trimmed answer ('' for Enter). */
+  ask(question: string): Promise<string>;
+  /** Masked question for pasted secrets; echo is suppressed by the caller. */
+  askSecret(question: string): Promise<string>;
+  out(line: string): void;
+  fetchImpl: ProbeFetch;
+  env: NodeJS.ProcessEnv;
+}
+
+interface ProviderChoice {
+  id: 'anthropic' | 'openai';
+  title: string;
+  envName: string;
+  keyUrl: string;
+}
+
+const PROVIDERS: ProviderChoice[] = [
+  {
+    id: 'anthropic',
+    title: 'Anthropic (Claude) — recommended',
+    envName: 'ANTHROPIC_API_KEY',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+  },
+  {
+    id: 'openai',
+    title: 'OpenAI',
+    envName: 'OPENAI_API_KEY',
+    keyUrl: 'https://platform.openai.com/api-keys',
+  },
+];
+
+interface ProviderInfoLite {
+  id: string;
+  available: boolean;
+  envReady: boolean;
+}
+interface AccountLite {
+  id: string;
+  provider: string;
+  secretRef: string | null;
+}
+
+function isYes(answer: string, defaultYes: boolean): boolean {
+  const a = answer.trim().toLowerCase();
+  if (a === '') return defaultYes;
+  return a === 'y' || a === 'yes';
+}
+
+/** Save into the secrets file AND the live process env so this run sees it. */
+function saveSecret(name: string, value: string, env: NodeJS.ProcessEnv): void {
+  writeSecretsEnv({ [name]: value }, env);
+  env[name] = value;
+}
+
+/** Connect-or-reuse the account for `provider` and bind it to `envName`. */
+async function ensureAccountBound(
+  client: InProcessClient,
+  provider: string,
+  envName: string,
+): Promise<string> {
+  const accounts = await client.call<AccountLite[]>('accounts.list');
+  const existing = accounts.find((a) => a.provider === provider);
+  if (existing) {
+    if (existing.secretRef !== envName) {
+      await client.call('accounts.bindSecretRef', { accountId: existing.id, envName });
+    }
+    return existing.id;
+  }
+  const ctx = await resolveWriteContext(client, {});
+  const created = await client.call<{ accountId: string }>('accounts.connect', {
+    projectId: ctx.projectId,
+    conversationId: ctx.conversationId,
+    provider,
+    authMode: 'api_key',
+  });
+  await client.call('accounts.bindSecretRef', { accountId: created.accountId, envName });
+  return created.accountId;
+}
+
+async function sectionProvider(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out, ask, askSecret, env } = deps;
+  out('');
+  out('── Brain (model provider) ──');
+  for (const [i, p] of PROVIDERS.entries()) out(`  ${i + 1}) ${p.title}`);
+  out('  0) skip for now (mock provider keeps working)');
+  const answer = await ask('Choose a provider [1]: ');
+  const idx = answer.trim() === '' ? 1 : Number(answer.trim());
+  if (idx === 0) {
+    out('  → skipped — chat uses the deterministic mock provider until one is configured');
+    return;
+  }
+  const choice = PROVIDERS[idx - 1];
+  if (!choice) throw new CliError(`invalid choice: ${answer.trim()}`);
+
+  const hasValue = typeof env[choice.envName] === 'string' && env[choice.envName] !== '';
+  if (hasValue) {
+    out(`  ✓ ${choice.envName} already set — keeping the existing value`);
+  } else {
+    out(`  Get a key at: ${choice.keyUrl}`);
+    const key = await askSecret(`  Paste your ${choice.envName} (Enter to skip): `);
+    if (key.trim() === '') {
+      out('  → no key entered — you can re-run `amrita setup` any time');
+    } else {
+      saveSecret(choice.envName, key.trim(), env);
+      out(`  ✓ saved to ${secretsEnvPath(env)} (0600) — the database stores the NAME only`);
+    }
+  }
+
+  await ensureAccountBound(client, choice.id, choice.envName);
+  await client.call('providers.role.set', { role: 'main', provider: choice.id });
+
+  const providers = await client.call<ProviderInfoLite[]>('providers.list');
+  const live = providers.find((p) => p.id === choice.id);
+  if (live?.available) {
+    out(`  ✓ ${choice.id} connected and bound as your main brain — env ready`);
+  } else {
+    out(`  ! ${choice.id} bound as main, but ${choice.envName} is still missing — `);
+    out('    chat falls back honestly until the key is present');
+  }
+}
+
+/** Live getMe probe — honest validation, 5s timeout, never throws. */
+async function probeTelegramToken(
+  token: string,
+  fetchImpl: ProbeFetch,
+): Promise<{ ok: boolean; username?: string }> {
+  try {
+    const res = await fetchImpl(`https://api.telegram.org/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false };
+    const body = (await res.json()) as { ok?: boolean; result?: { username?: string } };
+    if (body.ok !== true) return { ok: false };
+    return { ok: true, ...(body.result?.username ? { username: body.result.username } : {}) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function sectionTelegram(deps: SetupDeps): Promise<void> {
+  const { out, ask, askSecret, env, fetchImpl } = deps;
+  out('');
+  out('── Telegram channel ──');
+  const already =
+    typeof env.TELEGRAM_BOT_TOKEN === 'string' &&
+    env.TELEGRAM_BOT_TOKEN !== '' &&
+    typeof env.AMRITA_TELEGRAM_ALLOWED_IDS === 'string' &&
+    env.AMRITA_TELEGRAM_ALLOWED_IDS !== '';
+  if (already) {
+    out('  ✓ telegram already configured (token + allowlist present)');
+    if (!isYes(await ask('  Reconfigure? (y/N): '), false)) return;
+  } else if (!isYes(await ask('Enable Telegram? (y/N): '), false)) {
+    out('  → skipped — enable later with `amrita setup`');
+    return;
+  }
+
+  out('  Create a bot with @BotFather (/newbot) to get a token.');
+  const token = await askSecret('  Paste the bot token (Enter to skip): ');
+  if (token.trim() === '') {
+    out('  → no token entered — telegram stays "needs setup"');
+    return;
+  }
+  const probe = await probeTelegramToken(token.trim(), fetchImpl);
+  if (probe.ok) {
+    out(`  ✓ token verified live — bot @${probe.username ?? 'unknown'}`);
+  } else {
+    out('  ! token did NOT verify against api.telegram.org');
+    if (!isYes(await ask('  Save it anyway? (y/N): '), false)) {
+      out('  → not saved');
+      return;
+    }
+  }
+  saveSecret('TELEGRAM_BOT_TOKEN', token.trim(), env);
+
+  out('  Get your numeric id from @userinfobot. Only these ids may talk to the bot.');
+  const ids = await ask('  Allowed user id(s), comma-separated: ');
+  const cleaned = ids
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (cleaned.length === 0 || cleaned.some((s) => !/^\d+$/.test(s))) {
+    throw new CliError('allowed ids must be comma-separated numbers (from @userinfobot)');
+  }
+  saveSecret('AMRITA_TELEGRAM_ALLOWED_IDS', cleaned.join(','), env);
+  out(`  ✓ saved — ${cleaned.length} allowed id(s)`);
+}
+
+async function sectionSummary(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out } = deps;
+  const report = await client.call<{ status: string; fixes: string[] }>('doctor');
+  out('');
+  out('── Summary ──');
+  out(
+    `  doctor: ${report.status}${report.fixes.length ? ` · ${report.fixes.length} fix(es) remaining` : ''}`,
+  );
+  out('');
+  out('Next:');
+  out('  amrita chat "hello"            # first real turn with your brain');
+  out('  amritad --http --telegram      # start the daemon (web + telegram)');
+  out('  amrita doctor                  # full health report any time');
+}
+
+export async function runSetupWizard(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  deps.out('Amrita setup — sections are idempotent; re-run any time.');
+  deps.out(`Secrets file: ${secretsEnvPath(deps.env)} (created on first save, mode 0600)`);
+  await sectionProvider(client, deps);
+  await sectionTelegram(deps);
+  await sectionSummary(client, deps);
+}
+
+/** Guard rail used by the command wiring: refuse politely when not a TTY. */
+export function nonInteractiveGuidance(): string {
+  return [
+    'setup needs an interactive terminal. Non-interactive equivalent:',
+    '  amrita account connect --provider anthropic',
+    '  amrita account bind-secret <ACCOUNT_ID> ANTHROPIC_API_KEY',
+    '  amrita role set main anthropic',
+    `  printf 'ANTHROPIC_API_KEY=...\\nTELEGRAM_BOT_TOKEN=...\\nAMRITA_TELEGRAM_ALLOWED_IDS=...\\n' >> ~/.amrita/secrets.env && chmod 600 ~/.amrita/secrets.env`,
+  ].join('\n');
+}
+
+// ── interactive wiring (TTY only; tests inject SetupDeps instead) ────────────
+
+/** Read one line in canonical mode — the terminal echoes typed input itself. */
+function readLine(): Promise<string> {
+  return new Promise((resolve) => {
+    const onData = (chunk: Buffer): void => {
+      process.stdin.off('data', onData);
+      process.stdin.pause();
+      resolve(chunk.toString('utf8').replace(/\r?\n$/, ''));
+    };
+    process.stdin.resume();
+    process.stdin.once('data', onData);
+  });
+}
+
+/** Read one line in raw mode with echo suppressed — for pasted secrets. */
+function readSecretLine(): Promise<string> {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    stdin.setRawMode?.(true);
+    stdin.resume();
+    let buf = '';
+    const finish = (value: string): void => {
+      stdin.off('data', onData);
+      stdin.setRawMode?.(false);
+      stdin.pause();
+      process.stdout.write('\n');
+      resolve(value);
+    };
+    const onData = (chunk: Buffer): void => {
+      for (const ch of chunk.toString('utf8')) {
+        if (ch === '\n' || ch === '\r' || ch === '\u0004') {
+          finish(buf);
+          return;
+        }
+        if (ch === '\u0003') {
+          // Ctrl+C: restore the terminal before going down
+          stdin.setRawMode?.(false);
+          process.stdout.write('\n');
+          process.exit(130);
+        }
+        if (ch === '\u007f' || ch === '\b') buf = buf.slice(0, -1);
+        else buf += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+/** Real-terminal SetupDeps: stdout prompts, masked secrets, global fetch. */
+export function makeInteractiveDeps(): SetupDeps {
+  return {
+    ask: (q) => {
+      process.stdout.write(q);
+      return readLine();
+    },
+    askSecret: (q) => {
+      process.stdout.write(q);
+      return readSecretLine();
+    },
+    out: (line) => process.stdout.write(`${line}\n`),
+    fetchImpl: (url, init) => fetch(url, init),
+    env: process.env,
+  };
+}
