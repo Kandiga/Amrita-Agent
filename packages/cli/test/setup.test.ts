@@ -10,11 +10,30 @@ let dir: string;
 let kernel: AmritaKernel;
 let client: InProcessClient;
 
+/** Fake CLI prober: tests choose which CLIs "exist"/"are logged in". */
+function prober(opts: { claude?: 'ready' | 'logged_out' | 'missing'; codex?: boolean }) {
+  return async (cmd: string, args: string[]) => {
+    if (cmd === 'claude') {
+      if (opts.claude === 'missing' || !opts.claude) return { kind: 'spawn_error' as const };
+      if (args[0] === '--version') return { kind: 'ok' as const, stdout: '2.1.0 (Claude Code)' };
+      return opts.claude === 'ready'
+        ? { kind: 'ok' as const, stdout: 'logged in' }
+        : { kind: 'failed' as const, stdout: '' };
+    }
+    if (cmd === 'codex' && opts.codex) return { kind: 'ok' as const, stdout: '1.0.0' };
+    return { kind: 'spawn_error' as const };
+  };
+}
+
+function openKernel(opts: { claude?: 'ready' | 'logged_out' | 'missing'; codex?: boolean } = {}) {
+  kernel = AmritaKernel.open({ dbPath: ':memory:', codingRuntimeProber: prober(opts) });
+  client = new InProcessClient(kernel);
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'amrita-setup-'));
   process.env.AMRITA_HOME = join(dir, '.amrita');
-  kernel = AmritaKernel.open({ dbPath: ':memory:' });
-  client = new InProcessClient(kernel);
+  openKernel(); // default: no CLIs found — pure API-key world
 });
 afterEach(() => {
   kernel.close();
@@ -24,6 +43,9 @@ afterEach(() => {
     'ANTHROPIC_API_KEY',
     'TELEGRAM_BOT_TOKEN',
     'AMRITA_TELEGRAM_ALLOWED_IDS',
+    'OPENROUTER_API_KEY',
+    'GEMINI_API_KEY',
+    'LOCAL_LLM_API_KEY',
   ]) {
     delete process.env[name]; // deterministic env posture between tests
   }
@@ -79,9 +101,9 @@ interface AccountLite {
 
 describe('amrita setup wizard (ADR-0024)', () => {
   it('full flow: provider key + telegram — secrets to file, names to store, role bound', async () => {
-    // answers: provider choice, enable telegram, allowed ids
+    // answers: provider choice (3 = anthropic), model (default), telegram, ids
     const { deps, output } = scripted(
-      ['1', 'y', '12345, 678'],
+      ['3', '', 'y', '12345, 678'],
       ['sk-test-abc', 'tok-tg'],
       telegramOk,
     );
@@ -117,17 +139,124 @@ describe('amrita setup wizard (ADR-0024)', () => {
   });
 
   it('re-running is idempotent: keeps the existing key and the single account', async () => {
-    const first = scripted(['1', 'n'], ['sk-test-abc'], telegramOk);
+    const first = scripted(['3', '', 'n'], ['sk-test-abc'], telegramOk);
     await runSetupWizard(client, first.deps);
 
     // second run: key already in env → no secret prompt for provider;
     // telegram unconfigured → asks enable, declined
-    const second = scripted(['1', 'n'], [], telegramOk);
+    const second = scripted(['3', '', 'n'], [], telegramOk);
     await runSetupWizard(client, second.deps);
     expect(second.output()).toContain('already set');
 
     const accounts = await client.call<AccountLite[]>('accounts.list');
     expect(accounts).toHaveLength(1);
+  });
+
+  it('renders the full grouped catalog with honest per-provider states', async () => {
+    const { deps, output } = scripted(['0', 'n'], [], telegramOk);
+    await runSetupWizard(client, deps);
+    const text = output();
+    expect(text).toContain('Subscription / login');
+    expect(text).toContain('API key');
+    expect(text).toContain('Local / self-hosted');
+    for (const title of [
+      'Claude subscription (via Claude Code login)',
+      'OpenAI account (via Codex CLI login)',
+      'Anthropic API key (Claude)',
+      'OpenAI API key',
+      'OpenRouter (one key, hundreds of models)',
+      'Google Gemini API key',
+      'Local / self-hosted (Ollama, vLLM, LM Studio — OpenAI-compatible)',
+    ]) {
+      expect(text).toContain(title);
+    }
+    // no CLI on this box → login entries are honest, never silently hidden
+    expect(text).toContain('the `claude` CLI was not found on PATH');
+    expect(text).toContain('the `codex` CLI was not found on PATH');
+  });
+
+  it('claude subscription: detected + logged in → bound as main with NO key anywhere', async () => {
+    kernel.close();
+    openKernel({ claude: 'ready' });
+    // recommended becomes 1 (ready login) — Enter accepts it
+    const { deps, output } = scripted(['', 'n'], [], telegramOk);
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('logged in via Claude Code');
+    expect(output()).toContain('no key is stored or forwarded');
+
+    const accounts = await client.call<AccountLite[]>('accounts.list');
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.provider).toBe('claude-code');
+    expect(accounts[0]?.secretRef).toBeNull(); // truly no secret ref
+    const roles = await client.call<{ roles: { role: string; resolvesTo: string }[] }>(
+      'providers.roles',
+    );
+    expect(roles.roles.find((r) => r.role === 'main')?.resolvesTo).toBe('claude-code');
+  });
+
+  it('claude subscription logged OUT: honest warning, decline returns to the menu', async () => {
+    kernel.close();
+    openKernel({ claude: 'logged_out' });
+    // pick 1 (claude), decline the bind-anyway, then 0 to skip
+    const { deps, output } = scripted(['1', 'n', '0', 'n'], [], telegramOk);
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('not logged in');
+    expect(await client.call<AccountLite[]>('accounts.list')).toEqual([]);
+  });
+
+  it('codex detected: honestly unavailable (no fake subscription), user picks another path', async () => {
+    kernel.close();
+    openKernel({ codex: true });
+    const { deps, output } = scripted(['2', '5', '', 'n'], ['sk-or-key'], telegramOk);
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('cannot run chat through it yet');
+    // user landed on OpenRouter instead
+    const accounts = await client.call<AccountLite[]>('accounts.list');
+    expect(accounts[0]?.provider).toBe('openrouter');
+    expect(accounts[0]?.secretRef).toBe('OPENROUTER_API_KEY');
+  });
+
+  it('local endpoint: persists settings config + account + role, key optional', async () => {
+    const { deps, output } = scripted(
+      ['7', 'http://localhost:11434/v1', 'llama3.1', 'n'],
+      [''],
+      telegramOk,
+    );
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('local endpoint bound as your main brain');
+
+    const setting = await client.call<{ value: unknown }>('settings.get', {
+      key: 'providers.endpoint.local',
+    });
+    expect(setting.value).toEqual({ baseUrl: 'http://localhost:11434/v1', model: 'llama3.1' });
+    const accounts = await client.call<AccountLite[]>('accounts.list');
+    expect(accounts[0]?.provider).toBe('local');
+    const roles = await client.call<{ roles: { role: string; resolvesTo: string }[] }>(
+      'providers.roles',
+    );
+    expect(roles.roles.find((r) => r.role === 'main')?.resolvesTo).toBe('local');
+  });
+
+  it('invalid menu input re-asks instead of crashing (back/retry flow)', async () => {
+    const { deps, output } = scripted(['banana', '99', '0', 'n'], [], telegramOk);
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('not an option');
+    expect(await client.call<AccountLite[]>('accounts.list')).toEqual([]);
+  });
+
+  it('the brain can be CHANGED after onboarding by re-running the wizard', async () => {
+    const first = scripted(['3', '', 'n'], ['sk-ant-key'], telegramOk);
+    await runSetupWizard(client, first.deps);
+
+    const second = scripted(['6', '', 'n'], ['gm-key'], telegramOk);
+    await runSetupWizard(client, second.deps);
+
+    const roles = await client.call<{ roles: { role: string; resolvesTo: string }[] }>(
+      'providers.roles',
+    );
+    expect(roles.roles.find((r) => r.role === 'main')?.resolvesTo).toBe('gemini');
+    const accounts = await client.call<AccountLite[]>('accounts.list');
+    expect(accounts.map((a) => a.provider).sort()).toEqual(['anthropic', 'gemini']);
   });
 
   it('a failing telegram probe is honest, and declining keeps the file clean', async () => {

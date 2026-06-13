@@ -86,19 +86,39 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
       });
       continue;
     }
-    const bound = accounts.filter((a) => a.provider === p.id && a.secretRef);
-    const unbound = accounts.filter((a) => a.provider === p.id && !a.secretRef);
-    if (bound.length === 0 && unbound.length === 0) {
-      // Unconfigured by default → a warning, not a failure (PLAN §5.4).
-      checks.push({
-        id: `provider.${p.id}`,
-        label: `${p.id} provider`,
-        status: 'warn',
-        detail: 'needs setup — no account connected',
-        fix: `amrita setup  # or: amrita account connect --provider ${p.id}`,
-      });
+    // Detection-only catalog entries (e.g. codex) are not actionable setup
+    // state — the chooser explains them; doctor stays signal-only.
+    if (p.executable === false) continue;
+    const all = accounts.filter((a) => a.provider === p.id);
+    const bound = all.filter((a) => a.secretRef);
+    const unbound = all.filter((a) => !a.secretRef);
+    // Login + local providers: presence-only here (live login state comes from
+    // `providers.catalog` / `runtime status`, never claimed by doctor).
+    if (p.authMode === 'subscription_cli' || p.authMode === 'local_endpoint') {
+      if (p.available) {
+        checks.push({
+          id: `provider.${p.id}`,
+          label: `${p.id} provider`,
+          status: 'ok',
+          detail:
+            p.authMode === 'subscription_cli'
+              ? 'configured — subscription login (live state: amrita runtime status)'
+              : 'local endpoint configured',
+        });
+      } else if (all.length > 0) {
+        checks.push({
+          id: `provider.${p.id}`,
+          label: `${p.id} provider`,
+          status: 'warn',
+          detail: 'account connected but the endpoint/login is not configured',
+          fix: 'amrita setup',
+        });
+      }
+      // unconfigured login/local providers are silent here — the single
+      // "no brain" warning below covers them without 7 lines of noise.
       continue;
     }
+    if (bound.length === 0 && unbound.length === 0) continue; // covered by the summary warn
     if (p.envReady) {
       checks.push({
         id: `provider.${p.id}`,
@@ -127,6 +147,17 @@ function providerSection(kernel: AmritaKernel): DoctorSection {
         fix: 'amrita account bind-secret <ACCOUNT_ID> <ENV_NAME>',
       });
     }
+  }
+  // One quiet summary instead of a warn-per-provider wall when nothing is set up.
+  if (!checks.some((c) => c.id.startsWith('provider.') && c.id !== 'provider.mock')) {
+    checks.push({
+      id: 'provider.none',
+      label: 'brain (model provider)',
+      status: 'warn',
+      detail:
+        'no brain configured yet — choose a subscription login, API key (Anthropic/OpenAI/OpenRouter/Gemini), or local endpoint',
+      fix: 'amrita setup',
+    });
   }
   // Role policy (D5/ADR-0017): unconfigured `auto` is a warning, not a failure.
   const bindings = PROVIDER_ROLES.map((role) => ({ role, binding: kernel.getRoleBinding(role) }));

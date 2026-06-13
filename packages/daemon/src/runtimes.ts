@@ -86,15 +86,20 @@ const PROBE_TIMEOUT_MS = 1500;
 export async function getClaudeCodeStatus(opts: {
   realExecution: boolean;
   prober?: CommandProber;
+  /** Probe budget. The default favors snappy status panels; interactive
+   * choosers pass more — `claude auth status` alone takes ~4s on a VPS, and a
+   * slow honest answer beats a fast wrong one. */
+  timeoutMs?: number;
 }): Promise<CodingRuntimeStatus> {
   const probe = opts.prober ?? defaultProber;
+  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const base = {
     id: 'claude-code' as const,
     title: 'Claude Code',
     realExecution: opts.realExecution,
   };
 
-  const version = await probe('claude', ['--version'], PROBE_TIMEOUT_MS);
+  const version = await probe('claude', ['--version'], timeoutMs);
   if (version.kind === 'spawn_error') {
     return {
       ...base,
@@ -113,7 +118,7 @@ export async function getClaudeCodeStatus(opts: {
   }
   const versionString = version.stdout.trim().slice(0, 60);
 
-  const auth = await probe('claude', ['auth', 'status'], PROBE_TIMEOUT_MS);
+  const auth = await probe('claude', ['auth', 'status'], timeoutMs);
   if (auth.kind === 'ok') {
     return {
       ...base,

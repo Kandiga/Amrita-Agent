@@ -2,3 +2,11 @@ packages:
   - 'packages/*'
   - 'packages/lanes/*'
   - 'apps/*'
+
+# pnpm v10.4+/v11 home for build-script approval (package.json `pnpm` field is
+# ignored by pnpm 11 with a warning). better-sqlite3 is required; biome/esbuild
+# just silence the unbuilt warning — their platform binaries work either way.
+onlyBuiltDependencies:
+  - better-sqlite3
+  - '@biomejs/biome'
+  - esbuild

@@ -48,14 +48,16 @@ describe('doctor', () => {
       'connectors',
       'auth',
     ]);
-    // mock is always ok; real providers warn "needs setup" with an exact fix
+    // mock is always ok; an unconfigured brain is ONE quiet summary warn
+    // (ADR-0025) instead of a warn-per-provider wall
     const providers = section('providers');
     expect(providers.checks.find((c) => c.id === 'provider.mock')?.status).toBe('ok');
-    const anth = providers.checks.find((c) => c.id === 'provider.anthropic');
-    expect(anth?.status).toBe('warn');
-    expect(anth?.fix).toContain('account connect --provider anthropic');
+    expect(providers.checks.find((c) => c.id === 'provider.anthropic')).toBeUndefined();
+    const none = providers.checks.find((c) => c.id === 'provider.none');
+    expect(none?.status).toBe('warn');
+    expect(none?.fix).toBe('amrita setup');
     // every warn's fix lands in the numbered footer
-    expect(r.fixes.some((f) => f.includes('account connect --provider anthropic'))).toBe(true);
+    expect(r.fixes).toContain('amrita setup');
   });
 
   it('an account bound to a missing env var is a FAIL with a setup fix', () => {

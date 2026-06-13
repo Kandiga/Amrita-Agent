@@ -32,27 +32,21 @@ export interface SetupDeps {
   env: NodeJS.ProcessEnv;
 }
 
-interface ProviderChoice {
-  id: 'anthropic' | 'openai';
+/** One `providers.catalog` entry (ADR-0025) — the wizard renders FROM this. */
+interface CatalogEntry {
+  id: string;
   title: string;
-  envName: string;
-  keyUrl: string;
+  group: 'login' | 'api_key' | 'local';
+  authMode: string;
+  defaultModel: string;
+  executable: boolean;
+  envName?: string;
+  keyUrl?: string;
+  installHint?: string;
+  state: 'ready' | 'needs_key' | 'needs_login' | 'missing_cli' | 'needs_endpoint' | 'unavailable';
+  detail: string;
+  fix?: string;
 }
-
-const PROVIDERS: ProviderChoice[] = [
-  {
-    id: 'anthropic',
-    title: 'Anthropic (Claude) — recommended',
-    envName: 'ANTHROPIC_API_KEY',
-    keyUrl: 'https://console.anthropic.com/settings/keys',
-  },
-  {
-    id: 'openai',
-    title: 'OpenAI',
-    envName: 'OPENAI_API_KEY',
-    keyUrl: 'https://platform.openai.com/api-keys',
-  },
-];
 
 interface ProviderInfoLite {
   id: string;
@@ -62,7 +56,31 @@ interface ProviderInfoLite {
 interface AccountLite {
   id: string;
   provider: string;
+  authMode?: string;
   secretRef: string | null;
+}
+
+const GROUP_TITLES: Record<CatalogEntry['group'], string> = {
+  login: 'Subscription / login (no API key anywhere)',
+  api_key: 'API key',
+  local: 'Local / self-hosted',
+};
+
+const STATE_MARKS: Record<CatalogEntry['state'], string> = {
+  ready: '✓',
+  needs_key: '·',
+  needs_login: '!',
+  missing_cli: '✗',
+  needs_endpoint: '·',
+  unavailable: '✗',
+};
+
+/** v0.1 lesson: recommend what will actually work — ready login > ready key > anthropic. */
+function recommendedIndex(entries: CatalogEntry[]): number {
+  const ready = entries.findIndex((e) => e.executable && e.state === 'ready');
+  if (ready >= 0) return ready + 1;
+  const anthropic = entries.findIndex((e) => e.id === 'anthropic');
+  return anthropic >= 0 ? anthropic + 1 : 1;
 }
 
 function isYes(answer: string, defaultYes: boolean): boolean {
@@ -77,16 +95,17 @@ function saveSecret(name: string, value: string, env: NodeJS.ProcessEnv): void {
   env[name] = value;
 }
 
-/** Connect-or-reuse the account for `provider` and bind it to `envName`. */
-async function ensureAccountBound(
+/** Connect-or-reuse the account for `provider`; bind `envName` for key auth. */
+async function ensureAccount(
   client: InProcessClient,
   provider: string,
-  envName: string,
+  authMode: 'api_key' | 'subscription_cli' | 'local_endpoint',
+  envName?: string,
 ): Promise<string> {
   const accounts = await client.call<AccountLite[]>('accounts.list');
   const existing = accounts.find((a) => a.provider === provider);
   if (existing) {
-    if (existing.secretRef !== envName) {
+    if (envName && existing.secretRef !== envName) {
       await client.call('accounts.bindSecretRef', { accountId: existing.id, envName });
     }
     return existing.id;
@@ -96,52 +115,177 @@ async function ensureAccountBound(
     projectId: ctx.projectId,
     conversationId: ctx.conversationId,
     provider,
-    authMode: 'api_key',
+    authMode,
   });
-  await client.call('accounts.bindSecretRef', { accountId: created.accountId, envName });
+  if (envName) {
+    await client.call('accounts.bindSecretRef', { accountId: created.accountId, envName });
+  }
   return created.accountId;
 }
 
 async function sectionProvider(client: InProcessClient, deps: SetupDeps): Promise<void> {
-  const { out, ask, askSecret, env } = deps;
+  const { out, ask } = deps;
+  const entries = await client.call<CatalogEntry[]>('providers.catalog');
   out('');
   out('── Brain (model provider) ──');
-  for (const [i, p] of PROVIDERS.entries()) out(`  ${i + 1}) ${p.title}`);
-  out('  0) skip for now (mock provider keeps working)');
-  const answer = await ask('Choose a provider [1]: ');
-  const idx = answer.trim() === '' ? 1 : Number(answer.trim());
-  if (idx === 0) {
-    out('  → skipped — chat uses the deterministic mock provider until one is configured');
-    return;
-  }
-  const choice = PROVIDERS[idx - 1];
-  if (!choice) throw new CliError(`invalid choice: ${answer.trim()}`);
-
-  const hasValue = typeof env[choice.envName] === 'string' && env[choice.envName] !== '';
-  if (hasValue) {
-    out(`  ✓ ${choice.envName} already set — keeping the existing value`);
-  } else {
-    out(`  Get a key at: ${choice.keyUrl}`);
-    const key = await askSecret(`  Paste your ${choice.envName} (Enter to skip): `);
-    if (key.trim() === '') {
-      out('  → no key entered — you can re-run `amrita setup` any time');
-    } else {
-      saveSecret(choice.envName, key.trim(), env);
-      out(`  ✓ saved to ${secretsEnvPath(env)} (0600) — the database stores the NAME only`);
+  let lastGroup: CatalogEntry['group'] | null = null;
+  for (const [i, e] of entries.entries()) {
+    if (e.group !== lastGroup) {
+      out(`  ${GROUP_TITLES[e.group]}:`);
+      lastGroup = e.group;
     }
+    const mark = STATE_MARKS[e.state];
+    out(`    ${i + 1}) ${e.title}`);
+    out(`         ${mark} ${e.detail}`);
+  }
+  out('    0) skip for now (the deterministic mock provider keeps working)');
+  const rec = recommendedIndex(entries);
+  out(`  Recommended: ${rec}) ${entries[rec - 1]?.title ?? ''}`);
+
+  // Choice loop: unavailable picks explain themselves and return here — the
+  // user always has a way forward (another provider, or 0 to skip).
+  for (;;) {
+    const answer = await ask(`Choose a brain [${rec}]: `);
+    const idx = answer.trim() === '' ? rec : Number(answer.trim());
+    if (idx === 0) {
+      out('  → skipped — chat uses the deterministic mock provider until one is configured');
+      return;
+    }
+    const entry = entries[idx - 1];
+    if (!entry || !Number.isInteger(idx)) {
+      out(`  ! '${answer.trim()}' is not an option — pick a number from the list (0 to skip)`);
+      continue;
+    }
+    const done = await configureProvider(client, deps, entry);
+    if (done) return;
+  }
+}
+
+/** Configure one catalog entry. Returns false to send the user back to the menu. */
+async function configureProvider(
+  client: InProcessClient,
+  deps: SetupDeps,
+  entry: CatalogEntry,
+): Promise<boolean> {
+  const { out, ask } = deps;
+  if (!entry.executable) {
+    out(`  ✗ ${entry.title}: ${entry.detail}`);
+    if (entry.state === 'missing_cli' && entry.installHint) {
+      out(`    install: ${entry.installHint}`);
+    }
+    return false;
+  }
+  switch (entry.authMode) {
+    case 'subscription_cli':
+      return configureSubscription(client, deps, entry);
+    case 'local_endpoint':
+      return configureLocalEndpoint(client, deps, entry);
+    default:
+      return configureApiKey(client, deps, entry);
+  }
+}
+
+async function configureSubscription(
+  client: InProcessClient,
+  deps: SetupDeps,
+  entry: CatalogEntry,
+): Promise<boolean> {
+  const { out, ask } = deps;
+  if (entry.state === 'missing_cli') {
+    out(`  ✗ ${entry.detail}`);
+    out(`    install: ${entry.installHint ?? ''} — then re-run \`amrita setup\``);
+    return false;
+  }
+  if (entry.state === 'needs_login') {
+    out(`  ! ${entry.detail}`);
+    out(`    fix: ${entry.fix ?? 'log in once, then re-run `amrita setup`'}`);
+    if (
+      !isYes(await ask('  Bind it as your brain anyway (it will work after login)? (y/N): '), false)
+    ) {
+      return false;
+    }
+  } else {
+    out(`  ✓ ${entry.detail}`);
+  }
+  await ensureAccount(client, entry.id, 'subscription_cli');
+  await client.call('providers.role.set', { role: 'main', provider: entry.id });
+  out(`  ✓ ${entry.id} bound as your main brain (model: ${entry.defaultModel})`);
+  out('    Amrita invokes your logged-in CLI session — no key is stored or forwarded.');
+  return true;
+}
+
+async function configureApiKey(
+  client: InProcessClient,
+  deps: SetupDeps,
+  entry: CatalogEntry,
+): Promise<boolean> {
+  const { out, ask, askSecret, env } = deps;
+  const envName = entry.envName ?? `${entry.id.toUpperCase()}_API_KEY`;
+  const hasValue = typeof env[envName] === 'string' && env[envName] !== '';
+  if (hasValue) {
+    out(`  ✓ ${envName} already set — keeping the existing value`);
+  } else {
+    if (entry.keyUrl) out(`  Get a key at: ${entry.keyUrl}`);
+    const key = await askSecret(`  Paste your ${envName} (Enter to go back): `);
+    if (key.trim() === '') {
+      out('  → no key entered');
+      return false;
+    }
+    saveSecret(envName, key.trim(), env);
+    out(`  ✓ saved to ${secretsEnvPath(env)} (0600) — the database stores the NAME only`);
   }
 
-  await ensureAccountBound(client, choice.id, choice.envName);
-  await client.call('providers.role.set', { role: 'main', provider: choice.id });
+  const model = (await ask(`  Model [${entry.defaultModel}]: `)).trim();
+  await ensureAccount(client, entry.id, 'api_key', envName);
+  await client.call('providers.role.set', {
+    role: 'main',
+    provider: entry.id,
+    ...(model ? { model } : {}),
+  });
 
   const providers = await client.call<ProviderInfoLite[]>('providers.list');
-  const live = providers.find((p) => p.id === choice.id);
+  const live = providers.find((p) => p.id === entry.id);
   if (live?.available) {
-    out(`  ✓ ${choice.id} connected and bound as your main brain — env ready`);
+    out(`  ✓ ${entry.id} connected and bound as your main brain — env ready`);
   } else {
-    out(`  ! ${choice.id} bound as main, but ${choice.envName} is still missing — `);
+    out(`  ! ${entry.id} bound as main, but ${envName} is still missing —`);
     out('    chat falls back honestly until the key is present');
   }
+  return true;
+}
+
+async function configureLocalEndpoint(
+  client: InProcessClient,
+  deps: SetupDeps,
+  entry: CatalogEntry,
+): Promise<boolean> {
+  const { out, ask, askSecret, env } = deps;
+  out('  Any OpenAI-compatible server works: Ollama, vLLM, LM Studio, llama.cpp.');
+  const baseUrlAnswer = (await ask('  Base URL [http://localhost:11434/v1]: ')).trim();
+  const baseUrl = baseUrlAnswer === '' ? 'http://localhost:11434/v1' : baseUrlAnswer;
+  const model = (await ask('  Model name (e.g. llama3.1, qwen2.5) — required: ')).trim();
+  if (model === '') {
+    out('  ! a local endpoint needs a model name — ask your server (`ollama list`)');
+    return false;
+  }
+  const key = await askSecret('  API key, if your server needs one (Enter for none): ');
+  let keyEnv: string | undefined;
+  if (key.trim() !== '') {
+    keyEnv = 'LOCAL_LLM_API_KEY';
+    saveSecret(keyEnv, key.trim(), env);
+    out(`  ✓ key saved to ${secretsEnvPath(env)} (0600) as ${keyEnv}`);
+  }
+  const ctx = await resolveWriteContext(client, {});
+  await client.call('settings.update', {
+    projectId: ctx.projectId,
+    conversationId: ctx.conversationId,
+    key: 'providers.endpoint.local',
+    value: { baseUrl, model, ...(keyEnv ? { keyEnv } : {}) },
+  });
+  await ensureAccount(client, entry.id, 'local_endpoint');
+  await client.call('providers.role.set', { role: 'main', provider: entry.id });
+  out(`  ✓ local endpoint bound as your main brain — ${baseUrl} · ${model}`);
+  return true;
 }
 
 /** Live getMe probe — honest validation, 5s timeout, never throws. */

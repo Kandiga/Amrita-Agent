@@ -363,3 +363,36 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** 3 new tests (2 migrate-concurrency, 1 poisoned-DB structured error);
   suite 294/294. `better-sqlite3` (+types) added as @amrita/cli devDependency for the
   poisoned-DB fixture.
+
+## Phase 13 — Hermes-grade provider catalog: subscription login, 7 brains, honest chooser (ADR-0025)
+
+- **Date:** 2026-06-12/13 · ADR-0025
+- **The miss it fixes:** the Phase 12 wizard shipped API-key-only with two providers —
+  an incomplete implementation, not a technical limit (protocol's authMode enum, the
+  CommandProber seam, and accounts/settings were already designed for more). Natanel's
+  expectation was the v0.1/Hermes chooser breadth; this phase delivers it on v2 seams.
+- **What landed:** `REAL_PROVIDERS` became a render-from-metadata catalog (title/group/
+  authMode/envName/keyUrl/baseUrl/detectCli/executable); ONE OpenAI-compatible adapter
+  with version-segment baseUrls powers openai + OpenRouter + Gemini-compat + local
+  endpoints; `claude-code` chats through the logged-in Claude Code CLI (`claude -p
+  --output-format json`, injectable CliExec, classified value-free errors) — a real
+  subscription path with zero keys; `codex` ships detection-only and SAYS so (never
+  faked); local endpoint config `{baseUrl, model, keyEnv?}` persists in settings under
+  `providers.endpoint.local`; new async `providers.catalog` RPC with bounded live CLI
+  probes (10s catalog budget after measuring `claude auth status` ≈ 4s — a slow honest
+  state beats a fast wrong one); wizard renders the grouped catalog with state marks,
+  recommended default, back/retry loop, optional model override, and re-run-to-switch;
+  doctor collapses an unconfigured brain into one summary warn.
+- **Verification:** 24 new/rewritten tests (12 catalog/chat: states per probe scenario,
+  URL assertions for openrouter/gemini/local, CLI exec success + logged-out classify,
+  codex refusal; 12 wizard: all groups rendered, subscription ready/logged-out flows,
+  codex→OpenRouter fallback, local persistence, invalid-input retry, brain switching);
+  suite 313/313; LIVE smoke on the VPS: real wizard run showed claude-code "logged in
+  (2.1.175)" via real probes and one Enter bound it; `amrita chat` then answered through
+  the actual subscription (`claude-code · sonnet`). Also moved `onlyBuiltDependencies`
+  to pnpm-workspace.yaml (pnpm 11 ignored the package.json field with the WARN seen in
+  laptop QA).
+- **Limitations / next:** codex execution deferred until its CLI contract can be
+  verified on a machine that has it; streaming still honestly `false` for real
+  adapters; web Setup Hub still renders the old provider list — pointing it at
+  `providers.catalog` is the next slice; xAI/Mistral/etc. are now one catalog entry each.

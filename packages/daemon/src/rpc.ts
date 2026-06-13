@@ -483,6 +483,8 @@ export const METHODS: Record<string, RpcMethod> = {
     }),
   })),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
+  // The chooser-UI catalog (ADR-0025): live bounded CLI probes, honest states.
+  'providers.catalog': def(z.object({}).optional(), (k) => k.providersCatalog()),
 
   // Honest readiness: `ready` only when the surface actually works end-to-end
   // from THIS daemon right now. Telegram is ready only while its runner is live.

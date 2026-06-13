@@ -57,7 +57,7 @@ describe('amrita CLI', () => {
     expect(r.out).toContain('◆ store');
     expect(r.out).toContain('◆ providers');
     expect(r.out).toContain('✓ mock provider');
-    expect(r.out).toContain('! anthropic provider');
+    expect(r.out).toContain('! brain (model provider)');
     expect(r.out).toContain('Run these to fix:');
     expect(r.out).toMatch(/ {2}1\. /);
     expect(r.out).toContain('doctor: ok with warnings');

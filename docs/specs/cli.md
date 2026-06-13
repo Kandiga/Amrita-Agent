@@ -28,7 +28,10 @@ process env always wins, and the in-process `run()` used by tests never loads it
 ## Commands
 
 ```bash
-amrita setup                   # first-run wizard: provider key → main role → telegram (ADR-0024)
+amrita setup                   # first-run wizard (ADR-0024/0025): grouped brain chooser —
+                               #   subscription login (Claude Code), API keys (Anthropic/OpenAI/
+                               #   OpenRouter/Gemini), local OpenAI-compatible endpoint — then telegram.
+                               #   Re-run any time to change brains; states are live-probed and honest.
 amrita health --db PATH
 amrita doctor --db PATH        # grouped ◆ checks, ✓/!/✗ marks, numbered exact-fix footer
 

@@ -44,16 +44,21 @@ import { fetchGithubIssues } from './github.ts';
 import {
   type ChatProvider,
   type ChatUsage,
+  type CliExec,
   type FetchLike,
+  LOCAL_ENDPOINT_SETTING,
   MOCK_PROVIDER_ID,
   MockProvider,
+  type ProviderCatalogEntry,
   ProviderError,
   type ProviderInfo,
   type ProviderRole,
   REAL_PROVIDERS,
+  type RealProviderSpec,
   type RoleBinding,
   defaultFetch,
   envPresent,
+  parseLocalEndpoint,
   parseRoleBinding,
   readEnvSecret,
   roleSettingKey,
@@ -126,6 +131,8 @@ export interface KernelOptions {
   laneAllowedRoots?: string[];
   /** Injectable coding-runtime prober (tests pass a fake; defaults to bounded spawn). */
   codingRuntimeProber?: CommandProber;
+  /** Injectable CLI exec for subscription providers (tests pass a fake; defaults to bounded spawnSync). */
+  cliExec?: CliExec;
   /** How long a pending approval waits before timing out to DENY (ADR-0021). */
   approvalTimeoutMs?: number;
 }
@@ -181,6 +188,9 @@ interface LaneSettleResult {
   error?: string;
 }
 
+/** Catalog probes run at a human moment (the chooser) — give the CLI real time. */
+const CATALOG_PROBE_TIMEOUT_MS = 10_000;
+
 /** Parse a `:`-separated list of workspace roots (e.g. `AMRITA_LANES_ALLOWED_ROOTS`). */
 function parseAllowedRoots(value: string | undefined): string[] {
   if (!value) return [];
@@ -209,6 +219,7 @@ export class AmritaKernel {
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
+  private readonly cliExec: CliExec | undefined;
   private readonly activeLanes = new Map<
     string,
     { controller: AbortController; promise: Promise<LaneSettleResult> }
@@ -234,6 +245,7 @@ export class AmritaKernel {
     extraLaneRunners: Map<string, LaneRunner>,
     realLaneExecution: boolean,
     codingRuntimeProber: CommandProber | undefined,
+    cliExec: CliExec | undefined,
     approvalTimeoutMs: number,
   ) {
     this.store = store;
@@ -244,6 +256,7 @@ export class AmritaKernel {
     this.extraLaneRunners = extraLaneRunners;
     this.realLaneExecution = realLaneExecution;
     this.codingRuntimeProber = codingRuntimeProber;
+    this.cliExec = cliExec;
     this.approvalTimeoutMs = approvalTimeoutMs;
   }
 
@@ -282,6 +295,7 @@ export class AmritaKernel {
       extraLaneRunners,
       realLaneExecution,
       opts.codingRuntimeProber,
+      opts.cliExec,
       opts.approvalTimeoutMs ?? 120_000,
     );
   }
@@ -379,7 +393,13 @@ export class AmritaKernel {
 
   // ── chat turn + providers ────────────────────────────────────────────────
 
-  /** Provider availability from account config + env presence. No secret values. */
+  /**
+   * Provider availability from account config + env/setting presence (sync,
+   * presence-only — no probes, no secret values). Availability semantics per
+   * auth mode: api_key = bound account with its env var present;
+   * subscription_cli = a connected account (login state is probed live by
+   * `providers.catalog` / first turn); local_endpoint = endpoint configured.
+   */
   listProviders(): ProviderInfo[] {
     const accounts = this.store.listAccounts();
     return [
@@ -392,18 +412,161 @@ export class AmritaKernel {
         streaming: true, // MockProvider implements generateStream (ADR-0016)
       },
       ...REAL_PROVIDERS.map((spec): ProviderInfo => {
-        const bound = accounts.filter((a) => a.provider === spec.id && a.secretRef);
+        const all = accounts.filter((a) => a.provider === spec.id);
+        const bound = all.filter((a) => a.secretRef);
         const envReady = bound.some((a) => a.secretRef !== null && envPresent(a.secretRef));
+        let available = false;
+        if (spec.executable) {
+          if (spec.authMode === 'api_key') available = envReady;
+          else if (spec.authMode === 'subscription_cli') available = all.length > 0;
+          else if (spec.authMode === 'local_endpoint') {
+            available = parseLocalEndpoint(this.getSetting(LOCAL_ENDPOINT_SETTING)) !== undefined;
+          }
+        }
         return {
           id: spec.id,
           kind: 'real',
-          available: envReady,
-          configuredAccounts: bound.length,
+          available,
+          configuredAccounts: spec.authMode === 'api_key' ? bound.length : all.length,
           envReady,
           streaming: spec.streaming,
+          title: spec.title,
+          group: spec.group,
+          authMode: spec.authMode,
+          executable: spec.executable,
         };
       }),
     ];
+  }
+
+  /**
+   * The provider CATALOG (ADR-0025): everything a chooser UI needs, with live
+   * bounded CLI probes for login providers. States are honest — `ready` only
+   * after real evidence; detection-only entries say exactly why they cannot
+   * run; nothing ever silently disappears.
+   */
+  async providersCatalog(): Promise<ProviderCatalogEntry[]> {
+    const accounts = this.store.listAccounts();
+    const localCfg = parseLocalEndpoint(this.getSetting(LOCAL_ENDPOINT_SETTING));
+    return Promise.all(
+      REAL_PROVIDERS.map(async (spec): Promise<ProviderCatalogEntry> => {
+        const base = {
+          id: spec.id,
+          title: spec.title,
+          group: spec.group,
+          authMode: spec.authMode,
+          defaultModel: spec.defaultModel,
+          executable: spec.executable,
+          ...(spec.envName ? { envName: spec.envName } : {}),
+          ...(spec.keyUrl ? { keyUrl: spec.keyUrl } : {}),
+          ...(spec.installHint ? { installHint: spec.installHint } : {}),
+        };
+        if (spec.authMode === 'api_key') {
+          const bound = accounts.filter((a) => a.provider === spec.id && a.secretRef);
+          const envReady = bound.some((a) => a.secretRef !== null && envPresent(a.secretRef));
+          if (envReady) {
+            const envName = bound.find((a) => a.secretRef && envPresent(a.secretRef))?.secretRef;
+            return {
+              ...base,
+              state: 'ready',
+              detail: `key present via ${envName ?? spec.envName}`,
+            };
+          }
+          if (bound.length > 0) {
+            return {
+              ...base,
+              state: 'needs_key',
+              detail: `account bound to ${bound[0]?.secretRef}, but that env var has no value`,
+              fix: 'amrita setup',
+            };
+          }
+          return { ...base, state: 'needs_key', detail: 'no key configured', fix: 'amrita setup' };
+        }
+        if (spec.authMode === 'local_endpoint') {
+          if (localCfg) {
+            return {
+              ...base,
+              state: 'ready',
+              detail: `endpoint ${localCfg.baseUrl} · model ${localCfg.model}`,
+            };
+          }
+          return {
+            ...base,
+            state: 'needs_endpoint',
+            detail: 'no endpoint configured (Ollama default: http://localhost:11434/v1)',
+            fix: 'amrita setup',
+          };
+        }
+        // login providers (subscription_cli / oauth): bounded live CLI probe.
+        return this.loginProviderCatalogEntry(spec, base);
+      }),
+    );
+  }
+
+  /** Catalog state for a login (CLI-session) provider, via bounded probes. */
+  private async loginProviderCatalogEntry(
+    spec: RealProviderSpec,
+    base: Omit<ProviderCatalogEntry, 'state' | 'detail' | 'fix'>,
+  ): Promise<ProviderCatalogEntry> {
+    if (spec.id === 'claude-code') {
+      const st = await getClaudeCodeStatus({
+        realExecution: this.realLaneExecution,
+        ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
+        timeoutMs: CATALOG_PROBE_TIMEOUT_MS,
+      });
+      if (st.state === 'ready') {
+        return {
+          ...base,
+          state: 'ready',
+          detail: `logged in via Claude Code${st.version ? ` (${st.version})` : ''} — subscription session; no API key exists anywhere`,
+        };
+      }
+      if (st.state === 'not_installed') {
+        return {
+          ...base,
+          state: 'missing_cli',
+          detail: 'the `claude` CLI was not found on PATH',
+          fix: spec.installHint ?? '',
+        };
+      }
+      if (st.state === 'installed_unauthenticated') {
+        return {
+          ...base,
+          state: 'needs_login',
+          detail: 'Claude Code is installed but not logged in',
+          fix: 'claude  # log in once interactively',
+        };
+      }
+      return {
+        ...base,
+        state: 'needs_login',
+        detail: 'Claude Code is installed; login state could not be verified in time',
+        fix: 'claude auth status',
+      };
+    }
+    // Generic detection-only login provider (codex today): detect, never run.
+    const probe = this.codingRuntimeProber;
+    const cli = spec.detectCli ?? spec.id;
+    const found = probe
+      ? (await probe(cli, ['--version'], CATALOG_PROBE_TIMEOUT_MS)).kind === 'ok'
+      : await import('./runtimes.ts').then((m) =>
+          m
+            .defaultProber(cli, ['--version'], CATALOG_PROBE_TIMEOUT_MS)
+            .then((r) => r.kind === 'ok'),
+        );
+    if (!found) {
+      return {
+        ...base,
+        state: 'missing_cli',
+        detail: `the \`${cli}\` CLI was not found on PATH`,
+        fix: spec.installHint ?? '',
+      };
+    }
+    return {
+      ...base,
+      state: 'unavailable',
+      detail: `${cli} CLI detected, but Amrita cannot run chat through it yet — use an OpenAI API key or OpenRouter today`,
+    };
   }
 
   /** The settings-backed role binding at a scope, if set and well-formed. */
@@ -547,8 +710,53 @@ export class AmritaKernel {
 
     const spec = REAL_PROVIDERS.find((p) => p.id === providerId);
     if (!spec) throw new ProviderError('unknown_provider', `unknown provider: ${providerId}`);
+    if (!spec.executable || !spec.create) {
+      // Detection-only catalog entry (e.g. codex): never pretend to run it.
+      throw new ProviderError(
+        'provider_unavailable',
+        `${spec.id} is detection-only — Amrita cannot run chat through it yet (use an API-key provider, OpenRouter, or a local endpoint)`,
+      );
+    }
 
-    // Default account rule: first bound account for this provider.
+    // Subscription login (claude-code): chat runs through the locally
+    // logged-in CLI. No key, no secretRef — no secret value exists in Amrita.
+    if (spec.authMode === 'subscription_cli') {
+      const model = input.model ?? roleModel ?? spec.defaultModel;
+      return {
+        providerId,
+        model,
+        provider: spec.create({
+          apiKey: '', // unused by the CLI adapter; the CLI holds the session
+          model,
+          ...(this.cliExec ? { execImpl: this.cliExec } : {}),
+        }),
+        role,
+        via,
+      };
+    }
+
+    // Local OpenAI-compatible endpoint: config lives in settings (non-secret);
+    // an optional key env NAME may be referenced — its value is read here only.
+    if (spec.authMode === 'local_endpoint') {
+      const cfg = parseLocalEndpoint(this.getSetting(LOCAL_ENDPOINT_SETTING));
+      if (!cfg) {
+        throw new ProviderError(
+          'provider_unavailable',
+          'local endpoint is not configured — run `amrita setup` (local section)',
+        );
+      }
+      const apiKey = (cfg.keyEnv ? readEnvSecret(cfg.keyEnv) : undefined) ?? 'local';
+      const model = input.model ?? roleModel ?? cfg.model;
+      return {
+        providerId,
+        model,
+        provider: spec.create({ apiKey, model, baseUrl: cfg.baseUrl, fetchImpl: this.fetchImpl }),
+        role,
+        via,
+      };
+    }
+
+    // api_key providers — default account rule: first bound account.
     if (!account) {
       account = this.store.listAccounts().find((a) => a.provider === providerId && a.secretRef);
       if (!account) {
@@ -569,7 +777,12 @@ export class AmritaKernel {
     return {
       providerId,
       model,
-      provider: spec.create({ apiKey, model, fetchImpl: this.fetchImpl }),
+      provider: spec.create({
+        apiKey,
+        model,
+        fetchImpl: this.fetchImpl,
+        ...(spec.baseUrl ? { baseUrl: spec.baseUrl } : {}),
+      }),
       role,
       via,
     };
