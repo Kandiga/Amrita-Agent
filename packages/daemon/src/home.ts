@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -21,6 +30,11 @@ export function defaultDbPath(env: NodeJS.ProcessEnv = process.env): string {
 /** Path of the machine-local secrets env file (created by `amrita setup`). */
 export function secretsEnvPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(amritaHome(env), 'secrets.env');
+}
+
+/** Path of the typed non-secret config file (ADR-0026). */
+export function configJsonPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(amritaHome(env), 'config.json');
 }
 
 /** Create the home directory owner-only (0700). Idempotent. */
@@ -102,4 +116,128 @@ export function writeSecretsEnv(
   renameSync(tmp, path);
   chmodSync(path, 0o600); // rename preserves the tmp mode, but be explicit
   return path;
+}
+
+// ── typed non-secret config (ADR-0026) ──────────────────────────────────────
+
+/**
+ * Amrita's typed, non-secret config file (`~/.amrita/config.json`). Holds
+ * settings that benefit from living outside the DB (operator preferences the
+ * installer/wizard read before a kernel is open). Secret VALUES never go here —
+ * only names/flags. Written atomically (tmp + rename) at 0600.
+ */
+export interface AmritaConfig {
+  /** Schema version for forward-compatible migrations. */
+  version: number;
+  /** ISO timestamp of the last `amrita setup` completion. */
+  lastSetupAt?: string;
+  /** Whether first-run setup has completed at least once. */
+  setupComplete?: boolean;
+  /** Free-form non-secret operator preferences (typed at the edges). */
+  preferences?: Record<string, unknown>;
+}
+
+const CONFIG_VERSION = 1;
+
+/** Read the config file, returning a default shell when absent or unparseable. */
+export function readConfig(env: NodeJS.ProcessEnv = process.env): AmritaConfig {
+  const path = configJsonPath(env);
+  if (!existsSync(path)) return { version: CONFIG_VERSION };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object') return { version: CONFIG_VERSION };
+    const obj = parsed as Record<string, unknown>;
+    return {
+      version: typeof obj.version === 'number' ? obj.version : CONFIG_VERSION,
+      ...(typeof obj.lastSetupAt === 'string' ? { lastSetupAt: obj.lastSetupAt } : {}),
+      ...(typeof obj.setupComplete === 'boolean' ? { setupComplete: obj.setupComplete } : {}),
+      ...(obj.preferences && typeof obj.preferences === 'object'
+        ? { preferences: obj.preferences as Record<string, unknown> }
+        : {}),
+    };
+  } catch {
+    return { version: CONFIG_VERSION };
+  }
+}
+
+/** Merge `updates` into the config file atomically (tmp + rename, 0600). */
+export function writeConfig(
+  updates: Partial<AmritaConfig>,
+  env: NodeJS.ProcessEnv = process.env,
+): AmritaConfig {
+  const path = configJsonPath(env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const merged: AmritaConfig = { ...readConfig(env), ...updates, version: CONFIG_VERSION };
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, path);
+  chmodSync(path, 0o600);
+  return merged;
+}
+
+/**
+ * Back up config.json and secrets.env to timestamped `.bak.<stamp>` copies before
+ * a reconfigure (Hermes lesson: never mutate a customized config without a
+ * restore path). `stamp` is injected (callers pass a real timestamp; tests pass
+ * a fixed one) so this stays deterministic. Returns the paths written.
+ */
+export function backupBeforeReconfigure(
+  stamp: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const written: string[] = [];
+  for (const src of [configJsonPath(env), secretsEnvPath(env)]) {
+    if (!existsSync(src)) continue;
+    const dest = `${src}.bak.${stamp}`;
+    try {
+      copyFileSync(src, dest);
+      chmodSync(dest, 0o600);
+      written.push(dest);
+    } catch {
+      // a failed backup must not block reconfigure — best effort
+    }
+  }
+  return written;
+}
+
+// ── permission checks (Hermes doctor lesson: home 0700, secrets 0600) ────────
+
+export interface PermissionIssue {
+  path: string;
+  expectedMode: number;
+  actualMode: number;
+  label: string;
+}
+
+/** Report home/secrets/config paths whose permissions are looser than required. */
+export function checkPermissions(env: NodeJS.ProcessEnv = process.env): PermissionIssue[] {
+  const issues: PermissionIssue[] = [];
+  const targets: { path: string; mode: number; label: string }[] = [
+    { path: amritaHome(env), mode: 0o700, label: 'home directory' },
+    { path: secretsEnvPath(env), mode: 0o600, label: 'secrets file' },
+    { path: configJsonPath(env), mode: 0o600, label: 'config file' },
+  ];
+  for (const t of targets) {
+    if (!existsSync(t.path)) continue;
+    const actual = statSync(t.path).mode & 0o777;
+    // Looser than required = any bit set beyond the allowed mask.
+    if ((actual & ~t.mode) !== 0) {
+      issues.push({ path: t.path, expectedMode: t.mode, actualMode: actual, label: t.label });
+    }
+  }
+  return issues;
+}
+
+/** Tighten any loose permissions found by checkPermissions. Returns fixed paths. */
+export function fixPermissions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const fixed: string[] = [];
+  for (const issue of checkPermissions(env)) {
+    try {
+      chmodSync(issue.path, issue.expectedMode);
+      fixed.push(issue.path);
+    } catch {
+      // best effort — doctor reports what could not be fixed
+    }
+  }
+  return fixed;
 }

@@ -49,6 +49,7 @@ import {
   LOCAL_ENDPOINT_SETTING,
   MOCK_PROVIDER_ID,
   MockProvider,
+  type ModelDiscovery,
   type ProviderCatalogEntry,
   ProviderError,
   type ProviderInfo,
@@ -58,12 +59,21 @@ import {
   type RoleBinding,
   defaultFetch,
   envPresent,
+  findProviderSpec,
+  normalizeProvider,
   parseLocalEndpoint,
   parseRoleBinding,
+  probeOpenAiModels,
   readEnvSecret,
   roleSettingKey,
+  suggestV1BaseUrl,
 } from './provider.ts';
-import { type CodingRuntimeStatus, type CommandProber, getClaudeCodeStatus } from './runtimes.ts';
+import {
+  type CodingRuntimeStatus,
+  type CommandProber,
+  getClaudeCodeStatus,
+  getRuntimesStatus,
+} from './runtimes.ts';
 import { clean } from './util.ts';
 
 /** A chat turn request. */
@@ -569,6 +579,76 @@ export class AmritaKernel {
     };
   }
 
+  /**
+   * Live model discovery for a provider (ADR-0026 / Hermes /models probe). Hits
+   * the OpenAI-compatible `/models` endpoint when the provider supports it,
+   * resolving the base URL and key the same way a chat turn would. Falls back to
+   * the curated catalog list when discovery is unsupported or fails — never an
+   * empty pick list, never a thrown error, never a secret.
+   */
+  async discoverModels(
+    providerId: string,
+  ): Promise<{ provider: string; models: string[]; source: 'live' | 'curated'; detail: string }> {
+    const spec = findProviderSpec(providerId);
+    if (!spec) throw new ProviderError('unknown_provider', `unknown provider: ${providerId}`);
+    const curated = [...(spec.models ?? [])];
+    const fallback = (detail: string) => ({
+      provider: spec.id,
+      models: curated,
+      source: 'curated' as const,
+      detail,
+    });
+    if (!spec.supportsModelDiscovery) {
+      return fallback('provider does not support live discovery; showing curated list');
+    }
+
+    let baseUrl = spec.baseUrl;
+    let apiKey: string | undefined;
+    if (spec.authMode === 'local_endpoint') {
+      const cfg = parseLocalEndpoint(this.getSetting(LOCAL_ENDPOINT_SETTING));
+      if (!cfg) return fallback('local endpoint not configured');
+      baseUrl = cfg.baseUrl;
+      apiKey = cfg.keyEnv ? readEnvSecret(cfg.keyEnv) : undefined;
+    } else {
+      const override = spec.baseUrlEnvVar ? process.env[spec.baseUrlEnvVar] : undefined;
+      baseUrl = override && override.length > 0 ? override : spec.baseUrl;
+      const account = this.store.listAccounts().find((a) => a.provider === spec.id && a.secretRef);
+      apiKey = account?.secretRef ? readEnvSecret(account.secretRef) : undefined;
+    }
+    if (!baseUrl) return fallback('no base URL to probe');
+
+    const probe: ModelDiscovery = await probeOpenAiModels({
+      baseUrl,
+      ...(apiKey ? { apiKey } : {}),
+      fetchImpl: this.fetchImpl,
+    });
+    if (!probe.ok || probe.models.length === 0) {
+      return fallback(`live discovery failed (${probe.detail}); showing curated list`);
+    }
+    return { provider: spec.id, models: probe.models, source: 'live', detail: probe.detail };
+  }
+
+  /**
+   * Probe an arbitrary OpenAI-compatible endpoint during setup (before it is
+   * persisted) — `/models` discovery plus the local `/v1` hint (Hermes custom
+   * endpoint flow). `keyEnv` is an env-var NAME; its value is read here only.
+   * Never throws, never returns a secret.
+   */
+  async probeEndpoint(
+    baseUrl: string,
+    keyEnv?: string,
+  ): Promise<ModelDiscovery & { suggestedUrl?: string }> {
+    const suggested = suggestV1BaseUrl(baseUrl);
+    const effectiveUrl = suggested ?? baseUrl;
+    const apiKey = keyEnv ? readEnvSecret(keyEnv) : undefined;
+    const probe = await probeOpenAiModels({
+      baseUrl: effectiveUrl,
+      ...(apiKey ? { apiKey } : {}),
+      fetchImpl: this.fetchImpl,
+    });
+    return { ...probe, ...(suggested ? { suggestedUrl: suggested } : {}) };
+  }
+
   /** The settings-backed role binding at a scope, if set and well-formed. */
   getRoleBinding(role: ProviderRole, projectId?: string): RoleBinding | undefined {
     return parseRoleBinding(this.store.getSetting(roleSettingKey(role, projectId)));
@@ -580,12 +660,10 @@ export class AmritaKernel {
    * only with a real status probe behind them.
    */
   async getCodingRuntimes(): Promise<CodingRuntimeStatus[]> {
-    return [
-      await getClaudeCodeStatus({
-        realExecution: this.realLaneExecution,
-        ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
-      }),
-    ];
+    return getRuntimesStatus({
+      realExecution: this.realLaneExecution,
+      ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
+    });
   }
 
   /**
@@ -608,7 +686,10 @@ export class AmritaKernel {
     model?: string;
     projectId?: string;
   }): { ok: true } {
-    if (!this.listProviders().some((p) => p.id === input.provider)) {
+    // Normalize aliases (`claude`→`anthropic`, `grok`→…) so the binding stores
+    // a canonical id (ADR-0026 / Hermes alias lesson).
+    const provider = normalizeProvider(input.provider);
+    if (provider !== MOCK_PROVIDER_ID && !this.listProviders().some((p) => p.id === provider)) {
       throw new ProviderError('unknown_provider', `unknown provider: ${input.provider}`);
     }
     if (input.projectId && !this.store.getProject(input.projectId)) {
@@ -617,7 +698,7 @@ export class AmritaKernel {
     this.store.updateSetting({
       ...this.systemWriteContext(),
       key: roleSettingKey(input.role, input.projectId),
-      value: { provider: input.provider, ...(input.model ? { model: input.model } : {}) },
+      value: { provider, ...(input.model ? { model: input.model } : {}) },
     });
     return { ok: true };
   }
@@ -690,7 +771,7 @@ export class AmritaKernel {
       roleModel = resolved.model;
       via = resolved.via;
     }
-    const providerId = requested ?? MOCK_PROVIDER_ID;
+    const providerId = normalizeProvider(requested ?? MOCK_PROVIDER_ID);
     if (account && input.provider && input.provider !== account.provider) {
       throw new ProviderError(
         'unknown_provider',
@@ -774,6 +855,10 @@ export class AmritaKernel {
       throw new ProviderError('missing_env_value', `env var ${account.secretRef} is not set`);
     }
     const model = input.model ?? roleModel ?? spec.defaultModel;
+    // A base-URL env override (e.g. OPENROUTER_BASE_URL) wins over the catalog
+    // default — non-secret, read here only (ADR-0026 / Hermes base_url_env_var).
+    const baseUrlOverride = spec.baseUrlEnvVar ? process.env[spec.baseUrlEnvVar] : undefined;
+    const baseUrl = baseUrlOverride && baseUrlOverride.length > 0 ? baseUrlOverride : spec.baseUrl;
     return {
       providerId,
       model,
@@ -781,7 +866,7 @@ export class AmritaKernel {
         apiKey,
         model,
         fetchImpl: this.fetchImpl,
-        ...(spec.baseUrl ? { baseUrl: spec.baseUrl } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
       }),
       role,
       via,

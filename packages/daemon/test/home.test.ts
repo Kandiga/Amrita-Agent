@@ -1,15 +1,29 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   amritaHome,
+  backupBeforeReconfigure,
+  checkPermissions,
+  configJsonPath,
   defaultDbPath,
   ensureHome,
+  fixPermissions,
   loadSecretsEnv,
   parseEnvFile,
+  readConfig,
   secretsEnvPath,
   validEnvName,
+  writeConfig,
   writeSecretsEnv,
 } from '../src/home.ts';
 
@@ -82,5 +96,65 @@ describe('loadSecretsEnv', () => {
 
   it('is a silent no-op when the file does not exist', () => {
     expect(loadSecretsEnv(env)).toEqual([]);
+  });
+});
+
+describe('typed config (ADR-0026)', () => {
+  it('reads a default shell when absent, then round-trips merged writes', () => {
+    expect(readConfig(env)).toEqual({ version: 1 });
+    writeConfig({ setupComplete: true, lastSetupAt: '2026-06-13T00:00:00Z' }, env);
+    const after = readConfig(env);
+    expect(after.setupComplete).toBe(true);
+    expect(after.lastSetupAt).toBe('2026-06-13T00:00:00Z');
+    // merge: a later partial write keeps prior fields
+    writeConfig({ preferences: { theme: 'dark' } }, env);
+    const merged = readConfig(env);
+    expect(merged.setupComplete).toBe(true);
+    expect(merged.preferences).toEqual({ theme: 'dark' });
+  });
+
+  it('config file is written 0600', () => {
+    writeConfig({ setupComplete: true }, env);
+    expect(statSync(configJsonPath(env)).mode & 0o777).toBe(0o600);
+  });
+
+  it('tolerates a corrupt config file (returns defaults, never throws)', () => {
+    ensureHome(env);
+    writeFileSync(configJsonPath(env), 'not json{', { mode: 0o600 });
+    expect(readConfig(env)).toEqual({ version: 1 });
+  });
+});
+
+describe('backupBeforeReconfigure', () => {
+  it('copies existing config + secrets to timestamped .bak files, 0600', () => {
+    writeSecretsEnv({ ANTHROPIC_API_KEY: 'x' }, env);
+    writeConfig({ setupComplete: true }, env);
+    const written = backupBeforeReconfigure('2026-06-13T00-00-00Z', env);
+    expect(written).toHaveLength(2);
+    for (const p of written) {
+      expect(existsSync(p)).toBe(true);
+      expect(statSync(p).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('is a no-op when nothing exists yet', () => {
+    expect(backupBeforeReconfigure('stamp', env)).toEqual([]);
+  });
+});
+
+describe('permission checks', () => {
+  it('flags a loose secrets file and fixes it', () => {
+    writeSecretsEnv({ ANTHROPIC_API_KEY: 'x' }, env);
+    chmodSync(secretsEnvPath(env), 0o644); // loosen
+    const issues = checkPermissions(env);
+    expect(issues.some((i) => i.label === 'secrets file')).toBe(true);
+    const fixed = fixPermissions(env);
+    expect(fixed).toContain(secretsEnvPath(env));
+    expect(checkPermissions(env)).toEqual([]);
+  });
+
+  it('a fresh 0700 home with no files has no issues', () => {
+    ensureHome(env);
+    expect(checkPermissions(env)).toEqual([]);
   });
 });

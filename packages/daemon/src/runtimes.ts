@@ -19,7 +19,8 @@ export type CodingRuntimeState =
   | 'status_unknown'; // probes timed out / errored inconclusively
 
 export interface CodingRuntimeStatus {
-  id: 'claude-code';
+  /** Runtime id: `claude-code` (wired) or a detection-only id (`codex`, `opencode`). */
+  id: string;
   title: string;
   state: CodingRuntimeState;
   version?: string;
@@ -143,4 +144,97 @@ export async function getClaudeCodeStatus(opts: {
     detail: 'installed; authentication could not be verified within the probe timeout',
     nextCommand: 'claude auth status',
   };
+}
+
+// ── generalized coding-runtime registry (ADR-0026) ──────────────────────────
+
+/**
+ * Coding runtimes Amrita knows about. Claude Code is fully wired (install+auth
+ * probe + real lane execution). Codex/OpenCode are DETECTION-ONLY today — they
+ * are probed for presence and reported honestly with the future seam, never
+ * faked as runnable (Hermes runtime-registry lesson, generalized).
+ */
+export interface RuntimeSpec {
+  id: string;
+  title: string;
+  detectCli: string;
+  installHint: string;
+  /** False → Amrita can detect it but cannot drive lanes through it yet. */
+  executable: boolean;
+}
+
+export const CODING_RUNTIMES: readonly RuntimeSpec[] = [
+  {
+    id: 'claude-code',
+    title: 'Claude Code',
+    detectCli: 'claude',
+    installHint: 'npm install -g @anthropic-ai/claude-code',
+    executable: true,
+  },
+  {
+    id: 'codex',
+    title: 'OpenAI Codex',
+    detectCli: 'codex',
+    installHint: 'npm install -g @openai/codex',
+    executable: false,
+  },
+  {
+    id: 'opencode',
+    title: 'OpenCode',
+    detectCli: 'opencode',
+    installHint: 'see https://opencode.ai',
+    executable: false,
+  },
+];
+
+/**
+ * Probe every coding runtime. Claude Code gets the full install+auth probe;
+ * detection-only runtimes get a bounded `--version` presence probe and an
+ * honest `not_installed` / `installed_auth_unknown` state with a clear note
+ * that Amrita cannot drive them yet.
+ */
+export async function getRuntimesStatus(opts: {
+  realExecution: boolean;
+  prober?: CommandProber;
+  timeoutMs?: number;
+}): Promise<CodingRuntimeStatus[]> {
+  const probe = opts.prober ?? defaultProber;
+  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const out: CodingRuntimeStatus[] = [];
+  for (const rt of CODING_RUNTIMES) {
+    if (rt.id === 'claude-code') {
+      out.push(
+        await getClaudeCodeStatus({
+          realExecution: opts.realExecution,
+          prober: probe,
+          timeoutMs,
+        }),
+      );
+      continue;
+    }
+    const version = await probe(rt.detectCli, ['--version'], timeoutMs);
+    const base = { id: rt.id, title: rt.title, realExecution: false };
+    if (version.kind === 'spawn_error') {
+      out.push({
+        ...base,
+        state: 'not_installed',
+        detail: `the \`${rt.detectCli}\` CLI was not found on PATH`,
+        nextCommand: rt.installHint,
+      });
+    } else if (version.kind === 'ok') {
+      out.push({
+        ...base,
+        state: 'installed_auth_unknown',
+        version: version.stdout.trim().slice(0, 60),
+        detail: 'detected, but Amrita cannot drive lanes through it yet (detection-only)',
+      });
+    } else {
+      out.push({
+        ...base,
+        state: 'status_unknown',
+        detail: `the \`${rt.detectCli}\` CLI did not answer a bounded version probe`,
+      });
+    }
+  }
+  return out;
 }

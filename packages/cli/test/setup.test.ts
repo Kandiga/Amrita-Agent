@@ -1,10 +1,35 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AmritaKernel, parseEnvFile, secretsEnvPath } from '@amrita/daemon';
+import {
+  AmritaKernel,
+  type FetchLike,
+  type FetchResponseLike,
+  parseEnvFile,
+  secretsEnvPath,
+} from '@amrita/daemon';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CliError, InProcessClient } from '../src/client.ts';
-import { type ProbeFetch, type SetupDeps, runSetupWizard } from '../src/setup.ts';
+import {
+  type ProbeFetch,
+  SETUP_SECTION_IDS,
+  type SetupDeps,
+  runSetupWizard,
+} from '../src/setup.ts';
+
+/** A fake /models fetch so local-endpoint discovery is deterministic. */
+function fakeModels(ids: string[]): FetchLike {
+  return async (): Promise<FetchResponseLike> => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { data: ids.map((id) => ({ id })) };
+    },
+    async text() {
+      return '';
+    },
+  });
+}
 
 let dir: string;
 let kernel: AmritaKernel;
@@ -25,8 +50,18 @@ function prober(opts: { claude?: 'ready' | 'logged_out' | 'missing'; codex?: boo
   };
 }
 
-function openKernel(opts: { claude?: 'ready' | 'logged_out' | 'missing'; codex?: boolean } = {}) {
-  kernel = AmritaKernel.open({ dbPath: ':memory:', codingRuntimeProber: prober(opts) });
+function openKernel(
+  opts: {
+    claude?: 'ready' | 'logged_out' | 'missing';
+    codex?: boolean;
+    fetchImpl?: FetchLike;
+  } = {},
+) {
+  kernel = AmritaKernel.open({
+    dbPath: ':memory:',
+    codingRuntimeProber: prober(opts),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
   client = new InProcessClient(kernel);
 }
 
@@ -46,6 +81,7 @@ afterEach(() => {
     'OPENROUTER_API_KEY',
     'GEMINI_API_KEY',
     'LOCAL_LLM_API_KEY',
+    'AMRITA_LANES_ALLOW_REAL_EXECUTION',
   ]) {
     delete process.env[name]; // deterministic env posture between tests
   }
@@ -283,5 +319,77 @@ describe('amrita setup wizard (ADR-0024)', () => {
   it('rejects non-numeric telegram allowlist ids with a clear error', async () => {
     const { deps } = scripted(['0', 'y', 'not-a-number'], ['tok'], telegramOk);
     await expect(runSetupWizard(client, deps)).rejects.toThrow(CliError);
+  });
+});
+
+describe('sectioned setup (ADR-0026)', () => {
+  it('exposes the seven setup sections', () => {
+    expect(SETUP_SECTION_IDS).toEqual([
+      'brain',
+      'roles',
+      'runtime',
+      'channels',
+      'service',
+      'agent',
+      'tools',
+    ]);
+  });
+
+  it('an unknown section throws a clear CliError', async () => {
+    const { deps } = scripted([], [], telegramOk);
+    await expect(runSetupWizard(client, deps, { section: 'nope' })).rejects.toThrow(CliError);
+  });
+
+  it('section "agent" enables real lane execution into secrets.env', async () => {
+    const { deps, output } = scripted(['y'], [], telegramOk);
+    await runSetupWizard(client, deps, { section: 'agent' });
+    expect(output()).toContain('enabled');
+    expect(parseEnvFile(readFileSync(secretsEnvPath(process.env), 'utf8'))).toMatchObject({
+      AMRITA_LANES_ALLOW_REAL_EXECUTION: '1',
+    });
+  });
+
+  it('section "roles" binds a role through the shared RPC', async () => {
+    // bind a brain first so a provider id exists to choose
+    process.env.ANTHROPIC_API_KEY = 'placeholder-value-for-tests';
+    const brain = scripted(['3', '', 'n'], ['sk-ant'], telegramOk);
+    await runSetupWizard(client, brain.deps); // quick: brain + telegram(declined)
+
+    // roles: fast → anthropic, main → keep, deep → keep
+    const roles = scripted(['anthropic', '', ''], [], telegramOk);
+    await runSetupWizard(client, roles.deps, { section: 'roles' });
+    const status = await client.call<{ roles: { role: string; resolvesTo: string }[] }>(
+      'runtime.status',
+    );
+    expect(status.roles.find((r) => r.role === 'fast')?.resolvesTo).toBe('anthropic');
+  });
+
+  it('local endpoint section discovers models via /v1 probe and persists config', async () => {
+    kernel.close();
+    openKernel({ fetchImpl: fakeModels(['llama3.1', 'qwen2.5']) });
+    // brain chooser: pick 7 (local) → base URL without /v1 → no key →
+    // (probe suggests /v1, finds 2 models) → pick model 2 → decline telegram
+    const { deps, output } = scripted(['7', 'http://localhost:11434', '2', 'n'], [''], telegramOk);
+    await runSetupWizard(client, deps);
+    expect(output()).toContain('endpoint verified');
+    const setting = await client.call<{ value: unknown }>('settings.get', {
+      key: 'providers.endpoint.local',
+    });
+    expect(setting.value).toEqual({ baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' });
+  });
+
+  it('a full reconfigure backs up existing secrets before running', async () => {
+    // first run writes the key to secrets.env (env starts unset)
+    const first = scripted(['3', '', 'n'], ['sk-ant'], telegramOk);
+    await runSetupWizard(client, first.deps);
+    expect(existsSync(secretsEnvPath(process.env))).toBe(true);
+
+    // full run: brain(skip 0), roles(keep x3), channels(decline), agent(decline)
+    const full = scripted(['0', '', '', '', 'n', 'n'], [], telegramOk);
+    await runSetupWizard(client, full.deps, { full: true });
+    const home = join(dir, '.amrita');
+    const baks = readdirSync(home).filter((f) => f.startsWith('secrets.env.bak.'));
+    expect(baks.length).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(home, 'config.json'))).toBe(true);
   });
 });

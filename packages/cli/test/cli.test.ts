@@ -7,12 +7,17 @@ import { run } from '../src/run.ts';
 let dir: string;
 let dbPath: string;
 
+const HOME_ENV = 'AMRITA_HOME';
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'amrita-cli-'));
   dbPath = join(dir, 'amrita.db');
+  // Isolate the amrita home so doctor's home/permission checks never touch the
+  // developer's real ~/.amrita (ADR-0026).
+  process.env[HOME_ENV] = join(dir, '.amrita');
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+  delete process.env[HOME_ENV];
 });
 
 interface Captured {

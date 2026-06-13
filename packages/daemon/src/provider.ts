@@ -388,6 +388,49 @@ export type ProviderAuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint'
 export type ProviderGroup = 'login' | 'api_key' | 'local';
 
 /**
+ * Wire transport / API mode (Hermes `transport`→api_mode lesson, providers.py).
+ * The kernel picks the adapter from this, not from the provider id, so a custom
+ * endpoint can declare `openai_chat` or `anthropic_messages` explicitly instead
+ * of being guessed. `cli_json` is the local-CLI subscription path.
+ */
+export type ProviderTransport = 'anthropic_messages' | 'openai_chat' | 'cli_json' | 'local_openai';
+
+/**
+ * Provider id aliases → canonical id (Hermes ALIASES lesson, providers.py:241+).
+ * Human/legacy names normalize to one catalog id so `amrita model claude` and
+ * `amrita role set main grok` resolve without bespoke handling.
+ */
+export const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  claude: 'anthropic',
+  'claude-api': 'anthropic',
+  anthropic_api: 'anthropic',
+  'claude-subscription': 'claude-code',
+  claudecode: 'claude-code',
+  'claude-code-login': 'claude-code',
+  gpt: 'openai',
+  chatgpt: 'openai',
+  'openai-api': 'openai',
+  codex: 'codex',
+  'openai-codex': 'codex',
+  router: 'openrouter',
+  'open-router': 'openrouter',
+  google: 'gemini',
+  'google-gemini': 'gemini',
+  ollama: 'local',
+  vllm: 'local',
+  lmstudio: 'local',
+  'lm-studio': 'local',
+  llamacpp: 'local',
+  'local-endpoint': 'local',
+};
+
+/** Resolve a human/legacy provider name to its canonical catalog id. */
+export function normalizeProvider(name: string): string {
+  const key = name.trim().toLowerCase();
+  return PROVIDER_ALIASES[key] ?? key;
+}
+
+/**
  * The real provider catalog (ADR-0025). UI surfaces render FROM this metadata —
  * adding a provider here is the whole job; no bespoke wizard/web code per
  * provider. `executable: false` marks catalog entries Amrita can DETECT but
@@ -399,15 +442,27 @@ export interface RealProviderSpec {
   title: string;
   group: ProviderGroup;
   authMode: ProviderAuthMode;
+  /** Wire transport / API mode this provider speaks (ADR-0026). */
+  transport: ProviderTransport;
   defaultModel: string;
+  /**
+   * Curated fallback model ids shown in the picker when live discovery is
+   * unavailable (Hermes models.py lesson: a curated list that live discovery
+   * can supersede, never a hardcoded UI list). Most-capable first.
+   */
+  models?: readonly string[];
   /** Whether the adapter implements `generateStream` (live `model.delta`). */
   streaming: boolean;
   /** Default env-var NAME for api_key providers (user may override at bind time). */
   envName?: string;
+  /** Env-var NAME that overrides `baseUrl` at runtime (Hermes base_url_env_var). */
+  baseUrlEnvVar?: string;
   /** Where a human gets a key (api_key providers). */
   keyUrl?: string;
   /** OpenAI-compatible base URL INCLUDING version segment, where fixed. */
   baseUrl?: string;
+  /** Whether `amrita model <id>` can live-discover models from `/models`. */
+  supportsModelDiscovery?: boolean;
   /** CLI to detect for login providers + how to install it. */
   detectCli?: string;
   installHint?: string;
@@ -423,7 +478,9 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'Claude subscription (via Claude Code login)',
     group: 'login',
     authMode: 'subscription_cli',
+    transport: 'cli_json',
     defaultModel: 'sonnet',
+    models: ['opus', 'sonnet', 'haiku'],
     streaming: false,
     detectCli: 'claude',
     installHint: 'npm install -g @anthropic-ai/claude-code',
@@ -435,6 +492,7 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'OpenAI account (via Codex CLI login)',
     group: 'login',
     authMode: 'oauth',
+    transport: 'cli_json',
     defaultModel: 'gpt-5-codex',
     streaming: false,
     detectCli: 'codex',
@@ -448,9 +506,12 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'Anthropic API key (Claude)',
     group: 'api_key',
     authMode: 'api_key',
+    transport: 'anthropic_messages',
     defaultModel: 'claude-sonnet-4-5',
+    models: ['claude-opus-4-1', 'claude-sonnet-4-5', 'claude-haiku-4-5-20251001'],
     streaming: false,
     envName: 'ANTHROPIC_API_KEY',
+    baseUrlEnvVar: 'ANTHROPIC_BASE_URL',
     keyUrl: 'https://console.anthropic.com/settings/keys',
     executable: true,
     create: createAnthropicProvider,
@@ -460,10 +521,14 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'OpenAI API key',
     group: 'api_key',
     authMode: 'api_key',
+    transport: 'openai_chat',
     defaultModel: 'gpt-4o-mini',
+    models: ['gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
     streaming: false,
     envName: 'OPENAI_API_KEY',
+    baseUrlEnvVar: 'OPENAI_BASE_URL',
     keyUrl: 'https://platform.openai.com/api-keys',
+    supportsModelDiscovery: true,
     executable: true,
     create: createOpenaiProvider,
   },
@@ -472,11 +537,20 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'OpenRouter (one key, hundreds of models)',
     group: 'api_key',
     authMode: 'api_key',
+    transport: 'openai_chat',
     defaultModel: 'openrouter/auto',
+    models: [
+      'openrouter/auto',
+      'anthropic/claude-sonnet-4.5',
+      'openai/gpt-4o',
+      'google/gemini-2.5-flash',
+    ],
     streaming: false,
     envName: 'OPENROUTER_API_KEY',
+    baseUrlEnvVar: 'OPENROUTER_BASE_URL',
     keyUrl: 'https://openrouter.ai/settings/keys',
     baseUrl: 'https://openrouter.ai/api/v1',
+    supportsModelDiscovery: true,
     executable: true,
     create: (opts) => createOpenaiProvider({ ...opts, id: 'openrouter' }),
   },
@@ -485,7 +559,9 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'Google Gemini API key',
     group: 'api_key',
     authMode: 'api_key',
+    transport: 'openai_chat',
     defaultModel: 'gemini-2.5-flash',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
     streaming: false,
     envName: 'GEMINI_API_KEY',
     keyUrl: 'https://aistudio.google.com/apikey',
@@ -499,12 +575,86 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     title: 'Local / self-hosted (Ollama, vLLM, LM Studio — OpenAI-compatible)',
     group: 'local',
     authMode: 'local_endpoint',
+    transport: 'local_openai',
     defaultModel: '', // comes from the configured endpoint
     streaming: false,
+    supportsModelDiscovery: true,
     executable: true,
     create: (opts) => createOpenaiProvider({ ...opts, id: 'local' }),
   },
 ];
+
+/** Look up a catalog spec by id, resolving aliases first. */
+export function findProviderSpec(idOrAlias: string): RealProviderSpec | undefined {
+  const id = normalizeProvider(idOrAlias);
+  return REAL_PROVIDERS.find((p) => p.id === id);
+}
+
+// ── live model discovery (Hermes /models probe lesson, main.py:3649+) ────────
+
+/** Result of probing an OpenAI-compatible `/models` endpoint. Value-free. */
+export interface ModelDiscovery {
+  ok: boolean;
+  models: string[];
+  /** The URL actually probed (after any `/v1` normalization). */
+  probedUrl: string;
+  detail: string;
+}
+
+/**
+ * If a base URL looks like a local server but is missing the `/v1` segment that
+ * OpenAI-compatible servers (Ollama, vLLM, llama.cpp, LM Studio) require, return
+ * the corrected URL — else undefined (Hermes local `/v1` hint, main.py:3623+).
+ */
+export function suggestV1BaseUrl(baseUrl: string): string | undefined {
+  const u = baseUrl.trim().replace(/\/+$/, '');
+  const looksLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0|:11434|:8080|:5000|:1234/.test(u);
+  if (looksLocal && !/\/v\d+$/.test(u)) return `${u}/v1`;
+  return undefined;
+}
+
+interface OpenAiModelsResponse {
+  data?: { id?: string }[];
+}
+
+/**
+ * Probe an OpenAI-compatible `/models` endpoint for the live model list. Bounded,
+ * never throws, never returns secrets. `baseUrl` must include the version segment.
+ */
+export async function probeOpenAiModels(opts: {
+  baseUrl: string;
+  apiKey?: string;
+  fetchImpl?: FetchLike;
+}): Promise<ModelDiscovery> {
+  const fetchImpl = opts.fetchImpl ?? defaultFetch;
+  const probedUrl = `${opts.baseUrl.replace(/\/+$/, '')}/models`;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (opts.apiKey) headers.authorization = `Bearer ${opts.apiKey}`;
+  let res: FetchResponseLike;
+  try {
+    res = await fetchImpl(probedUrl, { method: 'GET', headers });
+  } catch {
+    return { ok: false, models: [], probedUrl, detail: 'endpoint unreachable (network error)' };
+  }
+  if (!res.ok) {
+    return { ok: false, models: [], probedUrl, detail: `endpoint returned status ${res.status}` };
+  }
+  let body: OpenAiModelsResponse;
+  try {
+    body = (await res.json()) as OpenAiModelsResponse;
+  } catch {
+    return { ok: false, models: [], probedUrl, detail: 'endpoint returned non-JSON' };
+  }
+  const models = (body.data ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  return {
+    ok: true,
+    models,
+    probedUrl,
+    detail: `${models.length} model(s) visible`,
+  };
+}
 
 // ── local endpoint config (settings-backed, non-secret) ─────────────────────
 

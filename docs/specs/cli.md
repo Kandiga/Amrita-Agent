@@ -28,6 +28,12 @@ process env always wins, and the in-process `run()` used by tests never loads it
 ## Commands
 
 ```bash
+amrita setup [section]         # sectioned wizard (ADR-0026): brain|roles|runtime|channels|
+                               #   service|agent|tools; --full reconfigures all (with backup)
+amrita model                   # shared brain/model picker (same flow as `setup brain`)
+amrita provider catalog        # full chooser catalog with live, honest states
+amrita provider models <id>    # discover models (live /models, curated fallback)
+amrita doctor --fix            # tighten home (0700) + secret/config (0600) permissions
 amrita setup                   # first-run wizard (ADR-0024/0025): grouped brain chooser —
                                #   subscription login (Claude Code), API keys (Anthropic/OpenAI/
                                #   OpenRouter/Gemini), local OpenAI-compatible endpoint — then telegram.

@@ -74,16 +74,21 @@ step "installing dependencies (native modules compile on first run)..."
 (cd "$INSTALL_DIR" && pnpm install --frozen-lockfile)
 ok "dependencies ready"
 
-# ── 4. launchers ─────────────────────────────────────────────────────────────
+# ── 4. launchers (back up any existing ones first — recovery story) ──────────
 step "installing launchers to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
 NODE_BIN="$(command -v node)"
+for name in amrita amritad; do
+  if [ -e "$BIN_DIR/$name" ]; then
+    cp -p "$BIN_DIR/$name" "$BIN_DIR/$name.bak" 2>/dev/null || true
+  fi
+done
 printf '#!/usr/bin/env bash\nexec "%s" "%s/packages/cli/src/bin/amrita.ts" "$@"\n' \
   "$NODE_BIN" "$INSTALL_DIR" > "$BIN_DIR/amrita"
 printf '#!/usr/bin/env bash\nexec "%s" "%s/packages/daemon/src/bin/amritad.ts" "$@"\n' \
   "$NODE_BIN" "$INSTALL_DIR" > "$BIN_DIR/amritad"
 chmod 755 "$BIN_DIR/amrita" "$BIN_DIR/amritad"
-ok "amrita + amritad installed"
+ok "amrita + amritad installed (previous launchers, if any, saved as *.bak)"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
@@ -109,6 +114,17 @@ if [ -t 0 ] && [ "${AMRITA_NO_SERVICE:-0}" != "1" ] && \
       ;;
     *) say "  → skipped — start manually with: amritad --http --telegram" ;;
   esac
+fi
+
+# ── 6. post-install verification ─────────────────────────────────────────────
+# Prove the install actually works before declaring success (Hermes lesson:
+# verify after install). Runs the daemon's own doctor; tolerant of failure.
+step "verifying the install..."
+if "$NODE_BIN" "$INSTALL_DIR/packages/cli/src/bin/amrita.ts" health >/dev/null 2>&1; then
+  ok "amrita answers — store schema + launchers verified"
+else
+  say "  ! post-install verification could not run amrita health"
+  say "    try manually: amrita doctor"
 fi
 
 # ── done ─────────────────────────────────────────────────────────────────────

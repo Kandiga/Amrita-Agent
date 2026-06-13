@@ -1,7 +1,13 @@
+import { fixPermissions } from '@amrita/daemon';
 import { CliError, type InProcessClient } from './client.ts';
 import { ensureDefaultConversation, resolveProjectId, resolveWriteContext } from './context.ts';
 import { strFlag } from './parse.ts';
-import { makeInteractiveDeps, nonInteractiveGuidance, runSetupWizard } from './setup.ts';
+import {
+  SETUP_SECTION_IDS,
+  makeInteractiveDeps,
+  nonInteractiveGuidance,
+  runSetupWizard,
+} from './setup.ts';
 
 export interface CommandCtx {
   positionals: string[];
@@ -37,6 +43,13 @@ interface ChatTurnLite {
   model: string;
   text: string | null;
   usage: { inputTokens: number; outputTokens: number } | null;
+}
+interface ProviderCatalogLite {
+  id: string;
+  title: string;
+  executable: boolean;
+  state: string;
+  detail: string;
 }
 interface ProviderInfoLite {
   id: string;
@@ -187,20 +200,47 @@ export const COMMANDS: Record<string, Command> = {
   },
 
   doctor: {
-    describe: 'grouped setup/health checks with exact fix commands',
-    async run(client) {
+    describe: 'grouped setup/health checks with exact fix commands (--fix tightens perms)',
+    async run(client, { flags }) {
+      // `--fix` only does the safe, mechanical remediation: tighten home/secret
+      // file permissions (Hermes lesson: auto-fix read-only ops, never choices).
+      let fixedNote = '';
+      if (flags.fix === true) {
+        const fixed = fixPermissions();
+        fixedNote = fixed.length > 0 ? `\nfixed permissions on ${fixed.length} path(s)` : '';
+      }
       const r = await client.call<DoctorReportLite>('doctor');
-      return { result: r, summary: renderDoctor(r) };
+      return { result: r, summary: renderDoctor(r) + fixedNote };
     },
   },
 
   setup: {
-    describe: 'first-run wizard: provider key, main role, telegram (idempotent)',
+    describe: 'first-run wizard: brain, roles, runtime, channels, service, agent, tools',
+    async run(client, { positionals, flags }) {
+      const section = positionals[0];
+      if (section && !SETUP_SECTION_IDS.includes(section)) {
+        throw new CliError(
+          `unknown setup section '${section}' (sections: ${SETUP_SECTION_IDS.join(', ')})`,
+        );
+      }
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new CliError(nonInteractiveGuidance(section));
+      }
+      await runSetupWizard(client, makeInteractiveDeps(), {
+        ...(section ? { section } : {}),
+        ...(flags.full === true ? { full: true } : {}),
+      });
+      return { result: { ok: true }, summary: '' };
+    },
+  },
+
+  model: {
+    describe: 'shared brain/model picker (the same flow `amrita setup brain` runs)',
     async run(client) {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        throw new CliError(nonInteractiveGuidance());
+        throw new CliError(nonInteractiveGuidance('brain'));
       }
-      await runSetupWizard(client, makeInteractiveDeps());
+      await runSetupWizard(client, makeInteractiveDeps(), { section: 'brain' });
       return { result: { ok: true }, summary: '' };
     },
   },
@@ -997,6 +1037,39 @@ export const COMMANDS: Record<string, Command> = {
         })
         .join('\n');
       return { result: ps, summary };
+    },
+  },
+
+  'provider catalog': {
+    describe: 'the full brain chooser catalog with live, honest states (ADR-0026)',
+    async run(client) {
+      const entries = await client.call<ProviderCatalogLite[]>('providers.catalog');
+      const summary = entries
+        .map(
+          (e) =>
+            `${e.state === 'ready' ? '✓' : e.executable ? '·' : '✗'} ${e.id}\t${e.title}\n    ${e.detail}`,
+        )
+        .join('\n');
+      return { result: entries, summary };
+    },
+  },
+
+  'provider models': {
+    describe: 'discover models for a provider (live /models, curated fallback)',
+    async run(client, { positionals }) {
+      const provider = positionals[0];
+      if (!provider) throw new CliError('usage: amrita provider models <PROVIDER>');
+      const r = await client.call<{
+        provider: string;
+        models: string[];
+        source: string;
+        detail: string;
+      }>('providers.models', { provider });
+      const summary = [
+        `${r.provider} · ${r.source} · ${r.detail}`,
+        ...r.models.map((m) => `  ${m}`),
+      ].join('\n');
+      return { result: r, summary };
     },
   },
 

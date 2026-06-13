@@ -1,4 +1,9 @@
-import { secretsEnvPath, writeSecretsEnv } from '@amrita/daemon';
+import {
+  backupBeforeReconfigure,
+  secretsEnvPath,
+  writeConfig,
+  writeSecretsEnv,
+} from '@amrita/daemon';
 import { CliError, type InProcessClient } from './client.ts';
 import { resolveWriteContext } from './context.ts';
 
@@ -30,6 +35,8 @@ export interface SetupDeps {
   out(line: string): void;
   fetchImpl: ProbeFetch;
   env: NodeJS.ProcessEnv;
+  /** ISO timestamp for backup stamps + lastSetupAt (injected; tests may omit). */
+  now?: string;
 }
 
 /** One `providers.catalog` entry (ADR-0025) — the wizard renders FROM this. */
@@ -254,6 +261,14 @@ async function configureApiKey(
   return true;
 }
 
+interface EndpointProbe {
+  ok: boolean;
+  models: string[];
+  probedUrl: string;
+  detail: string;
+  suggestedUrl?: string;
+}
+
 async function configureLocalEndpoint(
   client: InProcessClient,
   deps: SetupDeps,
@@ -262,12 +277,9 @@ async function configureLocalEndpoint(
   const { out, ask, askSecret, env } = deps;
   out('  Any OpenAI-compatible server works: Ollama, vLLM, LM Studio, llama.cpp.');
   const baseUrlAnswer = (await ask('  Base URL [http://localhost:11434/v1]: ')).trim();
-  const baseUrl = baseUrlAnswer === '' ? 'http://localhost:11434/v1' : baseUrlAnswer;
-  const model = (await ask('  Model name (e.g. llama3.1, qwen2.5) — required: ')).trim();
-  if (model === '') {
-    out('  ! a local endpoint needs a model name — ask your server (`ollama list`)');
-    return false;
-  }
+  let baseUrl = baseUrlAnswer === '' ? 'http://localhost:11434/v1' : baseUrlAnswer;
+
+  // Optional key first, so the /models probe can authenticate.
   const key = await askSecret('  API key, if your server needs one (Enter for none): ');
   let keyEnv: string | undefined;
   if (key.trim() !== '') {
@@ -275,6 +287,44 @@ async function configureLocalEndpoint(
     saveSecret(keyEnv, key.trim(), env);
     out(`  ✓ key saved to ${secretsEnvPath(env)} (0600) as ${keyEnv}`);
   }
+
+  // Live probe: /v1 hint for local servers + /models discovery (Hermes flow).
+  const probe = await client.call<EndpointProbe>('providers.probeEndpoint', {
+    baseUrl,
+    ...(keyEnv ? { keyEnv } : {}),
+  });
+  if (probe.suggestedUrl && probe.suggestedUrl !== baseUrl) {
+    out(`  Hint: local servers usually need /v1 — using ${probe.suggestedUrl}`);
+    baseUrl = probe.suggestedUrl;
+  }
+  if (probe.ok) {
+    out(`  ✓ endpoint verified via ${probe.probedUrl} — ${probe.detail}`);
+  } else {
+    out(`  ! could not verify the endpoint (${probe.detail}) — you can still proceed`);
+  }
+
+  // Model selection: pick from discovered list, or type a name.
+  let model = '';
+  if (probe.models.length === 1) {
+    model = probe.models[0] ?? '';
+    out(`  Using the only model the endpoint reports: ${model}`);
+  } else if (probe.models.length > 1) {
+    out('  Models the endpoint reports:');
+    for (const [i, m] of probe.models.slice(0, 20).entries()) out(`    ${i + 1}) ${m}`);
+    const pick = (await ask('  Select a model [1] or type a name: ')).trim();
+    const idx = pick === '' ? 1 : Number(pick);
+    model =
+      Number.isInteger(idx) && idx >= 1 && idx <= probe.models.length
+        ? (probe.models[idx - 1] ?? '')
+        : pick;
+  } else {
+    model = (await ask('  Model name (e.g. llama3.1, qwen2.5) — required: ')).trim();
+  }
+  if (model === '') {
+    out('  ! a local endpoint needs a model name — ask your server (`ollama list`)');
+    return false;
+  }
+
   const ctx = await resolveWriteContext(client, {});
   await client.call('settings.update', {
     projectId: ctx.projectId,
@@ -354,6 +404,124 @@ async function sectionTelegram(deps: SetupDeps): Promise<void> {
   out(`  ✓ saved — ${cleaned.length} allowed id(s)`);
 }
 
+// ── model roles (fast / main / deep) ────────────────────────────────────────
+
+interface RoleStatusLite {
+  roles: { role: string; resolvesTo: string; via: string; model?: string }[];
+}
+
+async function sectionRoles(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out, ask } = deps;
+  out('');
+  out('── Model roles (fast / main / deep) ──');
+  out('  Roles let cheap turns use a fast brain and hard turns a deep one.');
+  const known = await client.call<{ id: string }[]>('providers.list');
+  const ids = known.map((p) => p.id);
+  const status = await client.call<RoleStatusLite>('runtime.status');
+  for (const role of ['fast', 'main', 'deep'] as const) {
+    const cur = status.roles.find((r) => r.role === role);
+    const shown = cur ? `${cur.resolvesTo} (via ${cur.via})` : 'auto';
+    const answer = (
+      await ask(`  ${role} brain [${shown}] (provider id, 'auto', or Enter to keep): `)
+    ).trim();
+    if (answer === '') continue;
+    if (answer === 'auto') {
+      await client.call('providers.role.clear', { role });
+      out(`  ✓ ${role} → auto`);
+      continue;
+    }
+    if (!ids.includes(answer)) {
+      out(`  ! unknown provider '${answer}' (known: ${ids.join(', ')}) — kept ${shown}`);
+      continue;
+    }
+    await client.call('providers.role.set', { role, provider: answer });
+    out(`  ✓ ${role} → ${answer}`);
+  }
+}
+
+// ── coding runtimes (informational; honest live probes) ─────────────────────
+
+interface RuntimeLite {
+  codingRuntimes: {
+    id: string;
+    title: string;
+    state: string;
+    detail: string;
+    nextCommand?: string;
+  }[];
+}
+
+async function sectionRuntime(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out } = deps;
+  out('');
+  out('── Coding runtimes ──');
+  const status = await client.call<RuntimeLite>('runtime.status');
+  for (const rt of status.codingRuntimes) {
+    const mark = rt.state === 'ready' ? '✓' : rt.state === 'not_installed' ? '✗' : '!';
+    out(`  ${mark} ${rt.title} — ${rt.detail}`);
+    if (rt.nextCommand && rt.state !== 'ready') out(`      → ${rt.nextCommand}`);
+  }
+  out('  Coding runtimes power lanes (delegated work); they are independent of your brain.');
+}
+
+// ── daemon / service (informational) ────────────────────────────────────────
+
+async function sectionService(_client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out } = deps;
+  out('');
+  out('── Daemon / service ──');
+  out('  Run Amrita in the background to serve the web UI and Telegram:');
+  out('    amritad --http --telegram        # foreground (recommended on WSL)');
+  out('  For a systemd user service (Linux), re-run the installer and accept the');
+  out('  service prompt; then logs are: journalctl --user -u amritad -f');
+}
+
+// ── agent / runtime settings (real lane execution opt-in) ───────────────────
+
+async function sectionAgent(_client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out, ask, env } = deps;
+  out('');
+  out('── Agent settings ──');
+  const realOn = env.AMRITA_LANES_ALLOW_REAL_EXECUTION === '1';
+  out(
+    `  Real lane execution (Claude Code runs for real): ${realOn ? 'ENABLED' : 'disabled (safe default)'}`,
+  );
+  out('  Operator approvals gate every real run (ADR-0021) — dry-run lanes always work.');
+  if (!realOn) {
+    if (isYes(await ask('  Enable real lane execution? (y/N): '), false)) {
+      saveSecret('AMRITA_LANES_ALLOW_REAL_EXECUTION', '1', env);
+      out('  ✓ enabled (workspace-confined, env-scrubbed) — restart the daemon to apply');
+    } else {
+      out('  → kept disabled');
+    }
+  } else if (isYes(await ask('  Disable real lane execution? (y/N): '), false)) {
+    saveSecret('AMRITA_LANES_ALLOW_REAL_EXECUTION', '0', env);
+    out('  ✓ disabled — restart the daemon to apply');
+  }
+}
+
+// ── tools / connectors / plugins (honest detected/unavailable) ──────────────
+
+interface ConnectorStatusLite {
+  manifest: { slug: string; title: string };
+  state: string;
+  detail: string;
+  nextCommand?: string;
+}
+
+async function sectionTools(client: InProcessClient, deps: SetupDeps): Promise<void> {
+  const { out } = deps;
+  out('');
+  out('── Tools & connectors ──');
+  const connectors = await client.call<ConnectorStatusLite[]>('connectors.status');
+  for (const c of connectors) {
+    const mark = c.state === 'connected' ? '✓' : c.state === 'needs_setup' ? '·' : '!';
+    out(`  ${mark} ${c.manifest.title} — ${c.detail}`);
+    if (c.nextCommand && c.state !== 'connected') out(`      → ${c.nextCommand}`);
+  }
+  out('  Plugins / skills / MCP: not implemented in v2 yet — they appear here when they land.');
+}
+
 async function sectionSummary(client: InProcessClient, deps: SetupDeps): Promise<void> {
   const { out } = deps;
   const report = await client.call<{ status: string; fixes: string[] }>('doctor');
@@ -369,23 +537,130 @@ async function sectionSummary(client: InProcessClient, deps: SetupDeps): Promise
   out('  amrita doctor                  # full health report any time');
 }
 
-export async function runSetupWizard(client: InProcessClient, deps: SetupDeps): Promise<void> {
-  deps.out('Amrita setup — sections are idempotent; re-run any time.');
-  deps.out(`Secrets file: ${secretsEnvPath(deps.env)} (created on first save, mode 0600)`);
-  await sectionProvider(client, deps);
-  await sectionTelegram(deps);
-  await sectionSummary(client, deps);
+// ── section registry + flow routing (Hermes SETUP_SECTIONS lesson) ──────────
+
+type SectionHandler = (client: InProcessClient, deps: SetupDeps) => Promise<void>;
+
+export interface SetupSection {
+  id: string;
+  title: string;
+  run: SectionHandler;
 }
 
-/** Guard rail used by the command wiring: refuse politely when not a TTY. */
-export function nonInteractiveGuidance(): string {
-  return [
-    'setup needs an interactive terminal. Non-interactive equivalent:',
+/** Every setup section, addressable as `amrita setup <id>` (ADR-0026). */
+export const SETUP_SECTIONS: readonly SetupSection[] = [
+  { id: 'brain', title: 'Brain (model provider)', run: sectionProvider },
+  { id: 'roles', title: 'Model roles', run: sectionRoles },
+  { id: 'runtime', title: 'Coding runtimes', run: sectionRuntime },
+  { id: 'channels', title: 'Channels (Telegram)', run: (_c, d) => sectionTelegram(d) },
+  { id: 'service', title: 'Daemon / service', run: sectionService },
+  { id: 'agent', title: 'Agent settings', run: sectionAgent },
+  { id: 'tools', title: 'Tools & connectors', run: sectionTools },
+];
+
+export const SETUP_SECTION_IDS = SETUP_SECTIONS.map((s) => s.id);
+
+/** A filesystem-safe backup stamp derived from an ISO time (or a fallback). */
+function backupStamp(now?: string): string {
+  return (now ?? 'manual').replace(/[:.]/g, '-');
+}
+
+export interface SetupOptions {
+  /** Run exactly one section by id (`amrita setup <section>`). */
+  section?: string;
+  /** Run every section (full reconfigure) instead of the quick essentials. */
+  full?: boolean;
+}
+
+/**
+ * The first-run wizard and reconfigure entry point (ADR-0024/0026).
+ *
+ * - `section` → back up, run that one section, done.
+ * - `full` → back up, run every section, summary.
+ * - default → quick essentials (brain + channels) + summary — the first-run path.
+ *
+ * Sections are idempotent and show current values; existing config/secrets are
+ * backed up to `*.bak.<stamp>` before a full or section reconfigure.
+ */
+export async function runSetupWizard(
+  client: InProcessClient,
+  deps: SetupDeps,
+  opts: SetupOptions = {},
+): Promise<void> {
+  deps.out('Amrita setup — sections are idempotent; re-run any time.');
+  deps.out(`Secrets file: ${secretsEnvPath(deps.env)} (created on first save, mode 0600)`);
+
+  if (opts.section) {
+    const section = SETUP_SECTIONS.find((s) => s.id === opts.section);
+    if (!section) {
+      throw new CliError(
+        `unknown setup section '${opts.section}' (sections: ${SETUP_SECTION_IDS.join(', ')})`,
+      );
+    }
+    backupBeforeReconfigure(backupStamp(deps.now), deps.env);
+    await section.run(client, deps);
+    markSetupComplete(deps);
+    return;
+  }
+
+  if (opts.full) {
+    const backups = backupBeforeReconfigure(backupStamp(deps.now), deps.env);
+    if (backups.length > 0) deps.out(`  (backed up ${backups.length} file(s) before reconfigure)`);
+    for (const section of SETUP_SECTIONS) await section.run(client, deps);
+  } else {
+    // Quick essentials — the default first-run path.
+    await sectionProvider(client, deps);
+    await sectionTelegram(deps);
+  }
+  await sectionSummary(client, deps);
+  markSetupComplete(deps);
+}
+
+/** Best-effort: record that setup ran, in the non-secret config file. */
+function markSetupComplete(deps: SetupDeps): void {
+  try {
+    writeConfig({ setupComplete: true, ...(deps.now ? { lastSetupAt: deps.now } : {}) }, deps.env);
+  } catch {
+    // config persistence is best-effort; the DB + secrets file are the source of truth
+  }
+}
+
+/**
+ * Guard rail when there is no TTY: print the exact non-interactive equivalent,
+ * tailored to the requested section (Hermes lesson: never a broken wizard in a
+ * headless env — give the config commands instead).
+ */
+export function nonInteractiveGuidance(section?: string): string {
+  const head =
+    section && SETUP_SECTION_IDS.includes(section)
+      ? `setup section '${section}' needs an interactive terminal. Non-interactive equivalent:`
+      : 'setup needs an interactive terminal. Non-interactive equivalent:';
+  const bySection: Record<string, string[]> = {
+    brain: [
+      '  amrita account connect --provider anthropic',
+      '  amrita account bind-secret <ACCOUNT_ID> ANTHROPIC_API_KEY',
+      '  amrita role set main anthropic',
+      "  printf 'ANTHROPIC_API_KEY=...\\n' >> ~/.amrita/secrets.env && chmod 600 ~/.amrita/secrets.env",
+    ],
+    roles: ['  amrita role set fast <provider>', '  amrita role set main <provider>'],
+    channels: [
+      "  printf 'TELEGRAM_BOT_TOKEN=...\\nAMRITA_TELEGRAM_ALLOWED_IDS=...\\n' >> ~/.amrita/secrets.env",
+      '  chmod 600 ~/.amrita/secrets.env   # then: amritad --http --telegram',
+    ],
+    agent: [
+      "  printf 'AMRITA_LANES_ALLOW_REAL_EXECUTION=1\\n' >> ~/.amrita/secrets.env  # opt in to real lanes",
+    ],
+    runtime: ['  amrita runtime status', '  npm install -g @anthropic-ai/claude-code'],
+    service: ['  amritad --http --telegram', '  # systemd: re-run scripts/install.sh'],
+    tools: ['  amrita connectors status'],
+  };
+  const body = (section && bySection[section]) ?? [
     '  amrita account connect --provider anthropic',
     '  amrita account bind-secret <ACCOUNT_ID> ANTHROPIC_API_KEY',
     '  amrita role set main anthropic',
-    `  printf 'ANTHROPIC_API_KEY=...\\nTELEGRAM_BOT_TOKEN=...\\nAMRITA_TELEGRAM_ALLOWED_IDS=...\\n' >> ~/.amrita/secrets.env && chmod 600 ~/.amrita/secrets.env`,
-  ].join('\n');
+    "  printf 'ANTHROPIC_API_KEY=...\\nTELEGRAM_BOT_TOKEN=...\\nAMRITA_TELEGRAM_ALLOWED_IDS=...\\n' >> ~/.amrita/secrets.env && chmod 600 ~/.amrita/secrets.env",
+  ];
+  return [head, ...body].join('\n');
 }
 
 // ── interactive wiring (TTY only; tests inject SetupDeps instead) ────────────
@@ -483,5 +758,6 @@ export function makeInteractiveDeps(): SetupDeps {
     out: (line) => process.stdout.write(`${line}\n`),
     fetchImpl: (url, init) => fetch(url, init),
     env: process.env,
+    now: new Date().toISOString(),
   };
 }

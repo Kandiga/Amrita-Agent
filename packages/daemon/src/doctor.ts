@@ -1,6 +1,15 @@
+import { existsSync } from 'node:fs';
 import { CONNECTOR_MANIFESTS } from './connectors.ts';
+import {
+  amritaHome,
+  checkPermissions,
+  configJsonPath,
+  readConfig,
+  secretsEnvPath,
+} from './home.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { PROVIDER_ROLES, envPresent } from './provider.ts';
+import type { CodingRuntimeStatus } from './runtimes.ts';
 
 /**
  * Doctor — grouped setup/health checks over the kernel (PLAN §5.4).
@@ -45,6 +54,79 @@ function worst(checks: DoctorCheck[]): DoctorStatus {
   if (checks.some((c) => c.status === 'fail')) return 'fail';
   if (checks.some((c) => c.status === 'warn')) return 'warn';
   return 'ok';
+}
+
+/**
+ * Home / config / secrets group (ADR-0026 / Hermes doctor lesson). Reports the
+ * machine-local paths and — critically — flags permissions looser than required
+ * (home 0700, secrets/config 0600), with `amrita doctor --fix` as the remedy.
+ * Presence + mode only; never reads a secret value.
+ */
+function homeSection(kernel: AmritaKernel): DoctorSection {
+  const checks: DoctorCheck[] = [];
+  checks.push({
+    id: 'home.dir',
+    label: 'amrita home',
+    status: 'ok',
+    detail: `${amritaHome()} · db ${kernel.health().dbPath}`,
+  });
+
+  const secretsPath = secretsEnvPath();
+  checks.push({
+    id: 'home.secrets',
+    label: 'secrets file',
+    status: 'ok',
+    detail: existsSync(secretsPath)
+      ? `${secretsPath} (present; env-var NAMES only ever reach the store)`
+      : 'none yet — created on first `amrita setup` save',
+  });
+
+  const cfg = readConfig();
+  checks.push({
+    id: 'home.config',
+    label: 'config',
+    status: 'ok',
+    detail: existsSync(configJsonPath())
+      ? `${configJsonPath()}${cfg.lastSetupAt ? ` · last setup ${cfg.lastSetupAt}` : ''}`
+      : 'none yet (defaults in effect)',
+  });
+
+  // Permissions: anything looser than required is a fail with an exact --fix.
+  for (const issue of checkPermissions()) {
+    checks.push({
+      id: `home.perm.${issue.label.replace(/\s+/g, '-')}`,
+      label: `${issue.label} permissions`,
+      status: 'fail',
+      detail: `${issue.path} is ${issue.actualMode.toString(8).padStart(3, '0')}, expected ${issue.expectedMode.toString(8).padStart(3, '0')}`,
+      fix: 'amrita doctor --fix  # tightens home (0700) and secret/config files (0600)',
+    });
+  }
+  return { title: 'home', checks };
+}
+
+/**
+ * Coding-runtime group (ADR-0026): every registered runtime with its live
+ * probe state. Claude Code carries auth state; detection-only runtimes
+ * (codex/opencode) say so honestly. Never claims a runtime is runnable
+ * without evidence.
+ */
+function runtimesSectionFrom(runtimes: CodingRuntimeStatus[]): DoctorSection {
+  const checks: DoctorCheck[] = runtimes.map((rt) => {
+    // claude-code is the primary runtime: not-ready is a warn worth acting on.
+    // codex/opencode are optional & detection-only: never installed is not a
+    // problem, so they report `ok` with an informational detail (no warn spam).
+    const primary = rt.id === 'claude-code';
+    const ready = rt.state === 'ready';
+    const status: DoctorStatus = ready ? 'ok' : primary ? 'warn' : 'ok';
+    return {
+      id: `runtime.${rt.id}`,
+      label: rt.title,
+      status,
+      detail: rt.detail + (rt.version ? ` · ${rt.version}` : ''),
+      ...(status === 'warn' && rt.nextCommand ? { fix: rt.nextCommand } : {}),
+    };
+  });
+  return { title: 'runtimes', checks };
 }
 
 function storeSection(kernel: AmritaKernel): DoctorSection {
@@ -285,11 +367,19 @@ function authSection(): DoctorSection {
   };
 }
 
-/** Run all doctor checks. Pure read — never mutates state, never reads a secret value. */
-export function runDoctor(kernel: AmritaKernel): DoctorReport {
+/**
+ * Run all doctor checks (ADR-0026: now async, because runtimes are live-probed).
+ * Pure read — never mutates state, never reads a secret value. Sections are
+ * ordered home → store → providers → runtimes → lanes → channels → connectors →
+ * auth so the operator reads "where things live" before "what's wired".
+ */
+export async function runDoctor(kernel: AmritaKernel): Promise<DoctorReport> {
+  const runtimes = await kernel.getCodingRuntimes();
   const sections = [
+    homeSection(kernel),
     storeSection(kernel),
     providerSection(kernel),
+    runtimesSectionFrom(runtimes),
     laneSection(kernel),
     channelSection(),
     connectorSection(),

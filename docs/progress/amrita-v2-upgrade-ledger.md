@@ -396,3 +396,38 @@ One ledger, updated per phase — no scattered notes.
   verified on a machine that has it; streaming still honestly `false` for real
   adapters; web Setup Hub still renders the old provider list — pointing it at
   `providers.catalog` is the next slice; xAI/Mistral/etc. are now one catalog entry each.
+
+## Phase 14 — Hermes-grade setup / providers / runtimes / doctor (ADR-0026)
+
+- **Date:** 2026-06-13 · ADR-0026 · study: docs/strategy/hermes-install-architecture-study.md
+- **Why:** after a deep read of Hermes' install/setup/provider/auth/doctor architecture
+  (file:line citations in the study doc), Amrita's onboarding was still shallow on sectioned
+  setup, a shared model command, provider transport/alias/discovery depth, a typed config +
+  backup + permission layer, a generalized runtime registry, and a grouped doctor.
+- **What landed:**
+  - **home.ts:** typed `~/.amrita/config.json` (atomic 0600), `backupBeforeReconfigure`,
+    `checkPermissions`/`fixPermissions` (home 0700, secret/config 0600).
+  - **provider.ts:** `transport` + `baseUrlEnvVar` + curated `models` + `supportsModelDiscovery`
+    on every spec; `PROVIDER_ALIASES`/`normalizeProvider` (claude→anthropic, ollama→local…);
+    `probeOpenAiModels` + `suggestV1BaseUrl`; `findProviderSpec`. Kernel honors base-URL env
+    overrides and alias-normalizes role bindings + chat resolution.
+  - **runtimes.ts:** `CODING_RUNTIMES` registry + `getRuntimesStatus` (claude-code wired;
+    codex/opencode detection-only, honest).
+  - **kernel/rpc:** `discoverModels` (live /models → curated fallback) + `probeEndpoint`
+    (custom-endpoint /v1 hint + /models) behind `providers.models` / `providers.probeEndpoint`.
+  - **setup.ts:** `SETUP_SECTIONS` (brain/roles/runtime/channels/service/agent/tools); first-run
+    quick vs `--full` reconfigure (with backup) vs `amrita setup <section>`; `amrita model`
+    shared brain flow; section-aware non-interactive guidance; local-endpoint section probes
+    /models and picks a discovered model; agent section opts into real lane execution.
+  - **doctor.ts:** async + grouped home→store→providers→runtimes→lanes→channels→connectors→auth;
+    permission failures with `amrita doctor --fix`; runtime live states.
+  - **commands.ts:** `amrita model`, `amrita setup <section>/--full`, `amrita doctor --fix`,
+    `amrita provider catalog`, `amrita provider models <id>`.
+  - **install.sh:** launcher backup before overwrite + post-install `amrita health` verification.
+- **Honesty checks:** secrets stay env-NAMES-in-store / values-in-secrets.env; codex stays
+  detection-only; mock fallback preserved; doctor never prints a secret; live probes are bounded.
+- **Verification:** 342/342 tests (29 new across home/provider-registry/doctor/setup); typecheck
+  + lint clean; `bash -n` on the installer; live VPS smoke of `amrita doctor`, `amrita provider
+  catalog`, and `amrita provider models`.
+- **Intentionally deferred:** models.dev live catalog ingestion; credential pool/rotation +
+  codex OAuth execution (seams only); cross-init service abstraction; web Setup Hub → catalog.
