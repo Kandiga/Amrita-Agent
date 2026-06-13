@@ -390,22 +390,48 @@ export function nonInteractiveGuidance(): string {
 
 // ── interactive wiring (TTY only; tests inject SetupDeps instead) ────────────
 
+// Line buffer shared across reads: terminals (notably WSL pseudo-ttys) may
+// split one typed line across data chunks or batch several lines into one.
+// Treating "one chunk = one answer" made a stray newline land as the NEXT
+// question's empty answer (live-QA bug: answering `y` to telegram skipped it).
+let pendingInput = '';
+
 /** Read one line in canonical mode — the terminal echoes typed input itself. */
 function readLine(): Promise<string> {
   return new Promise((resolve) => {
-    const onData = (chunk: Buffer): void => {
+    const takeLine = (): boolean => {
+      const i = pendingInput.indexOf('\n');
+      if (i < 0) return false;
+      const line = pendingInput.slice(0, i).replace(/\r$/, '');
+      pendingInput = pendingInput.slice(i + 1);
       process.stdin.off('data', onData);
       process.stdin.pause();
-      resolve(chunk.toString('utf8').replace(/\r?\n$/, ''));
+      resolve(line);
+      return true;
     };
+    const onData = (chunk: Buffer): void => {
+      pendingInput += chunk.toString('utf8');
+      takeLine();
+    };
+    if (takeLine()) return; // a complete line is already buffered
+    process.stdin.on('data', onData);
     process.stdin.resume();
-    process.stdin.once('data', onData);
   });
 }
 
 /** Read one line in raw mode with echo suppressed — for pasted secrets. */
 function readSecretLine(): Promise<string> {
   return new Promise((resolve) => {
+    // Drain a complete line the canonical reader already buffered (batched
+    // paste / piped input) before touching the terminal at all.
+    const buffered = pendingInput.indexOf('\n');
+    if (buffered >= 0) {
+      const line = pendingInput.slice(0, buffered).replace(/\r$/, '');
+      pendingInput = pendingInput.slice(buffered + 1);
+      process.stdout.write('\n');
+      resolve(line);
+      return;
+    }
     const stdin = process.stdin;
     stdin.setRawMode?.(true);
     stdin.resume();
@@ -418,8 +444,14 @@ function readSecretLine(): Promise<string> {
       resolve(value);
     };
     const onData = (chunk: Buffer): void => {
-      for (const ch of chunk.toString('utf8')) {
+      const text = chunk.toString('utf8');
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i] as string;
         if (ch === '\n' || ch === '\r' || ch === '\u0004') {
+          // Preserve anything after the terminator (a multi-line paste) for
+          // the NEXT question instead of silently discarding it.
+          const rest = text.slice(i + 1);
+          pendingInput += ch === '\r' && rest.startsWith('\n') ? rest.slice(1) : rest;
           finish(buf);
           return;
         }
