@@ -1,5 +1,6 @@
 import { fixPermissions } from '@amrita/daemon';
 import { CliError, type InProcessClient } from './client.ts';
+import { configCheck, configPath, configSet, configShow } from './config-cli.ts';
 import { ensureDefaultConversation, resolveProjectId, resolveWriteContext } from './context.ts';
 import { strFlag } from './parse.ts';
 import {
@@ -242,6 +243,39 @@ export const COMMANDS: Record<string, Command> = {
       }
       await runSetupWizard(client, makeInteractiveDeps(), { section: 'brain' });
       return { result: { ok: true }, summary: '' };
+    },
+  },
+
+  // ── non-secret config layer (Hermes `config` parity, parity-roadmap Phase D) ──
+  // Secret VALUES never flow through these: secret-like keys/values are refused
+  // and pointed at secrets.env / `amrita setup`. Pure file ops — no kernel.
+
+  'config path': {
+    describe: 'print where home/config/secrets/db live',
+    async run() {
+      return configPath();
+    },
+  },
+
+  'config show': {
+    describe: 'show the typed non-secret config (config.json)',
+    async run() {
+      return configShow();
+    },
+  },
+
+  'config set': {
+    describe: 'set a non-secret preference (secret-like keys/values are refused)',
+    async run(_client, { positionals }) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      return configSet(positionals[0], positionals[1], stamp);
+    },
+  },
+
+  'config check': {
+    describe: 'validate config readability + home/secret/config permissions',
+    async run() {
+      return configCheck();
     },
   },
 

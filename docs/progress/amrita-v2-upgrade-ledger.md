@@ -472,3 +472,42 @@ One ledger, updated per phase — no scattered notes.
   `providers.probeEndpoint` RPC is not yet surfaced as a Hub input (local-endpoint probe-and-pick);
   parity roadmap items C (README), D (`amrita config`), E (doctor memory/service/daemon groups),
   and I (`amrita service/update/uninstall`) are the sequenced next slices.
+
+## Phase 16 — `amrita config` CLI + README reality alignment
+
+- **Date:** 2026-06-16 · parity-roadmap Phases C + D · no protocol/store/daemon change
+- **Why:** Hermes has a real `config` command layer; Amrita had a typed `config.json` + helpers in
+  `home.ts` but **no `amrita config` verb**. And the README still called Telegram a "skeleton …
+  live bot runner not bundled yet" (false since Phase 10's operator runner), carried a stale
+  "Phases 0–5" status header, and documented neither data locations nor the config command.
+- **What landed (CLI + docs only):**
+  - `packages/cli/src/config-cli.ts` (new) — `configPath` / `configShow` / `configSet` /
+    `configCheck` over the daemon home helpers, plus exported pure guards `isSecretLikeKey`
+    (key substrings: secret/token/password/apikey/credential/bearer/…), `looksLikeSecretValue`
+    (OpenAI/GitHub/Slack/AWS/Google/bearer token shapes — defense-in-depth so a benign key can't
+    smuggle a value), and `parseConfigValue` (bool/number/string coercion). `config set` refuses
+    secret-like keys **and** secret-shaped values with a value-free message pointing at
+    `secrets.env` / `amrita setup`, and backs up `config.json`+`secrets.env` before overwriting an
+    existing key.
+  - `packages/cli/src/commands.ts` — `config path`/`config show`/`config set`/`config check`
+    entries in the `COMMANDS` registry (pure file ops; no kernel needed).
+  - `README.md` — status header de-staled; daemon bullet now describes the provider catalog +
+    runtime registry + grouped doctor; CLI bullet lists setup/model/config/doctor/provider/runtime/
+    connectors; channels bullet describes the **live** Telegram operator runner + commands;
+    Quick Start adds the expected-pre-setup-warnings note, a data-locations table
+    (`amrita.db`/`secrets.env`/`config.json`), the `amrita config` pointer, and the dev daemon
+    bearer-token note; links the upgrade ledger + parity roadmap.
+  - `docs/strategy/hermes-parity-roadmap.md` — Config-CLI + README rows marked done; sequenced
+    next-slice list updated (B/C/D done; E next).
+- **Honesty checks:** secret VALUES still never enter config.json/store/logs/errors — the refusal
+  paths never echo the offending value (test-asserted); `config set` only writes
+  `AmritaConfig.preferences`; README claims were read back against the actual code/runner.
+- **Verification:** root typecheck ✓ · lint ✓ (biome, after formatter) · root test **351/351**
+  (25 files; +9: 5 `cli.test` config flows incl. secret-key & secret-value refusals + json
+  round-trip, 4 `config-cli` guard units) · manual CLI smoke on an isolated `AMRITA_HOME`
+  (`config path` lists all four paths; `config set theme dark` types & persists; `OPENAI_API_KEY`
+  refused with a value-free message exit 2; `config show`/`config check` ok).
+- **Limitations / next:** `config set` writes flat `preferences.<key>` only (no dotted nesting);
+  `config edit`/`config migrate` not built (schema v1, nothing to migrate — not faked); Phase E
+  (doctor `memory`/`service`/`daemon-token` groups) and Phase I (`amrita service`/`update`/
+  `uninstall`) are the next sequenced slices.

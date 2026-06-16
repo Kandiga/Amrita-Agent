@@ -506,4 +506,53 @@ describe('amrita CLI', () => {
       delete process.env[HOME_ENV];
     }
   });
+
+  // ── config command layer (parity-roadmap Phase D) ──────────────────────────
+
+  it('config path prints home/config/secrets/db locations', async () => {
+    const r = await cli(['config', 'path']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('home');
+    expect(r.out).toContain('config.json');
+    expect(r.out).toContain('secrets.env');
+    expect(r.out).toContain('amrita.db');
+  });
+
+  it('config set stores a non-secret preference, typed, and show reflects it', async () => {
+    const set = await cli(['config', 'set', 'theme', 'dark']);
+    expect(set.code).toBe(0);
+    expect(set.out).toContain('preferences.theme');
+
+    // friendly typing: booleans and numbers are coerced
+    await cli(['config', 'set', 'verbose', 'true']);
+    await cli(['config', 'set', 'maxItems', '5']);
+
+    const show = await cli(['config', 'show', '--json']);
+    const cfg = json<{ preferences: Record<string, unknown> }>(show);
+    expect(cfg.preferences).toMatchObject({ theme: 'dark', verbose: true, maxItems: 5 });
+  });
+
+  it('config set refuses a secret-like key and points at secrets.env (value-free)', async () => {
+    const r = await cli(['config', 'set', 'openai_api_key', 'whatever']);
+    expect(r.code).toBe(2);
+    expect(r.err.toLowerCase()).toContain('secret');
+    expect(r.err).toContain('secrets.env');
+    expect(r.err).not.toContain('whatever'); // never echo the value
+  });
+
+  it('config set refuses a value that looks like a secret token', async () => {
+    const r = await cli(['config', 'set', 'note', 'sk-abc123definitelyasecret']);
+    expect(r.code).toBe(2);
+    expect(r.err.toLowerCase()).toContain('secret');
+    expect(r.err).not.toContain('sk-abc123'); // never echo the value
+  });
+
+  it('config check reports ok permissions on a fresh isolated home', async () => {
+    await cli(['config', 'set', 'theme', 'dark']); // materialize config.json
+    const r = await cli(['config', 'check', '--json']);
+    expect(r.code).toBe(0);
+    const out = json<{ ok: boolean; issues: unknown[] }>(r);
+    expect(out.ok).toBe(true);
+    expect(out.issues).toHaveLength(0);
+  });
 });

@@ -40,7 +40,7 @@ Status legend: ✅ matched · 🟡 partial · ⬜ planned (not started).
 
 | Area | Hermes capability | Amrita current state | Gap | Target Amrita shape | Implementation slice | Verification gate |
 |---|---|---|---|---|---|---|
-| Config CLI | `config.py`: `path/show/set/edit/check/migrate` | 🟡 typed `config.json` + `backupBeforeReconfigure` in `home.ts`, but **no `amrita config` command** | no config verb | `amrita config path/show/set/check` (non-secret only; secret-like keys refused → point to `secrets.env`/setup) | new `config` command group reading/writing typed `AmritaConfig` via `home.ts`; refuse secret-like keys | CLI tests (set non-secret, refuse secret-like, show redacts nothing secret) |
+| Config CLI | `config.py`: `path/show/set/edit/check/migrate` | ✅ `amrita config path/show/set/check` (`packages/cli/src/config-cli.ts`); non-secret only — secret-like keys **and** secret-shaped values refused → pointed at `secrets.env`/`amrita setup`; backup-on-overwrite | `edit`/`migrate` not built (config schema v1, no migration owed) | keep; add `edit`/`migrate` only when a real need appears | done (ledger Phase 16): CLI e2e + pure-guard unit tests |
 | Backup | `config.yaml.bak.<ts>` before changes | ✅ `backupBeforeReconfigure(stamp)` | none | keep; reuse in `config set` for destructive edits | — | home test |
 | Permissions | `--fix` chmod hygiene | ✅ `checkPermissions/fixPermissions` (0700/0600) via `amrita doctor --fix` | none | keep | — | doctor test |
 
@@ -118,17 +118,16 @@ Status legend: ✅ matched · 🟡 partial · ⬜ planned (not started).
 
 | Area | Hermes capability | Amrita current state | Gap | Target Amrita shape | Implementation slice | Verification gate |
 |---|---|---|---|---|---|---|
-| README | accurate quickstart | 🟡 may imply Telegram is skeleton-only; quickstart predates installer/setup depth | drift vs Phase 10/12/14 | README quickstart = `install.sh` → `amrita setup` → `amrita doctor` → daemon; data locations; implemented-vs-future | README pass (Phase C) | manual read against reality |
+| README | accurate quickstart | ✅ rewritten (ledger Phase 16): live Telegram operator runner, provider catalog, `amrita config`, data-locations table, expected pre-setup warnings, dev daemon token note | none material | keep current as features land | done: read against reality this session |
 
 ---
 
 ## Sequenced next slices (smallest coherent first)
 
-1. **Phase B (this session):** Web Setup Hub consumes `providers.catalog` — honest provider states
-   in the UI, same truth as CLI/daemon. *(ledger Phase 15)*
-2. **Phase C:** README/docs reality alignment (Telegram runner, quickstart, data locations).
-3. **Phase D:** `amrita config path/show/set/check` (non-secret only; refuse secret-like keys).
-4. **Phase E:** Doctor adds `memory`, `service/update`, `daemon/token` groups.
+1. ~~**Phase B:** Web Setup Hub consumes `providers.catalog`.~~ ✅ done *(ledger Phase 15)*
+2. ~~**Phase C:** README/docs reality alignment (Telegram runner, quickstart, data locations).~~ ✅ done *(ledger Phase 16)*
+3. ~~**Phase D:** `amrita config path/show/set/check` (non-secret only; refuse secret-like keys).~~ ✅ done *(ledger Phase 16)*
+4. **Phase E (next):** Doctor adds `memory`, `service/update`, `daemon/token` groups.
 5. **Phase I:** `amrita service status/start/stop/logs` (systemd-user) + `amrita update`/`uninstall` (dry-run first).
 6. **Phase F/G/H/J (ADR-gated):** gateway ADR, memory taxonomy ADR, connector-registry expansion (MCP/tool/webhook), credential pool/OAuth.
 
