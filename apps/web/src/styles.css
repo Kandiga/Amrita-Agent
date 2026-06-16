@@ -717,6 +717,17 @@ section h2,
   display: grid;
   gap: 10px;
 }
+.hub-catalog-group {
+  margin-top: 10px;
+}
+.hub-catalog-title {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .hub-connector strong {
   font-size: 13px;
 }

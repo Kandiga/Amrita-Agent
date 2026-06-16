@@ -242,6 +242,27 @@ export interface GithubImportLite {
   tasks: { taskId: string; externalRef: string; title: string }[];
 }
 
+/**
+ * One provider as the chooser catalog sees it (ADR-0025/0026, `providers.catalog`).
+ * `state` is honest: `ready` only after real evidence (env presence / live CLI
+ * probe / endpoint config); everything else says exactly why it cannot run.
+ * Carries env-var NAMES only — never a secret value.
+ */
+export interface ProviderCatalogEntryLite {
+  id: string;
+  title: string;
+  group: 'login' | 'api_key' | 'local';
+  authMode: 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
+  defaultModel: string;
+  executable: boolean;
+  envName?: string;
+  keyUrl?: string;
+  installHint?: string;
+  state: 'ready' | 'needs_key' | 'needs_login' | 'missing_cli' | 'needs_endpoint' | 'unavailable';
+  detail: string;
+  fix?: string;
+}
+
 /** The Settings & Runtime Hub aggregate (runtime.status). */
 export interface RuntimeStatusLite {
   roles: RoleResolutionLite[];
@@ -515,6 +536,14 @@ export class RpcClient {
 
   runtimeStatus(projectId?: string): Promise<RuntimeStatusLite> {
     return this.call<RuntimeStatusLite>('runtime.status', projectId ? { projectId } : {});
+  }
+
+  /**
+   * The provider chooser catalog (ADR-0025/0026): same truth the CLI wizard and
+   * `amrita provider catalog` render — live bounded probes, honest states.
+   */
+  providersCatalog(): Promise<ProviderCatalogEntryLite[]> {
+    return this.call<ProviderCatalogEntryLite[]>('providers.catalog', {});
   }
 
   // ── connectors + GitHub import (ADR-0022) ───────────────────────────────

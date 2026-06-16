@@ -61,5 +61,7 @@ remediation. Every warn/fail still carries an exact fix; secrets never appear in
 - Credential pool/rotation and OAuth execution (codex) — modeled as seams, not faked.
 - Cross-init service abstraction (systemd/s6/launchd/Windows) — Linux/WSL systemd is wired;
   the rest is installer/strategy-doc territory.
-- Web Setup Hub still renders the older provider list; pointing it at `providers.catalog` is the
-  next slice.
+- ~~Web Setup Hub still renders the older provider list; pointing it at `providers.catalog` is the
+  next slice.~~ **Done (ledger Phase 15):** the Hub now consumes `providers.catalog` — a grouped,
+  honest-state "Brain providers — catalog" card plus catalog-state-enriched role dropdowns;
+  see `docs/strategy/hermes-parity-roadmap.md` for the broader parity map.

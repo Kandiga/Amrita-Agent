@@ -159,6 +159,22 @@ describe('RpcClient', () => {
     expect(bodies[4]?.params).toEqual({ role: 'deep' });
   });
 
+  it('fetches the provider catalog through providers.catalog', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({
+          result: [{ id: 'anthropic', title: 'Anthropic', group: 'api_key', state: 'needs_key' }],
+        });
+      }) as typeof fetch,
+    });
+    const catalog = await client.providersCatalog();
+    expect(bodies[0]?.method).toBe('providers.catalog');
+    expect(bodies[0]?.params).toEqual({});
+    expect(catalog[0]).toMatchObject({ id: 'anthropic', state: 'needs_key' });
+  });
+
   it('sends typed connector + github-import RPC payloads (ADR-0022)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
     const client = new RpcClient({

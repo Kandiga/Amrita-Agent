@@ -431,3 +431,44 @@ One ledger, updated per phase — no scattered notes.
   catalog`, and `amrita provider models`.
 - **Intentionally deferred:** models.dev live catalog ingestion; credential pool/rotation +
   codex OAuth execution (seams only); cross-init service abstraction; web Setup Hub → catalog.
+
+## Phase 15 — parity map + web Setup Hub consumes providers.catalog
+
+- **Date:** 2026-06-16 · doc: `docs/strategy/hermes-parity-roadmap.md` · amends ADR-0026
+- **Why:** ADR-0026's stated next slice was "point the web Setup Hub at `providers.catalog`" — the
+  Hub still derived provider truth from the simpler `runtime.status` `providers` list (a flat
+  available/unavailable), not the live-probed honest-state catalog the CLI wizard and
+  `amrita provider catalog` already render. Also needed: a living, repo-grounded Hermes↔Amrita
+  parity map so future slices are tied to concrete surfaces, not abstract goals.
+- **What landed (web only — no protocol/store/daemon change):**
+  - `docs/strategy/hermes-parity-roadmap.md` — the living parity matrix across
+    install/setup/config/auth/providers/daemon/gateway/memory/connectors/cron/doctor/web/docs,
+    each row as Hermes capability → Amrita current → gap → target → slice → verification gate,
+    with a sequenced next-slice list (B done here; C README, D config CLI, E doctor groups,
+    I service/update, F/G/H/J ADR-gated).
+  - `apps/web/src/api.ts` — `ProviderCatalogEntryLite` (mirrors the daemon's `ProviderCatalogEntry`:
+    id/title/group/authMode/defaultModel/executable/envName?/keyUrl?/installHint?/state/detail/fix?)
+    + `providersCatalog()` wrapper over the existing `providers.catalog` RPC.
+  - `apps/web/src/providers-view.ts` (new, pure) — `CATALOG_STATE_LABEL`, `CATALOG_GROUP_LABEL`,
+    `catalogBadgeClass` (only `ready` → ok/green; operator-action states → warn;
+    missing_cli/unavailable → off), `catalogStateHint` (fix → installHint → `amrita setup`),
+    `groupCatalog` (render order login→api_key→local, empty groups dropped), `catalogOptionLabel`.
+  - `apps/web/src/components/SettingsRuntimeHub.tsx` — fetches the catalog on refresh; new
+    "Brain providers — catalog" card (grouped, honest badges, default model + key env NAME, detail,
+    fix command); role dropdowns now label each provider with its honest state
+    (`anthropic — needs key`, `codex — missing CLI`, `claude-code` when ready); removed the
+    hand-derived "API providers / Subscription connectors" summary (now points at the catalog card).
+  - `apps/web/src/styles.css` — `.hub-catalog-group` / `.hub-catalog-title`.
+- **Honesty checks:** `ready` is impossible without the daemon's real probe (env presence / live
+  CLI login / endpoint config); the card shows env-var NAMES only, never a value; no fake green.
+- **Verification:** web typecheck ✓ · web test 59/59 (10 files; +6: 1 api wrapper, 5
+  providers-view) ✓ · web build ✓ · root typecheck/lint/test 342/342 ✓ · live browser smoke
+  (Playwright on a real `amritad --http` + Vite, temp DB): Hub renders the catalog card with
+  Claude Code **ready** via a real 2.1.175 probe, codex **missing CLI** (+install hint), the four
+  API keys **needs key** (+`amrita setup`), local **needs endpoint**; dropdowns carry the same
+  honest labels; no secret value anywhere. Smoke servers/db/artifacts cleaned up afterwards.
+- **Limitations / next:** the chat **topbar** provider select (App.tsx, separate from the Hub)
+  still shows the simpler `(unavailable)` suffix — could adopt the same catalog labels next; the
+  `providers.probeEndpoint` RPC is not yet surfaced as a Hub input (local-endpoint probe-and-pick);
+  parity roadmap items C (README), D (`amrita config`), E (doctor memory/service/daemon groups),
+  and I (`amrita service/update/uninstall`) are the sequenced next slices.

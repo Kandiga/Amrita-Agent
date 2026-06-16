@@ -3,9 +3,17 @@ import type {
   CodingRuntimeLite,
   ConnectorStatusLite,
   GithubImportLite,
+  ProviderCatalogEntryLite,
   RuntimeStatusLite,
 } from '../api.ts';
 import { client } from '../client.ts';
+import {
+  CATALOG_STATE_LABEL,
+  catalogBadgeClass,
+  catalogOptionLabel,
+  catalogStateHint,
+  groupCatalog,
+} from '../providers-view.ts';
 
 const ROLES = ['fast', 'main', 'deep'] as const;
 type Role = (typeof ROLES)[number];
@@ -61,6 +69,7 @@ export function SettingsRuntimeHub({
   onError,
 }: SettingsRuntimeHubProps) {
   const [status, setStatus] = useState<RuntimeStatusLite | null>(null);
+  const [catalog, setCatalog] = useState<ProviderCatalogEntryLite[] | null>(null);
   const [connectors, setConnectors] = useState<ConnectorStatusLite[] | null>(null);
   const [drafts, setDrafts] = useState<Record<Role, { provider: string; model: string }>>({
     fast: { provider: '', model: '' },
@@ -74,6 +83,11 @@ export function SettingsRuntimeHub({
   const refresh = useCallback(async () => {
     try {
       setStatus(await client.runtimeStatus(projectId));
+    } catch (e) {
+      onError(e);
+    }
+    try {
+      setCatalog(await client.providersCatalog());
     } catch (e) {
       onError(e);
     }
@@ -181,12 +195,14 @@ export function SettingsRuntimeHub({
                   }
                 >
                   <option value="">choose provider…</option>
-                  {status.providers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.id}
-                      {p.available ? '' : ' (unavailable)'}
-                    </option>
-                  ))}
+                  {status.providers.map((p) => {
+                    const entry = catalog?.find((c) => c.id === p.id);
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {entry ? catalogOptionLabel(entry) : p.id}
+                      </option>
+                    );
+                  })}
                 </select>
                 <input
                   value={draft.model}
@@ -233,6 +249,45 @@ export function SettingsRuntimeHub({
             </div>
           );
         })}
+      </section>
+
+      <section className="card">
+        <h2>Brain providers — catalog</h2>
+        <p className="hub-note">
+          Every provider Amrita knows, with its honest state. "ready" only ever follows real
+          evidence — a key present in the environment, a live CLI login probe, or a configured local
+          endpoint. Keys live as env-var <em>names</em>; no secret value is ever shown here.
+        </p>
+        {catalog === null ? (
+          <p className="empty-note">Probing provider catalog…</p>
+        ) : catalog.length === 0 ? (
+          <p className="empty-note">No providers registered.</p>
+        ) : (
+          groupCatalog(catalog).map((g) => (
+            <div key={g.group} className="hub-catalog-group">
+              <h3 className="hub-catalog-title">{g.title}</h3>
+              {g.entries.map((entry) => {
+                const hint = catalogStateHint(entry);
+                return (
+                  <div key={entry.id} className="hub-runtime">
+                    <div className="hub-role-head">
+                      <strong>{entry.title}</strong>
+                      <span className={`doc-badge ${catalogBadgeClass(entry.state)}`}>
+                        {CATALOG_STATE_LABEL[entry.state]}
+                      </span>
+                    </div>
+                    <small>
+                      default model {entry.defaultModel}
+                      {entry.envName ? ` · key env ${entry.envName}` : ''}
+                    </small>
+                    <p className="hub-detail">{entry.detail}</p>
+                    {hint ? <code className="hub-cmd">{hint}</code> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ))
+        )}
       </section>
 
       <section className="card">
@@ -321,33 +376,19 @@ export function SettingsRuntimeHub({
             </div>
           ))
         )}
-        {(() => {
-          const real = status.providers.filter((p) => p.kind === 'real');
-          const configured = real.filter((p) => p.configuredAccounts > 0).length;
-          const available = real.filter((p) => p.available).length;
-          return (
-            <div className="hub-connectors">
-              <div className="hub-connector">
-                <strong>API providers</strong>
-                <small>
-                  {real.map((p) => p.id).join(', ')} — {configured} configured, {available} ready
-                  (keys live as env names only; see Runtime panel for exact setup commands)
-                </small>
-              </div>
-              <div className="hub-connector">
-                <strong>Subscription connectors</strong>
-                <small>
-                  Claude Code (above) via its own official login. No unofficial "Max API", no
-                  credential scraping — ever.
-                </small>
-              </div>
-              <div className="hub-connector hub-future">
-                <strong>Hermes bridge · MCP/tool connectors</strong>
-                <small>future — discovery-based, each behind its own ADR</small>
-              </div>
-            </div>
-          );
-        })()}
+        <div className="hub-connectors">
+          <div className="hub-connector">
+            <strong>API providers &amp; subscriptions</strong>
+            <small>
+              See the “Brain providers — catalog” card above for live, per-provider states and the
+              exact setup command for each. Keys live as env-var names only.
+            </small>
+          </div>
+          <div className="hub-connector hub-future">
+            <strong>Hermes bridge · MCP/tool connectors</strong>
+            <small>future — discovery-based, each behind its own ADR</small>
+          </div>
+        </div>
       </section>
     </>
   );
