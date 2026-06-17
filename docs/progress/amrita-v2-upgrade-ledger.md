@@ -511,3 +511,53 @@ One ledger, updated per phase — no scattered notes.
   `config edit`/`config migrate` not built (schema v1, nothing to migrate — not faked); Phase E
   (doctor `memory`/`service`/`daemon-token` groups) and Phase I (`amrita service`/`update`/
   `uninstall`) are the next sequenced slices.
+
+## Phase 17 — Organizational Brain Harness (engineered knowledge layer)
+
+- **Date:** 2026-06-17 · ADR-0027 · strategy: `docs/strategy/organizational-brain-harness.md`
+- **Why:** "organizational brain" must mean an **engineered agentic knowledge harness** — not
+  generic RAG, not an Obsidian graph picture, not a passive vault. Retrieval is a tool; the harness
+  (agents that ingest → normalize → link → maintain knowledge with provenance and honest gaps) is
+  the product. This integrates the remaining roadmap **Phase G** (memory architecture) and frames
+  **H** (sources/connectors) and **F** (channels as sources).
+- **Design choice (honest, reversible):** the brain is a **deterministic projection** over existing
+  event-sourced state + manually-captured memory (same pattern as `surface.ts`) — **no new store
+  table**. A dedicated `knowledge_records` table + `harness.*` events are deferred to when a real
+  automatic ingestion connector lands (documented migration path in ADR-0027).
+- **What landed:**
+  - `@amrita/protocol` `harness.ts` (+index, +tests) — view/spec schemas: `knowledgeRecord`
+    (7 kinds, provenance, owner/date/confidence/tags/links/status), `knowledgeSource`
+    (honest `connected|manual|planned`), `knowledgeGap` (7 kinds), `harnessTopology`
+    (agents-as-code), `maintenanceEvent`, `projectBrain`.
+  - `@amrita/store` — `listMemoryEntries(projectId)` read (no migration).
+  - `@amrita/daemon` `harness.ts` (+tests) — honest `HARNESS_TOPOLOGY` (capture/linker/maintainer
+    active; chat/mailbox extraction + answer-agent planned), `baseKnowledgeSources()`, and the pure
+    `buildProjectBrain` projection (maps brief/decisions/questions/risks/milestones/external-tasks/
+    memory → records with provenance + `[[links]]`; computes gaps: missing-owner/date/source,
+    orphan, unresolved-question, stale, contradiction; derives a maintenance timeline from the event
+    log) + `renderRecordMarkdown`. Kernel: `harnessTopology` / `listKnowledgeSources`
+    (enriches chat from the live Telegram runner) / `getProjectBrain` / `captureKnowledge`
+    (manual capture via the value-free memory path). RPC: `harness.topology|sources|brain|capture`.
+  - `@amrita/web` — `api.ts` types+wrappers; `harness-view.ts` pure helpers (honest source badges —
+    only `connected` is green; record grouping; provenance/link labels); `BrainPanel.tsx`
+    (explainer distinguishing RAG vs graph vs harness; ingestion lanes with honest status + exact
+    next step; manual-capture box; records grouped by kind with provenance, owner/date, tags, and
+    resolved links; gaps; maintenance timeline; topology); tri-state inspector toggle
+    Project/Brain/Settings in `App.tsx`; CSS.
+- **Honesty checks:** no source is `connected` (email/calendar/docs/chat = planned; repo/manual =
+  manual); the UI states retrieval ≠ maintained knowledge and graph = optional output; provenance
+  carries source ids/refs only, never a secret; manual capture goes through the value-free memory
+  path; empty project = empty brain (no sample data).
+- **Verification:** root typecheck ✓ · lint ✓ · root test **362/362** (27 files; +11: 5 protocol
+  harness, 6 daemon harness) · web typecheck ✓ · web test **64** (+5: 1 api wrapper, 4 harness-view)
+  · web build ✓. **Live browser smoke** (Playwright on real `amritad --http` + Vite, temp DB):
+  seeded a question + decision → Brain view rendered them as linked records (decision↔question,
+  bidirectional, provenance `manual`), an `unresolved-question` gap, and a maintenance timeline;
+  **manual capture** of a commitment via the UI created a `commitment` record (owner `nethanel`,
+  provenance `manual:brain`) and the maintainer surfaced honest `missing-date` + `orphan` gaps.
+  Smoke servers/db/artifacts cleaned up.
+- **Limitations / next:** projection (not persisted) records — dedicated `knowledge_records` table
+  + `harness.*` events land with the first automatic ingestion connector; email/calendar/chat/docs
+  extraction agents are `planned`; the brain-cited answer-agent (Ask-Amrita-from-the-brain with
+  citations) is `planned` — today's chat answers are not yet brain-cited; duplicate-merge and
+  automated contradiction resolution beyond markers/superseded are future.

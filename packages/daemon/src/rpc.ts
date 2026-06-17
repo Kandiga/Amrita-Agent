@@ -495,6 +495,41 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.probeEndpoint(p.baseUrl, p.keyEnv),
   ),
 
+  // ── organizational brain harness (ADR-0027) ───────────────────────────────
+  // The harness-as-code topology (honest active/planned agents).
+  'harness.topology': def(z.object({}).optional(), (k) => k.harnessTopology()),
+  // Ingestion sources with honest connected/manual/planned status.
+  'harness.sources': def(z.object({}).optional(), (k) => k.listKnowledgeSources()),
+  // The maintained Project Brain: normalized records + links + gaps + maintenance.
+  'harness.brain': def(z.object({ projectId: z.string().min(1) }), (k, p) =>
+    k.getProjectBrain(p.projectId),
+  ),
+  // Manual capture (capture-agent): structured memory → normalized record.
+  'harness.capture': def(
+    z.object({
+      ...convCtx,
+      ...writeOpts,
+      kind: z
+        .enum([
+          'decision',
+          'commitment',
+          'meeting-note',
+          'project-context',
+          'open-question',
+          'entity',
+          'source-excerpt',
+        ])
+        .optional(),
+      title: z.string().min(1).max(300),
+      body: z.string().max(4000).optional(),
+      owner: z.string().min(1).max(80).optional(),
+      date: z.string().min(1).max(40).optional(),
+      tags: z.array(z.string().min(1).max(40)).max(12).optional(),
+      source: z.string().min(1).max(120).optional(),
+    }),
+    (k, p) => k.captureKnowledge(clean(p)),
+  ),
+
   // Honest readiness: `ready` only when the surface actually works end-to-end
   // from THIS daemon right now. Telegram is ready only while its runner is live.
   'channels.list': def(z.object({}).optional(), (k) => [

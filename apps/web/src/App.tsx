@@ -12,6 +12,7 @@ import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import { client } from './client.ts';
 import { nextActions } from './companion.ts';
 import { ApprovalsPanel } from './components/ApprovalsPanel.tsx';
+import { BrainPanel } from './components/BrainPanel.tsx';
 import { BrandPanel } from './components/BrandPanel.tsx';
 import { BriefPanel } from './components/BriefPanel.tsx';
 import { DecisionsPanel } from './components/DecisionsPanel.tsx';
@@ -109,8 +110,8 @@ export function App() {
   const [timeline, setTimeline] = useState<AmritaEventLite[]>([]);
   /** Effective fast/main/deep model resolution for the open project (§2.8). */
   const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
-  /** Inspector mode: the Project Brain panels, or the Settings & Runtime Hub. */
-  const [showSettings, setShowSettings] = useState(false);
+  /** Inspector mode: project panels, the brain harness, or the Settings & Runtime Hub. */
+  const [inspectorView, setInspectorView] = useState<'project' | 'brain' | 'settings'>('project');
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
 
@@ -468,11 +469,21 @@ export function App() {
           <div className="topbar-controls">
             <button
               type="button"
-              className={showSettings ? 'settings-toggle active' : 'settings-toggle'}
-              onClick={() => setShowSettings((v) => !v)}
+              className={inspectorView === 'brain' ? 'settings-toggle active' : 'settings-toggle'}
+              onClick={() => setInspectorView((v) => (v === 'brain' ? 'project' : 'brain'))}
+              title="Organizational brain — maintained knowledge harness"
+            >
+              {inspectorView === 'brain' ? 'Project' : 'Brain'}
+            </button>
+            <button
+              type="button"
+              className={
+                inspectorView === 'settings' ? 'settings-toggle active' : 'settings-toggle'
+              }
+              onClick={() => setInspectorView((v) => (v === 'settings' ? 'project' : 'settings'))}
               title="Runtime settings — models, providers, coding runtimes"
             >
-              {showSettings ? 'Project' : 'Settings'}
+              {inspectorView === 'settings' ? 'Project' : 'Settings'}
             </button>
             <button
               type="button"
@@ -575,7 +586,7 @@ export function App() {
             </button>
           ) : null}
         </section>
-        {showSettings ? (
+        {inspectorView === 'settings' ? (
           <SettingsRuntimeHub
             projectId={selectedProject?.id}
             projectName={selectedProject?.name}
@@ -583,6 +594,8 @@ export function App() {
             onTasksChanged={() => void loadTasks()}
             onError={reportError}
           />
+        ) : inspectorView === 'brain' ? (
+          <BrainPanel projectId={selectedProject?.id} writeCtx={writeCtx} onError={reportError} />
         ) : (
           <>
             <NextActionsPanel actions={companionActions} />

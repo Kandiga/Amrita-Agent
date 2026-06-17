@@ -1719,6 +1719,25 @@ export class Store {
       .all(...vals) as MemoryEntryRow[];
   }
 
+  /**
+   * All memory entries for a project, newest first (ADR-0027 brain projection).
+   * Unlike searchMemory this is an unranked full list, used to derive normalized
+   * knowledge records from manually-captured memory.
+   */
+  listMemoryEntries(projectId: string, opts: { limit?: number } = {}): MemoryEntryRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, scope, project_id AS projectId, content, char_count AS charCount,
+                source, source_message_id AS sourceMessageId,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM memory_entries
+         WHERE project_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(projectId, opts.limit ?? 500) as MemoryEntryRow[];
+  }
+
   /** A non-secret config value, parsed from its JSON, or `undefined` if unset. */
   getSetting<T = unknown>(key: string): T | undefined {
     const row = this.db.prepare('SELECT value_json AS v FROM settings WHERE key = ?').get(key) as

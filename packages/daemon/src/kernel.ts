@@ -3,7 +3,10 @@ import {
   type AmritaEvent,
   type ConnectorStatusReport,
   type ConversationRow,
+  type HarnessTopology,
+  type KnowledgeSource,
   type MergeReport,
+  type ProjectBrain,
   type ProjectRow,
   type UnsealedEvent,
   laneMandateSchema,
@@ -41,6 +44,7 @@ import {
 } from '@amrita/store';
 import { connectorStatuses } from './connectors.ts';
 import { fetchGithubIssues } from './github.ts';
+import { HARNESS_TOPOLOGY, baseKnowledgeSources, buildProjectBrain } from './harness.ts';
 import {
   type ChatProvider,
   type ChatUsage,
@@ -1091,6 +1095,92 @@ export class AmritaKernel {
       milestones: this.store.listMilestones({ projectId }),
       previewApprovals: this.store.listPreviewApprovals(projectId),
     };
+  }
+
+  // ── organizational brain harness (ADR-0027) ────────────────────────────────
+
+  /** The harness agent topology (honest about active vs planned agents). */
+  harnessTopology(): HarnessTopology {
+    return HARNESS_TOPOLOGY;
+  }
+
+  /** Ingestion sources with honest status; chat is enriched from the live runner. */
+  listKnowledgeSources(): KnowledgeSource[] {
+    const telegramLive = this.isChannelRunnerActive('telegram');
+    return baseKnowledgeSources().map((s) =>
+      s.id === 'chat' && telegramLive
+        ? {
+            ...s,
+            detail: `${s.detail} (Telegram runner is live now)`,
+          }
+        : s,
+    );
+  }
+
+  /**
+   * Derive the maintained Project Brain — normalized records (with provenance
+   * and links), gaps, maintenance timeline, counts. A deterministic projection
+   * over event-sourced state + manually-captured memory (no new storage).
+   */
+  getProjectBrain(projectId: string, now: string = new Date().toISOString()): ProjectBrain {
+    return buildProjectBrain({
+      projectId,
+      now,
+      brief: this.store.getBrief(projectId) ?? null,
+      decisions: this.store.listDecisions({ projectId }),
+      questions: this.store.listQuestions({ projectId }),
+      risks: this.store.listRisks({ projectId }),
+      milestones: this.store.listMilestones({ projectId }),
+      tasks: this.store.listTasks({ projectId }),
+      memory: this.store.listMemoryEntries(projectId),
+      timeline: this.store.listProjectEvents(projectId, { limit: 80 }),
+      sources: this.listKnowledgeSources(),
+    });
+  }
+
+  /**
+   * Manual capture into the brain (the capture-agent). Writes a structured
+   * memory entry the projection normalizes into a record with provenance.
+   * Secret-free by construction — goes through the value-free memory path.
+   */
+  captureKnowledge(
+    input: {
+      projectId: string;
+      conversationId: string;
+      kind?: ProjectBrain['records'][number]['kind'];
+      title: string;
+      body?: string;
+      owner?: string;
+      date?: string;
+      tags?: string[];
+      source?: string;
+    } & EntityWriteOpts,
+  ): { entryId: string; kind: string } {
+    const kind = input.kind ?? 'project-context';
+    const markerPrefix: Record<string, string> = {
+      decision: 'decision: ',
+      commitment: 'commitment: ',
+      'meeting-note': 'meeting: ',
+      entity: 'entity: ',
+      'project-context': '',
+      'open-question': '',
+      'source-excerpt': '',
+    };
+    let head = `${markerPrefix[kind] ?? ''}${input.title}`;
+    if (input.owner) head += ` @${input.owner}`;
+    if (input.date) head += ` due:${input.date}`;
+    const tagStr = (input.tags ?? []).map((t) => `#${t}`).join(' ');
+    const content = [head, input.body, tagStr].filter((p) => p && p.length > 0).join('\n\n');
+    const { entryId } = this.store.putMemoryEntry({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      scope: 'project',
+      content,
+      source: input.source ?? 'manual:brain',
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.channel ? { channel: input.channel } : {}),
+    });
+    return { entryId, kind };
   }
 
   upsertBrand(

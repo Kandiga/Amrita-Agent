@@ -263,6 +263,96 @@ export interface ProviderCatalogEntryLite {
   fix?: string;
 }
 
+// ── organizational brain harness (ADR-0027) ─────────────────────────────────
+
+/** A normalized knowledge record with provenance + links. No secret values. */
+export interface KnowledgeRecordLite {
+  slug: string;
+  kind:
+    | 'decision'
+    | 'commitment'
+    | 'meeting-note'
+    | 'project-context'
+    | 'open-question'
+    | 'entity'
+    | 'source-excerpt';
+  title: string;
+  body: string;
+  projectId: string;
+  owner: string | null;
+  date: string | null;
+  confidence: 'low' | 'medium' | 'high';
+  tags: string[];
+  links: string[];
+  status: 'active' | 'resolved' | 'superseded' | 'stale' | 'contradicted';
+  provenance: { sourceId: string; ref?: string; channel?: string; capturedAt?: string };
+}
+
+/** An ingestion source with an honest status. `connected` ⇒ real ingestion today. */
+export interface KnowledgeSourceLite {
+  id: string;
+  kind: 'manual' | 'chat' | 'email' | 'calendar' | 'docs' | 'repo';
+  title: string;
+  status: 'connected' | 'manual' | 'planned';
+  detail: string;
+  extracts: string[];
+  nextStep?: string;
+}
+
+export interface KnowledgeGapLite {
+  kind:
+    | 'missing-owner'
+    | 'missing-date'
+    | 'missing-source'
+    | 'orphan'
+    | 'unresolved-question'
+    | 'stale'
+    | 'contradiction';
+  severity: 'low' | 'medium' | 'high';
+  recordSlug?: string;
+  detail: string;
+}
+
+export interface MaintenanceEventLite {
+  ts: string;
+  agent: 'ingest' | 'link' | 'maintain' | 'answer';
+  action: string;
+  detail: string;
+  recordSlug?: string;
+}
+
+export interface HarnessAgentLite {
+  id: string;
+  role: 'ingest' | 'link' | 'maintain' | 'answer';
+  title: string;
+  ingests?: string[];
+  maintains?: string[];
+  trigger: string;
+  outputs: string[];
+  qualityChecks: string[];
+  status: 'active' | 'planned';
+}
+
+export interface HarnessTopologyLite {
+  version: number;
+  agents: HarnessAgentLite[];
+}
+
+export interface ProjectBrainLite {
+  projectId: string;
+  records: KnowledgeRecordLite[];
+  gaps: KnowledgeGapLite[];
+  sources: KnowledgeSourceLite[];
+  maintenance: MaintenanceEventLite[];
+  counts: {
+    records: number;
+    gaps: number;
+    sourcesConnected: number;
+    sourcesManual: number;
+    sourcesPlanned: number;
+  };
+}
+
 /** The Settings & Runtime Hub aggregate (runtime.status). */
 export interface RuntimeStatusLite {
   roles: RoleResolutionLite[];
@@ -544,6 +634,34 @@ export class RpcClient {
    */
   providersCatalog(): Promise<ProviderCatalogEntryLite[]> {
     return this.call<ProviderCatalogEntryLite[]>('providers.catalog', {});
+  }
+
+  // ── organizational brain harness (ADR-0027) ─────────────────────────────
+
+  harnessTopology(): Promise<HarnessTopologyLite> {
+    return this.call<HarnessTopologyLite>('harness.topology', {});
+  }
+
+  harnessSources(): Promise<KnowledgeSourceLite[]> {
+    return this.call<KnowledgeSourceLite[]>('harness.sources', {});
+  }
+
+  harnessBrain(projectId: string): Promise<ProjectBrainLite> {
+    return this.call<ProjectBrainLite>('harness.brain', { projectId });
+  }
+
+  harnessCapture(params: {
+    projectId: string;
+    conversationId: string;
+    kind?: KnowledgeRecordLite['kind'];
+    title: string;
+    body?: string;
+    owner?: string;
+    date?: string;
+    tags?: string[];
+    source?: string;
+  }): Promise<{ entryId: string; kind: string }> {
+    return this.call<{ entryId: string; kind: string }>('harness.capture', params);
   }
 
   // ── connectors + GitHub import (ADR-0022) ───────────────────────────────

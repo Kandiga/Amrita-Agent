@@ -728,6 +728,89 @@ section h2,
   text-transform: uppercase;
   color: var(--muted);
 }
+
+/* ── organizational brain harness (ADR-0027) ─────────────────────────────── */
+.brain-counts {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+.brain-capture {
+  display: grid;
+  gap: 7px;
+}
+.brain-capture textarea {
+  min-height: 56px;
+  resize: vertical;
+}
+.brain-group {
+  margin-top: 10px;
+}
+.brain-record {
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.brain-record:last-of-type {
+  border-bottom: none;
+}
+.brain-tags {
+  margin-top: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.brain-tag {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.brain-links {
+  margin: 5px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.brain-link {
+  font-weight: 650;
+}
+.brain-gap,
+.brain-maint {
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 12px;
+}
+.brain-gap:last-of-type,
+.brain-maint:last-of-type {
+  border-bottom: none;
+}
+.brain-maint-agent,
+.brain-role {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.brain-status-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.brain-status-resolved,
+.brain-status-superseded {
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+}
+.brain-status-stale {
+  background: color-mix(in srgb, #b8860b 22%, transparent);
+  color: #b8860b;
+}
+.brain-status-contradicted {
+  background: color-mix(in srgb, crimson 18%, transparent);
+  color: crimson;
+}
 .hub-connector strong {
   font-size: 13px;
 }

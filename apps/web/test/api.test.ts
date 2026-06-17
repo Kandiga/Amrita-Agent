@@ -175,6 +175,40 @@ describe('RpcClient', () => {
     expect(catalog[0]).toMatchObject({ id: 'anthropic', state: 'needs_key' });
   });
 
+  it('sends typed brain-harness RPC payloads (ADR-0027)', async () => {
+    const bodies: Array<{ method: string; params: unknown }> = [];
+    const client = new RpcClient({
+      fetchImpl: (async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ result: {} });
+      }) as typeof fetch,
+    });
+    await client.harnessTopology();
+    await client.harnessSources();
+    await client.harnessBrain('P1');
+    await client.harnessCapture({
+      projectId: 'P1',
+      conversationId: 'C1',
+      kind: 'commitment',
+      title: 'Ship it',
+      owner: 'nethanel',
+      tags: ['release'],
+    });
+    expect(bodies.map((b) => b.method)).toEqual([
+      'harness.topology',
+      'harness.sources',
+      'harness.brain',
+      'harness.capture',
+    ]);
+    expect(bodies[2]?.params).toEqual({ projectId: 'P1' });
+    expect(bodies[3]?.params).toMatchObject({
+      kind: 'commitment',
+      title: 'Ship it',
+      owner: 'nethanel',
+      tags: ['release'],
+    });
+  });
+
   it('sends typed connector + github-import RPC payloads (ADR-0022)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
     const client = new RpcClient({

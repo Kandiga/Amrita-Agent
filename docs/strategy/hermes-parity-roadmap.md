@@ -83,14 +83,15 @@ Status legend: ✅ matched · 🟡 partial · ⬜ planned (not started).
 
 | Area | Hermes capability | Amrita current state | Gap | Target Amrita shape | Implementation slice | Verification gate |
 |---|---|---|---|---|---|---|
-| Memory store | project/user memory, import/export | 🟡 `memory.put/search` RPC + CLI; event-sourced; project+user scopes; brand memory (ADR-0020) | no import/export; not surfaced in doctor/setup as a group | ADR defining Amrita memory taxonomy (project/user/runtime); doctor `memory` group; export/import commands | ADR first; then doctor group + `amrita memory list/export` | ADR; doctor memory group; CLI tests |
+| Memory store | project/user memory, import/export | ✅ memory taxonomy reframed as the **Organizational Brain Harness** (ADR-0027): `memory.put/search` + manual capture feed a derived Project Brain of normalized records (provenance, links, gaps, maintenance) — `harness.brain/sources/topology/capture` RPC + web Brain view | no import/export yet; not in doctor as a group | keep; add doctor `brain` group + `amrita brain`/export when persisted records land | done (ledger Phase 17): protocol/daemon/web tests + browser smoke |
+| Knowledge harness | — (Hermes is doc/RAG-oriented) | ✅ engineered harness (ADR-0027): typed records/sources/gaps/topology; honest sources (manual/planned, no fake connectors); RAG/graph framed as tools/output, not the brain | automatic ingestion connectors; persisted records | dedicated `knowledge_records` table + `harness.*` events when an ingestion connector lands | done (foundation) — see ledger Phase 17 |
 | No secrets in memory | — | ✅ value-free; schema-parsed | none | keep | — | secret scan |
 
 ## 9. Tools / skills / MCP / webhooks / connectors
 
 | Area | Hermes capability | Amrita current state | Gap | Target Amrita shape | Implementation slice | Verification gate |
 |---|---|---|---|---|---|---|
-| Connector registry | `mcp_*`, `tools_config`, `webhook`, `skills_*` | 🟡 `connectorManifestSchema` + `connectors.status` (GitHub live probe); web Setup Hub card; doctor connectors group | tools/skills/MCP/webhooks not implemented | one registry concept (id/kind/title/capabilities/requiredEnv NAMES/setupCommands/docsUrl/status probe); CLI list/status; web card; doctor | extend manifest registry to MCP/tool/webhook kinds (honest "planned" states); ADR for MCP connector support | manifest schema tests; doctor; web |
+| Connector registry | `mcp_*`, `tools_config`, `webhook`, `skills_*` | 🟡 `connectorManifestSchema` + `connectors.status` (GitHub live probe); web Setup Hub card; doctor connectors group. Now also `knowledgeSource` registry (ADR-0027) for ingestion sources with honest status | tools/skills/MCP/webhooks not implemented; ingestion sources mostly planned | unify connector + knowledge-source registries; extend to MCP/tool/webhook (honest "planned"); ADR for MCP | manifest/source schema tests; doctor; web |
 | GitHub import | — (Amrita-specific) | ✅ one-way idempotent issues→tasks | none | keep | — | import tests (no network) |
 | MCP | MCP catalog/picker | ⬜ not implemented | no MCP runtime | ADR-gated MCP connector support (Apify MCP is a candidate use case, not yet built) | ADR; then connector kind `mcp` | ADR + tests when built |
 
