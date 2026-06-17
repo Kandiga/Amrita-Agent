@@ -28,7 +28,18 @@ Interactive Surface (Open Design is inspiration only, **never** a plugin/depende
 Code is a managed execution runtime behind a typed bridge, not the product center;
 provider/model/runtime selection is first-class, user-visible, and deterministic
 (session > lane > project > global > auto); Windows-first installer path with CLI/daemon mode
-preserved; self-maintenance changes are audited, diffable, and reversible. Strategy sources:
+preserved; self-maintenance changes are audited, diffable, and reversible.
+
+Amrita's organizational brain is an **engineered agentic knowledge harness**, not generic RAG,
+not a pretty Obsidian graph, and not a passive document vault. RAG/retrieval and graph views are
+supporting outputs only. The product must model ingestion agents for mail/calendar/chat/docs/manual
+capture; normalized Markdown-like knowledge records with provenance, ownership, confidence, status,
+tags, and `[[links]]`; maintenance/coherence agents that link, merge, flag contradictions, surface
+stale/orphan/gap items, and evolve Project Brain / Org Brain layers over time; and an in-app/HTML
+brain view with honest connector status. Never claim real email/calendar/chat connectors exist until
+they do; use planned/manual/import states instead.
+
+Strategy sources:
 `docs/strategy/native-interactive-surface.md`, `docs/strategy/windows-installer-and-updates.md`,
 `docs/strategy/project-companion-roadmap.md`. Progress receipts live in
 `docs/progress/amrita-v2-upgrade-ledger.md`.
