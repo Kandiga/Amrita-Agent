@@ -44,6 +44,20 @@ export const HARNESS_TOPOLOGY: HarnessTopology = {
       status: 'active',
     },
     {
+      id: 'cinema-extractor',
+      role: 'ingest',
+      title: 'Cinema module extractor',
+      ingests: ['module'],
+      maintains: ['project-context', 'decision'],
+      trigger: 'Cinema digest sync + applied credit/destructive plans (module:cinema)',
+      outputs: ['production-digest record with module provenance', 'cinema-tagged decisions'],
+      qualityChecks: [
+        'metadata only (no media bytes)',
+        'stable slug per project (idempotent sync)',
+      ],
+      status: 'active',
+    },
+    {
       id: 'linker',
       role: 'link',
       title: 'Linking agent',
@@ -96,6 +110,22 @@ export const HARNESS_TOPOLOGY: HarnessTopology = {
 };
 
 // ── ingestion sources (honest base; the kernel enriches chat/repo live) ───────
+
+/** The Cinema module as a knowledge source — `connected` ONLY when the project
+ *  actually has cinema-synced data (ADR-0027 honesty carried over). */
+export function cinemaKnowledgeSource(hasData: boolean): KnowledgeSource {
+  return {
+    id: 'module:cinema',
+    kind: 'module',
+    title: 'Cinema Studio module',
+    status: hasData ? 'connected' : 'planned',
+    detail: hasData
+      ? 'Production digest + applied-plan decisions sync from the linked Cinema project (metadata only — media never crosses).'
+      : 'Link a Cinema project (Cinema app → Settings → Amrita Platform → Link, then Sync) and its digest + decisions appear here.',
+    extracts: ['production digest', 'applied plan decisions', 'format/style decisions'],
+    ...(hasData ? {} : { nextStep: 'Cinema app → Settings → Amrita Platform → Link + Sync' }),
+  };
+}
 
 export function baseKnowledgeSources(): KnowledgeSource[] {
   return [
@@ -191,6 +221,7 @@ function parseDueDate(text: string): string | null {
 /** Map a memory entry's free-form `source` to an honest source id. */
 function sourceIdForMemory(source: string | null): string {
   const s = (source ?? '').toLowerCase();
+  if (s.startsWith('module:')) return s.split(/\s/)[0] ?? 'module:cinema';
   if (
     s.startsWith('telegram') ||
     s.startsWith('chat') ||
@@ -322,10 +353,20 @@ export function buildProjectBrain(input: BrainInput): ProjectBrain {
       owner: null,
       date: dateOf(d.createdAt),
       confidence: 'high',
-      tags: ['decision', ...parseTags(d.text)],
+      // [cinema]-prefixed decisions were recorded by the Cinema module (applied
+      // plans / format choices) — carry module provenance (ADR-0030).
+      tags: [
+        'decision',
+        ...(d.text.startsWith('[cinema]') ? ['cinema'] : []),
+        ...parseTags(d.text),
+      ],
       links,
       status: isSuperseded ? 'superseded' : 'active',
-      provenance: { sourceId: 'manual', ref: slug, capturedAt: d.createdAt },
+      provenance: {
+        sourceId: d.text.startsWith('[cinema]') ? 'module:cinema' : 'manual',
+        ref: slug,
+        capturedAt: d.createdAt,
+      },
     });
   }
 
@@ -440,6 +481,31 @@ export function buildProjectBrain(input: BrainInput): ProjectBrain {
 
   // 7. Memory entries → classified records (manual capture / source excerpts)
   for (const e of input.memory) {
+    // 7a. Cinema module digests (ADR-0030): the module's synced production
+    // digest becomes a project-context record with module provenance. The
+    // entry is idempotent per project, so the slug is stable across re-syncs.
+    if ((e.source ?? '').toLowerCase() === 'module:cinema') {
+      const firstLine = e.content.split('\n')[0] ?? 'Cinema production digest';
+      records.push({
+        slug: `project-context:${e.id}`,
+        kind: 'project-context',
+        title: excerpt(firstLine, 80),
+        body: e.content,
+        projectId,
+        owner: null,
+        date: dateOf(e.createdAt),
+        confidence: 'high',
+        tags: ['cinema', 'digest'],
+        links: [],
+        status: 'active',
+        provenance: {
+          sourceId: 'module:cinema',
+          ref: `cinema-digest:${e.id}`,
+          capturedAt: e.createdAt,
+        },
+      });
+      continue;
+    }
     const c = classifyMemory(e.content);
     const slug = `${c.kind}:${e.id}`;
     const sourceId = sourceIdForMemory(e.source);

@@ -48,7 +48,12 @@ import {
 } from '@amrita/store';
 import { connectorStatuses } from './connectors.ts';
 import { fetchGithubIssues } from './github.ts';
-import { HARNESS_TOPOLOGY, baseKnowledgeSources, buildProjectBrain } from './harness.ts';
+import {
+  HARNESS_TOPOLOGY,
+  baseKnowledgeSources,
+  buildProjectBrain,
+  cinemaKnowledgeSource,
+} from './harness.ts';
 import {
   type ChatProvider,
   type ChatUsage,
@@ -1108,17 +1113,27 @@ export class AmritaKernel {
     return HARNESS_TOPOLOGY;
   }
 
-  /** Ingestion sources with honest status; chat is enriched from the live runner. */
-  listKnowledgeSources(): KnowledgeSource[] {
+  /** Ingestion sources with honest status; chat is enriched from the live
+   *  runner, and the Cinema module source is `connected` only when the given
+   *  project actually holds cinema-synced data (ADR-0030). */
+  listKnowledgeSources(projectId?: string): KnowledgeSource[] {
     const telegramLive = this.isChannelRunnerActive('telegram');
-    return baseKnowledgeSources().map((s) =>
-      s.id === 'chat' && telegramLive
-        ? {
-            ...s,
-            detail: `${s.detail} (Telegram runner is live now)`,
-          }
-        : s,
-    );
+    const cinemaHasData = projectId
+      ? this.store
+          .listMemoryEntries(projectId)
+          .some((e) => (e.source ?? '').toLowerCase() === 'module:cinema')
+      : false;
+    return [
+      ...baseKnowledgeSources().map((s) =>
+        s.id === 'chat' && telegramLive
+          ? {
+              ...s,
+              detail: `${s.detail} (Telegram runner is live now)`,
+            }
+          : s,
+      ),
+      cinemaKnowledgeSource(cinemaHasData),
+    ];
   }
 
   /**
@@ -1138,7 +1153,7 @@ export class AmritaKernel {
       tasks: this.store.listTasks({ projectId }),
       memory: this.store.listMemoryEntries(projectId),
       timeline: this.store.listProjectEvents(projectId, { limit: 80 }),
-      sources: this.listKnowledgeSources(),
+      sources: this.listKnowledgeSources(projectId),
     });
   }
 

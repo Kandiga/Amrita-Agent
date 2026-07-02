@@ -79,6 +79,7 @@ export const knowledgeSourceKindSchema = z.enum([
   'calendar',
   'docs',
   'repo',
+  'module', // a platform module feeding the brain (ADR-0030: Cinema is the first)
 ]);
 export type KnowledgeSourceKind = z.infer<typeof knowledgeSourceKindSchema>;
 

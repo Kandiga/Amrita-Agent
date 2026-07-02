@@ -500,7 +500,9 @@ export const METHODS: Record<string, RpcMethod> = {
   // The harness-as-code topology (honest active/planned agents).
   'harness.topology': def(z.object({}).optional(), (k) => k.harnessTopology()),
   // Ingestion sources with honest connected/manual/planned status.
-  'harness.sources': def(z.object({}).optional(), (k) => k.listKnowledgeSources()),
+  'harness.sources': def(z.object({ projectId: z.string().min(1).optional() }).optional(), (k, p) =>
+    k.listKnowledgeSources(p?.projectId),
+  ),
   // The maintained Project Brain: normalized records + links + gaps + maintenance.
   'harness.brain': def(z.object({ projectId: z.string().min(1) }), (k, p) =>
     k.getProjectBrain(p.projectId),
