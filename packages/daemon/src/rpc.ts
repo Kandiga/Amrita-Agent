@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { runCinemaVerb } from './cinema.ts';
 import { runDoctor } from './doctor.ts';
 import { GithubError } from './github.ts';
 import type { AmritaKernel } from './kernel.ts';
@@ -567,6 +568,18 @@ export const METHODS: Record<string, RpcMethod> = {
   'channels.pairing.list': def(
     z.object({ channel: z.enum(['web', 'telegram']).optional() }),
     (k, p) => k.listPairings(p.channel),
+  ),
+
+  // Cinema module verbs (ADR-0028, Phase 2) — amritad is the front door; the
+  // module's own brain (brain-bridge cinema-agent.mjs) stays the single source,
+  // reached by a thin authenticated proxy. Payloads are validated/normalized by
+  // the module daemon itself; here we only bound the envelope.
+  'cinema.chat': def(z.object({ body: z.record(z.string(), z.unknown()).default({}) }), (_k, p) =>
+    runCinemaVerb('chat', p.body),
+  ),
+  'cinema.assetAnalysis': def(
+    z.object({ body: z.record(z.string(), z.unknown()).default({}) }),
+    (_k, p) => runCinemaVerb('assetAnalysis', p.body),
   ),
 };
 

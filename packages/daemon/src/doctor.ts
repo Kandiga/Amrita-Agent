@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { CINEMA_BRIDGE_TOKEN_ENV, probeCinemaBridge } from './cinema.ts';
 import { CONNECTOR_MANIFESTS } from './connectors.ts';
 import {
   amritaHome,
@@ -347,6 +348,49 @@ function connectorSection(): DoctorSection {
   return { title: 'connectors', checks };
 }
 
+/**
+ * Cinema module group (ADR-0028, Phase 2): amritad proxies `cinema.chat` to the
+ * module's own brain daemon (brain-bridge). Live-probes the bridge's public
+ * /health; the bearer is presence-checked only (never a value).
+ */
+async function cinemaSection(): Promise<DoctorSection> {
+  const probe = await probeCinemaBridge();
+  const tokenPresent = envPresent(CINEMA_BRIDGE_TOKEN_ENV);
+  return {
+    title: 'cinema',
+    checks: [
+      probe.reachable
+        ? {
+            id: 'cinema.bridge',
+            label: 'module brain (brain-bridge)',
+            status: 'ok' as const,
+            detail: probe.detail,
+          }
+        : {
+            id: 'cinema.bridge',
+            label: 'module brain (brain-bridge)',
+            status: 'warn' as const,
+            detail: `${probe.detail} — cinema.chat proxying unavailable`,
+            fix: 'start the Cinema brain-bridge daemon (systemd: aba-brain-bridge), or point AMRITA_CINEMA_BRIDGE_URL at it',
+          },
+      tokenPresent
+        ? {
+            id: 'cinema.bearer',
+            label: 'bridge bearer',
+            status: 'ok' as const,
+            detail: `${CINEMA_BRIDGE_TOKEN_ENV} is set (presence-checked only)`,
+          }
+        : {
+            id: 'cinema.bearer',
+            label: 'bridge bearer',
+            status: 'warn' as const,
+            detail: `${CINEMA_BRIDGE_TOKEN_ENV} not set — cinema.chat will refuse with missing_env_value`,
+            fix: `export ${CINEMA_BRIDGE_TOKEN_ENV}=<bridge bearer>  # in the amritad environment`,
+          },
+    ],
+  };
+}
+
 function authSection(): DoctorSection {
   const fromEnv = envPresent('AMRITA_AUTH_TOKEN');
   return {
@@ -383,6 +427,7 @@ export async function runDoctor(kernel: AmritaKernel): Promise<DoctorReport> {
     laneSection(kernel),
     channelSection(),
     connectorSection(),
+    await cinemaSection(),
     authSection(),
   ];
   const all = sections.flatMap((s) => s.checks);

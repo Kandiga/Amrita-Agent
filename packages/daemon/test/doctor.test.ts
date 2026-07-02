@@ -65,6 +65,7 @@ const SECTION_ORDER = [
   'lanes',
   'channels',
   'connectors',
+  'cinema',
   'auth',
 ];
 
