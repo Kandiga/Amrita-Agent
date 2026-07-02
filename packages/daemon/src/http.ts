@@ -33,6 +33,36 @@ export interface RunningHttpServer {
 
 const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * Browser CORS (integration Phase 7): the Cinema SPA is a different origin, so
+ * without these headers no browser page can reach the daemon at all — curl/CLI
+ * are unaffected either way. Deny-by-default posture:
+ *   - `AMRITA_ALLOWED_ORIGINS` (comma-separated) set → exact-match allowlist.
+ *   - unset → LOCAL pages only (http(s)://localhost|127.0.0.1, any port); any
+ *     remote origin must be explicitly allowlisted.
+ * CORS is reflection only — the bearer token still gates every non-health route.
+ */
+export function corsAllowedOrigin(
+  origin: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!origin) return null;
+  const list = (env.AMRITA_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (list.length > 0) return list.includes(origin) ? origin : null;
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null;
+}
+
+function applyCors(res: ServerResponse, allowed: string | null): void {
+  if (!allowed) return;
+  res.setHeader('access-control-allow-origin', allowed);
+  res.setHeader('access-control-allow-headers', 'content-type, authorization');
+  res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+  res.setHeader('vary', 'Origin');
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -65,6 +95,18 @@ async function handleHttp(
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
+
+  // CORS: reflect the origin when allowed (see corsAllowedOrigin), and answer
+  // preflights before auth — a preflight never carries the bearer.
+  const allowedOrigin = corsAllowedOrigin(
+    typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
+  );
+  applyCors(res, allowedOrigin);
+  if (method === 'OPTIONS') {
+    res.writeHead(allowedOrigin ? 204 : 403);
+    res.end();
+    return;
+  }
 
   // `/health` is always public (liveness probes, dashboards).
   if (method === 'GET' && url.pathname === '/health') {
