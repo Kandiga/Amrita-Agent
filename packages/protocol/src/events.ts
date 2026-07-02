@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cinemaMandateReportSchema, cinemaMandateSchema } from './cinema.ts';
 import { idSchema, isoTimestampSchema, ulidSchema } from './ids.ts';
 import { laneMandateSchema, mergeReportSchema, usageSchema } from './lane.ts';
 
@@ -128,6 +129,15 @@ export const eventPayloads = {
   'lane.merge_report': mergeReportSchema,
   'lane.completed': z.object({ laneId: idSchema, exit: z.string() }).strict(),
   'lane.aborted': z.object({ laneId: idSchema, reason: z.string() }).strict(),
+
+  // module mandates (ADR-0029): Amrita → Cinema delegation. Issued/resolved
+  // are the only lifecycle events — progress stays module-local by design.
+  'module.mandate.issued': z
+    .object({ moduleId: z.string().min(1), mandate: cinemaMandateSchema })
+    .strict(),
+  'module.mandate.resolved': z
+    .object({ moduleId: z.string().min(1), report: cinemaMandateReportSchema })
+    .strict(),
 
   // approvals
   'approval.requested': z

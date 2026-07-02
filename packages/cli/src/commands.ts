@@ -1244,6 +1244,75 @@ export const COMMANDS: Record<string, Command> = {
       };
     },
   },
+
+  // ── cinema module (ADR-0029): delegate goals to the Cinema module ──────────
+  'cinema delegate': {
+    describe: 'delegate a goal to the Cinema module (appears in its agent inbox)',
+    async run(client, { positionals, flags }) {
+      const goal = positionals.join(' ');
+      if (!goal) {
+        throw new CliError(
+          'usage: amrita cinema delegate <GOAL> --project <SLUG> [--max-risk local|credit|destructive] [--note TEXT]',
+        );
+      }
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('--project is required');
+      const projectId = await resolveProjectId(client, project);
+      const convs = await client.call<{ id: string; title?: string }[]>('conversation.list', {
+        projectId,
+      });
+      const sync = convs.find((c) => c.title === 'Cinema sync');
+      if (!sync) {
+        throw new CliError(
+          'no "Cinema sync" conversation on this project — link it from the Cinema app first (Settings → Amrita Platform → Link)',
+        );
+      }
+      const maxRisk = strFlag(flags, 'max-risk');
+      const note = strFlag(flags, 'note');
+      const r = await client.call<{ mandateId: string }>('cinema.mandate.issue', {
+        projectId,
+        conversationId: sync.id,
+        goal,
+        ...(maxRisk ? { maxRisk } : {}),
+        ...(note ? { note } : {}),
+      });
+      return {
+        result: r,
+        summary: `mandate ${r.mandateId} issued — it appears in the Cinema agent inbox within ~45s`,
+      };
+    },
+  },
+  'cinema mandates': {
+    describe: 'list Cinema mandates for a project (open + resolved)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('--project is required');
+      const projectId = await resolveProjectId(client, project);
+      const convs = await client.call<{ id: string; title?: string }[]>('conversation.list', {
+        projectId,
+      });
+      const sync = convs.find((c) => c.title === 'Cinema sync');
+      if (!sync)
+        return { result: [], summary: 'no "Cinema sync" conversation (project not linked)' };
+      const rows = await client.call<
+        {
+          mandate: { mandateId: string; goal: string };
+          status: string;
+          report?: { exit: string };
+        }[]
+      >('cinema.mandate.list', { conversationId: sync.id });
+      return {
+        result: rows,
+        summary:
+          rows
+            .map(
+              (r) =>
+                `${r.status === 'open' ? '○' : '●'} ${r.mandate.mandateId.slice(-6)} · ${r.mandate.goal.slice(0, 60)}${r.report ? ` → ${r.report.exit}` : ''}`,
+            )
+            .join('\n') || 'no mandates',
+      };
+    },
+  },
 };
 
 export const COMMAND_NAMES: readonly string[] = Object.keys(COMMANDS);

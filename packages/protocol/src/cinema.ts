@@ -161,3 +161,36 @@ export const CINEMA_VIDEO_OP_TYPES = [
 ] as const;
 export const cinemaVerbSchema = z.enum([...CINEMA_ACTION_TYPES, ...CINEMA_VIDEO_OP_TYPES]);
 export type CinemaVerb = z.infer<typeof cinemaVerbSchema>;
+
+/**
+ * Cinema mandates (ADR-0029) — Amrita delegates a goal to the Cinema module.
+ * Cinema-scoped on purpose (YAGNI: generalize into a module plane only when
+ * module #2 arrives). The module executes through its OWN trust model: verbs
+ * above `maxRisk` surface as plan cards for the human — in-app Apply IS the
+ * upward approval; nothing auto-spends beyond the ceiling.
+ */
+export const cinemaMandateSchema = z
+  .object({
+    mandateId: idSchema,
+    goal: z.string().min(1).max(2000),
+    /** Subset confinement; absent = the module's full whitelisted vocabulary. */
+    allowedVerbs: z.array(cinemaVerbSchema).min(1).max(32).optional(),
+    /** Risk ceiling for AUTO execution; above it a human must Apply in-app. */
+    maxRisk: cinemaPlanRiskSchema.default('credit'),
+    note: z.string().max(500).optional(),
+    issuedAt: isoTimestampSchema,
+  })
+  .strict();
+export type CinemaMandate = z.infer<typeof cinemaMandateSchema>;
+
+export const cinemaMandateReportSchema = z
+  .object({
+    mandateId: idSchema,
+    exit: z.enum(['done', 'partial', 'refused', 'aborted']),
+    summary: z.string().min(1).max(2000),
+    opsApplied: z.array(z.string().min(1).max(200)).max(40).default([]),
+    plansApplied: z.array(z.string().min(1).max(120)).max(20).default([]),
+    refusedReason: z.string().max(500).optional(),
+  })
+  .strict();
+export type CinemaMandateReport = z.infer<typeof cinemaMandateReportSchema>;

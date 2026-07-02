@@ -584,6 +584,29 @@ export const METHODS: Record<string, RpcMethod> = {
   // Honest provider rows for the Cinema module (Phase 5): computed by the
   // module bridge's /health, only RENDERED here — no probe, no green.
   'cinema.providers': def(z.object({}).optional(), () => cinemaProviders()),
+
+  // Cinema mandates (ADR-0029): Amrita delegates a goal; the module executes
+  // under its own trust ladder and reports back. Open/resolved is a derived
+  // projection over the conversation's events — no new table.
+  'cinema.mandate.issue': def(
+    z.object({
+      projectId: z.string(),
+      conversationId: z.string(),
+      goal: z.string().min(1).max(2000),
+      allowedVerbs: z.array(z.string().min(1)).max(32).optional(),
+      maxRisk: z.enum(['local', 'credit', 'destructive', 'ambiguous']).optional(),
+      note: z.string().max(500).optional(),
+    }),
+    (k, p) => k.issueCinemaMandate(clean(p)),
+  ),
+  'cinema.mandate.list': def(
+    z.object({ conversationId: z.string(), openOnly: z.boolean().optional() }),
+    (k, p) => k.listCinemaMandates(p.conversationId, p.openOnly ?? false),
+  ),
+  'cinema.mandate.complete': def(
+    z.object({ projectId: z.string(), conversationId: z.string(), report: z.unknown() }),
+    (k, p) => k.completeCinemaMandate(p),
+  ),
 };
 
 /** The stable list of supported method names. */
