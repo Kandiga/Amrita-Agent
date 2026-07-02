@@ -108,6 +108,7 @@ export const cinemaPlanKindSchema = z.enum([
   'compound-audio',
   'image-edit',
   'clip-batch',
+  'batch-generate',
 ]);
 export const cinemaPlanCardSchema = z
   .object({
