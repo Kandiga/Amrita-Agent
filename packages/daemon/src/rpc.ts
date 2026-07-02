@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runCinemaVerb } from './cinema.ts';
+import { cinemaProviders, runCinemaVerb } from './cinema.ts';
 import { runDoctor } from './doctor.ts';
 import { GithubError } from './github.ts';
 import type { AmritaKernel } from './kernel.ts';
@@ -581,6 +581,9 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({ body: z.record(z.string(), z.unknown()).default({}) }),
     (_k, p) => runCinemaVerb('assetAnalysis', p.body),
   ),
+  // Honest provider rows for the Cinema module (Phase 5): computed by the
+  // module bridge's /health, only RENDERED here — no probe, no green.
+  'cinema.providers': def(z.object({}).optional(), () => cinemaProviders()),
 };
 
 /** The stable list of supported method names. */

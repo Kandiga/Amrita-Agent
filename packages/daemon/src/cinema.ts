@@ -96,6 +96,166 @@ export async function runCinemaVerb(
   }
 }
 
+// ── Provider honesty merge (integration roadmap Phase 5) ────────────────────
+// The module's bridge /health is the ONE place provider truth is computed;
+// amritad only RENDERS it in the platform's honest-state vocabulary. The two
+// prompt-only rows are static and can never show green — by design.
+
+export type CinemaProviderState =
+  | 'ready'
+  | 'needs_key'
+  | 'needs_login'
+  | 'needs_setup'
+  | 'prompt_only'
+  | 'unavailable';
+
+export interface CinemaProviderRow {
+  id: string;
+  title: string;
+  role: string; // provider ROLE, never a vendor claim
+  state: CinemaProviderState;
+  note: string;
+  fix?: string;
+}
+
+interface BridgeHealthShape {
+  ok?: boolean;
+  reasoning?: string;
+  hermesImage2?: string;
+  higgsfield?: string;
+  elevenLabs?: { configured?: boolean };
+}
+
+const PROMPT_ONLY_ROWS: CinemaProviderRow[] = [
+  {
+    id: 'video-render',
+    title: 'Video generation (Seedance/Higgsfield render)',
+    role: 'video.generate',
+    state: 'prompt_only',
+    note: 'compiled prompt only — run externally, then import the result',
+  },
+  {
+    id: 'midjourney',
+    title: 'Midjourney',
+    role: 'image.generate',
+    state: 'prompt_only',
+    note: 'compiled prompt only (no API) — run manually, then upload the result',
+  },
+];
+
+/** Map the bridge health payload to honest platform provider rows. */
+export function mapBridgeHealthToProviders(h: BridgeHealthShape | null): CinemaProviderRow[] {
+  if (!h) {
+    return [
+      {
+        id: 'bridge',
+        title: 'Cinema module brain (brain-bridge)',
+        role: 'reasoning.chat',
+        state: 'unavailable',
+        note: 'bridge unreachable — all executing providers unknown',
+        fix: 'start the Cinema brain-bridge daemon (systemd: aba-brain-bridge)',
+      },
+      ...PROMPT_ONLY_ROWS,
+    ];
+  }
+  const rows: CinemaProviderRow[] = [
+    h.reasoning === 'connected'
+      ? {
+          id: 'claude',
+          title: 'Claude (reasoning/vision)',
+          role: 'reasoning.chat',
+          state: 'ready',
+          note: 'official Claude Code CLI, subscription login (no key forwarded)',
+        }
+      : {
+          id: 'claude',
+          title: 'Claude (reasoning/vision)',
+          role: 'reasoning.chat',
+          state: 'unavailable',
+          note: 'bridge reports the reasoning CLI unavailable',
+          fix: 'install + login the official claude CLI on the bridge host',
+        },
+    h.hermesImage2 === 'connected'
+      ? {
+          id: 'image2',
+          title: 'GPT Image 2 (via official Codex OAuth)',
+          role: 'image.generate',
+          state: 'ready',
+          note: 'HERMES_IMAGE_CMD configured on the bridge',
+        }
+      : {
+          id: 'image2',
+          title: 'GPT Image 2 (via official Codex OAuth)',
+          role: 'image.generate',
+          state: 'needs_setup',
+          note: 'HERMES_IMAGE_CMD not configured on the bridge',
+          fix: 'set HERMES_IMAGE_CMD in the brain-bridge environment',
+        },
+    h.higgsfield === 'authenticated'
+      ? {
+          id: 'higgsfield',
+          title: 'Higgsfield',
+          role: 'image.generate',
+          state: 'ready',
+          note: 'CLI authenticated on the bridge host',
+        }
+      : {
+          id: 'higgsfield',
+          title: 'Higgsfield',
+          role: 'image.generate',
+          state: 'needs_login',
+          note: 'CLI present but not authenticated',
+          fix: 'higgsfield auth login  # on the bridge host',
+        },
+    h.elevenLabs?.configured
+      ? {
+          id: 'elevenlabs',
+          title: 'ElevenLabs (voice/music)',
+          role: 'audio.tts',
+          state: 'ready',
+          note: 'ELEVENLABS_API_KEY configured on the bridge (presence only)',
+        }
+      : {
+          id: 'elevenlabs',
+          title: 'ElevenLabs (voice/music)',
+          role: 'audio.tts',
+          state: 'needs_key',
+          note: 'ELEVENLABS_API_KEY not configured on the bridge',
+          fix: 'set the key via the gated bridge channel (never in the browser)',
+        },
+    ...PROMPT_ONLY_ROWS,
+  ];
+  return rows;
+}
+
+/** Fetch the bridge health and render the honest provider rows. */
+export async function cinemaProviders(
+  deps: CinemaProxyDeps = {},
+): Promise<{ bridge: { reachable: boolean; url: string }; providers: CinemaProviderRow[] }> {
+  const env = deps.env ?? process.env;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = cinemaBridgeUrl(env);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), deps.timeoutMs ?? 4_000);
+  try {
+    const r = await fetchImpl(`${base}/health`, { signal: ctrl.signal });
+    if (!r.ok)
+      return {
+        bridge: { reachable: false, url: base },
+        providers: mapBridgeHealthToProviders(null),
+      };
+    const health = (await r.json()) as BridgeHealthShape;
+    return {
+      bridge: { reachable: true, url: base },
+      providers: mapBridgeHealthToProviders(health),
+    };
+  } catch {
+    return { bridge: { reachable: false, url: base }, providers: mapBridgeHealthToProviders(null) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Live reachability probe for the doctor (public /health; no bearer needed). */
 export async function probeCinemaBridge(
   deps: CinemaProxyDeps = {},

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { CINEMA_BRIDGE_TOKEN_ENV, probeCinemaBridge } from './cinema.ts';
+import { CINEMA_BRIDGE_TOKEN_ENV, cinemaProviders } from './cinema.ts';
 import { CONNECTOR_MANIFESTS } from './connectors.ts';
 import {
   amritaHome,
@@ -354,41 +354,52 @@ function connectorSection(): DoctorSection {
  * /health; the bearer is presence-checked only (never a value).
  */
 async function cinemaSection(): Promise<DoctorSection> {
-  const probe = await probeCinemaBridge();
+  const { bridge, providers } = await cinemaProviders();
   const tokenPresent = envPresent(CINEMA_BRIDGE_TOKEN_ENV);
-  return {
-    title: 'cinema',
-    checks: [
-      probe.reachable
-        ? {
-            id: 'cinema.bridge',
-            label: 'module brain (brain-bridge)',
-            status: 'ok' as const,
-            detail: probe.detail,
-          }
-        : {
-            id: 'cinema.bridge',
-            label: 'module brain (brain-bridge)',
-            status: 'warn' as const,
-            detail: `${probe.detail} — cinema.chat proxying unavailable`,
-            fix: 'start the Cinema brain-bridge daemon (systemd: aba-brain-bridge), or point AMRITA_CINEMA_BRIDGE_URL at it',
-          },
-      tokenPresent
-        ? {
-            id: 'cinema.bearer',
-            label: 'bridge bearer',
-            status: 'ok' as const,
-            detail: `${CINEMA_BRIDGE_TOKEN_ENV} is set (presence-checked only)`,
-          }
-        : {
-            id: 'cinema.bearer',
-            label: 'bridge bearer',
-            status: 'warn' as const,
-            detail: `${CINEMA_BRIDGE_TOKEN_ENV} not set — cinema.chat will refuse with missing_env_value`,
-            fix: `export ${CINEMA_BRIDGE_TOKEN_ENV}=<bridge bearer>  # in the amritad environment`,
-          },
-    ],
-  };
+  const checks: DoctorCheck[] = [
+    bridge.reachable
+      ? {
+          id: 'cinema.bridge',
+          label: 'module brain (brain-bridge)',
+          status: 'ok',
+          detail: `bridge up at ${bridge.url}`,
+        }
+      : {
+          id: 'cinema.bridge',
+          label: 'module brain (brain-bridge)',
+          status: 'warn',
+          detail: `no bridge at ${bridge.url} — cinema.chat proxying unavailable`,
+          fix: 'start the Cinema brain-bridge daemon (systemd: aba-brain-bridge), or point AMRITA_CINEMA_BRIDGE_URL at it',
+        },
+    tokenPresent
+      ? {
+          id: 'cinema.bearer',
+          label: 'bridge bearer',
+          status: 'ok',
+          detail: `${CINEMA_BRIDGE_TOKEN_ENV} is set (presence-checked only)`,
+        }
+      : {
+          id: 'cinema.bearer',
+          label: 'bridge bearer',
+          status: 'warn',
+          detail: `${CINEMA_BRIDGE_TOKEN_ENV} not set — cinema.chat will refuse with missing_env_value`,
+          fix: `export ${CINEMA_BRIDGE_TOKEN_ENV}=<bridge bearer>  # in the amritad environment`,
+        },
+    // Per-provider rows RENDER the bridge's computed truth (never re-probe here);
+    // prompt_only rows are informational and can never be green.
+    ...(bridge.reachable
+      ? providers.map(
+          (row): DoctorCheck => ({
+            id: `cinema.provider.${row.id}`,
+            label: `${row.title} [${row.role}]`,
+            status: row.state === 'ready' || row.state === 'prompt_only' ? 'ok' : 'warn',
+            detail: `${row.state} — ${row.note}`,
+            ...(row.fix ? { fix: row.fix } : {}),
+          }),
+        )
+      : []),
+  ];
+  return { title: 'cinema', checks };
 }
 
 function authSection(): DoctorSection {

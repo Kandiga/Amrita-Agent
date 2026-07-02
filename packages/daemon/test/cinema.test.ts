@@ -3,6 +3,8 @@ import {
   CINEMA_BRIDGE_TOKEN_ENV,
   DEFAULT_CINEMA_BRIDGE_URL,
   cinemaBridgeUrl,
+  cinemaProviders,
+  mapBridgeHealthToProviders,
   probeCinemaBridge,
   runCinemaVerb,
 } from '../src/cinema.ts';
@@ -85,5 +87,66 @@ describe('cinema verb proxy (ADR-0028 Phase 2)', () => {
     expect(
       cinemaBridgeUrl({ AMRITA_CINEMA_BRIDGE_URL: 'http://10.0.0.5:9000///' } as NodeJS.ProcessEnv),
     ).toBe('http://10.0.0.5:9000');
+  });
+});
+
+describe('cinema provider honesty (Phase 5)', () => {
+  it('renders the bridge truth in the platform vocabulary — no fake green', () => {
+    const rows = mapBridgeHealthToProviders({
+      ok: true,
+      reasoning: 'connected',
+      hermesImage2: 'connected',
+      higgsfield: 'authenticated',
+      elevenLabs: { configured: false },
+    });
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId.claude?.state).toBe('ready');
+    expect(byId.image2?.state).toBe('ready');
+    expect(byId.higgsfield?.state).toBe('ready');
+    expect(byId.elevenlabs?.state).toBe('needs_key'); // honest false stays honest
+    expect(byId['video-render']?.state).toBe('prompt_only');
+    expect(byId.midjourney?.state).toBe('prompt_only');
+  });
+
+  it('unplugged providers degrade honestly with fix commands', () => {
+    const rows = mapBridgeHealthToProviders({
+      ok: true,
+      reasoning: 'unavailable',
+      hermesImage2: 'unavailable',
+      higgsfield: 'unauthenticated',
+      elevenLabs: { configured: true },
+    });
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId.claude?.state).toBe('unavailable');
+    expect(byId.image2?.state).toBe('needs_setup');
+    expect(byId.image2?.fix).toContain('HERMES_IMAGE_CMD');
+    expect(byId.higgsfield?.state).toBe('needs_login');
+    expect(byId.elevenlabs?.state).toBe('ready');
+  });
+
+  it('bridge down → unavailable + the two prompt_only rows (never green)', async () => {
+    const out = await cinemaProviders({
+      fetchImpl: (async () => {
+        throw new Error('down');
+      }) as typeof fetch,
+    });
+    expect(out.bridge.reachable).toBe(false);
+    expect(out.providers.some((r) => r.state === 'ready')).toBe(false);
+    expect(out.providers.filter((r) => r.state === 'prompt_only')).toHaveLength(2);
+  });
+
+  it('live bridge health maps end-to-end through cinemaProviders', async () => {
+    const out = await cinemaProviders({
+      fetchImpl: (async () =>
+        jsonResponse({
+          ok: true,
+          reasoning: 'connected',
+          hermesImage2: 'connected',
+          higgsfield: 'authenticated',
+          elevenLabs: { configured: true },
+        })) as typeof fetch,
+    });
+    expect(out.bridge.reachable).toBe(true);
+    expect(out.providers.filter((r) => r.state === 'ready')).toHaveLength(4);
   });
 });
