@@ -6,3 +6,4 @@ export * from './rpc.ts';
 export * from './secrets.ts';
 export * from './connector.ts';
 export * from './harness.ts';
+export * from './cinema.ts';

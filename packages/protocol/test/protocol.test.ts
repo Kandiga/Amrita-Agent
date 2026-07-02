@@ -17,10 +17,17 @@ import {
   parseUnsealedEvent,
 } from '../src/index.ts';
 
-/** Object-shape keys of a payload schema, unwrapping `.refine`/`.transform`. */
+/** Object-shape keys of a payload schema. Under zod 4, `.refine()` no longer
+ * wraps in a ZodEffects — a refined object stays a ZodObject — so the only
+ * unwrapping still needed is for genuine wrapper types that expose `unwrap()`
+ * (optional/nullable/pipe stages), walked defensively. */
 function objectShapeKeys(schema: z.ZodTypeAny): string[] {
   let s: z.ZodTypeAny = schema;
-  while (s instanceof z.ZodEffects) s = s.innerType();
+  for (let hops = 0; hops < 8 && !(s instanceof z.ZodObject); hops++) {
+    const unwrap = (s as { unwrap?: () => z.ZodTypeAny }).unwrap;
+    if (typeof unwrap !== 'function') break;
+    s = unwrap.call(s);
+  }
   return s instanceof z.ZodObject ? Object.keys(s.shape as Record<string, unknown>) : [];
 }
 
