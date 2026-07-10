@@ -126,11 +126,14 @@ export const cinemaPlanCardSchema = z
 export type CinemaPlanCard = z.infer<typeof cinemaPlanCardSchema>;
 
 /**
- * Cinema's verb vocabulary as whitelisted by the module's own server logic
- * (brain-bridge/cinema-agent.mjs): proposed actions + immediately-applied ops.
- * Single source of truth for what a Cinema agent may do; anything else drops.
+ * The only Cinema verbs that may cross the Amrita federation boundary today.
+ *
+ * This is intentionally a delegated subset of Cinema's local VERB_REGISTRY,
+ * not a mirror and not the source of truth for local editor capabilities.
+ * Audio-composer verbs stay local until an external mandate use case is
+ * specified, reviewed, and ADR-approved.
  */
-export const CINEMA_ACTION_TYPES = [
+export const CINEMA_DELEGATED_ACTION_TYPES = [
   'update_shot_notes',
   'set_active_shot',
   'link_reference_to_shot',
@@ -149,7 +152,7 @@ export const CINEMA_ACTION_TYPES = [
   'create_skill',
   'apply_skill',
 ] as const;
-export const CINEMA_VIDEO_OP_TYPES = [
+export const CINEMA_DELEGATED_VIDEO_OP_TYPES = [
   'setMeta',
   'addShot',
   'updateShot',
@@ -159,8 +162,20 @@ export const CINEMA_VIDEO_OP_TYPES = [
   'markQA',
   'linkReference',
 ] as const;
-export const cinemaVerbSchema = z.enum([...CINEMA_ACTION_TYPES, ...CINEMA_VIDEO_OP_TYPES]);
-export type CinemaVerb = z.infer<typeof cinemaVerbSchema>;
+export const cinemaDelegatedVerbSchema = z.enum([
+  ...CINEMA_DELEGATED_ACTION_TYPES,
+  ...CINEMA_DELEGATED_VIDEO_OP_TYPES,
+]);
+export type CinemaDelegatedVerb = z.infer<typeof cinemaDelegatedVerbSchema>;
+
+/** @deprecated Use CINEMA_DELEGATED_ACTION_TYPES; this is not the local registry. */
+export const CINEMA_ACTION_TYPES = CINEMA_DELEGATED_ACTION_TYPES;
+/** @deprecated Use CINEMA_DELEGATED_VIDEO_OP_TYPES; this is not the local registry. */
+export const CINEMA_VIDEO_OP_TYPES = CINEMA_DELEGATED_VIDEO_OP_TYPES;
+/** @deprecated Use cinemaDelegatedVerbSchema. */
+export const cinemaVerbSchema = cinemaDelegatedVerbSchema;
+/** @deprecated Use CinemaDelegatedVerb. */
+export type CinemaVerb = CinemaDelegatedVerb;
 
 /**
  * Cinema mandates (ADR-0029) — Amrita delegates a goal to the Cinema module.
@@ -173,8 +188,8 @@ export const cinemaMandateSchema = z
   .object({
     mandateId: idSchema,
     goal: z.string().min(1).max(2000),
-    /** Subset confinement; absent = the module's full whitelisted vocabulary. */
-    allowedVerbs: z.array(cinemaVerbSchema).min(1).max(32).optional(),
+    /** Subset confinement; absent = the entire federation-delegated subset. */
+    allowedVerbs: z.array(cinemaDelegatedVerbSchema).min(1).max(32).optional(),
     /** Risk ceiling for AUTO execution; above it a human must Apply in-app. */
     maxRisk: cinemaPlanRiskSchema.default('credit'),
     note: z.string().max(500).optional(),

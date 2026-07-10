@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # Amrita v2 — working agreement
 
 Amrita is a chat-first, project-aware, multi-channel agent OS. This is the **greenfield v2**

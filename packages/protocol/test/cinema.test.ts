@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CINEMA_ACTION_TYPES,
+  CINEMA_DELEGATED_ACTION_TYPES,
+  CINEMA_DELEGATED_VIDEO_OP_TYPES,
   CINEMA_DIGEST_MAX_JSON_BYTES,
-  CINEMA_VIDEO_OP_TYPES,
+  cinemaDelegatedVerbSchema,
   cinemaPlanCardSchema,
   cinemaProjectDigestSchema,
   cinemaProjectRefSchema,
-  cinemaVerbSchema,
   newId,
 } from '../src/index.ts';
 
@@ -94,11 +94,13 @@ describe('cinema contract (ADR-0028)', () => {
     expect(() => cinemaPlanCardSchema.parse({ ...plan, kind: 'render-final-movie' })).toThrow();
   });
 
-  it('verb vocabulary = exactly the module whitelist (17 actions + 8 ops)', () => {
-    expect(CINEMA_ACTION_TYPES).toHaveLength(17);
-    expect(CINEMA_VIDEO_OP_TYPES).toHaveLength(8);
-    expect(cinemaVerbSchema.parse('generate_keyframe')).toBe('generate_keyframe');
-    expect(cinemaVerbSchema.parse('markQA')).toBe('markQA');
-    expect(() => cinemaVerbSchema.parse('rm -rf')).toThrow();
+  it('delegated vocabulary is an explicit federation subset (17 actions + 8 ops)', () => {
+    expect(CINEMA_DELEGATED_ACTION_TYPES).toHaveLength(17);
+    expect(CINEMA_DELEGATED_VIDEO_OP_TYPES).toHaveLength(8);
+    expect(cinemaDelegatedVerbSchema.parse('generate_keyframe')).toBe('generate_keyframe');
+    expect(cinemaDelegatedVerbSchema.parse('markQA')).toBe('markQA');
+    expect(CINEMA_DELEGATED_ACTION_TYPES).not.toContain('compose_music');
+    expect(CINEMA_DELEGATED_ACTION_TYPES).not.toContain('generate_sfx');
+    expect(() => cinemaDelegatedVerbSchema.parse('rm -rf')).toThrow();
   });
 });
