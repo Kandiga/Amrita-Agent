@@ -29,5 +29,6 @@ secrets.env
 .claude/*
 !.claude/rules/
 .claude-remote-logs/
+.playwright-mcp/
 *.rvf
 *.rvf.lock

@@ -789,6 +789,29 @@ One ledger, updated per phase — no scattered notes.
   overall `ok with warnings` (remaining warnings are honest optional-setup states:
   telegram token, cinema bridge token).
 
+## Design overhaul — Claude design language, desktop + mobile (overnight directive)
+
+- **Date:** 2026-07-12 (night) · commit `cd3b940` · directive: redesign everything to
+  Claude's design standard incl. mobile, hunt design bugs, deploy.
+- **Research:** Mobbin is login-walled (attempted, stated honestly) — so the tokens were
+  extracted **live from claude.com's official CSS** via Playwright computed-style dump:
+  the real warm-gray ramp (#faf9f5…#141413), clay #d97757/#c96442, Anthropic Serif
+  display type, radii 4/8/12/16, expo-out motion. Recorded in `apps/web/DESIGN.md`
+  (design source of truth, per the local Claude-Design guide's method).
+- **What landed:** `styles.css` fully rewritten as a token system (light default + dark
+  via prefers-color-scheme); Claude shell (ivory sidebar, paper 46rem chat column,
+  serif hero, pill toggles, rounded composer with clay send arrow); chat turns styled
+  Claude-style (user pampas bubbles pinned right, Amrita plain text with a stable-left
+  अ avatar); every panel/badge/form restyled; mobile = Claude app patterns (overlay
+  drawer + backdrop, bottom tabs Chat/Project/Brain/Settings, sticky safe-area
+  composer, 44px targets). Class names unchanged — zero component-test churn.
+- **Design-bug QA loop (real browser, live daemon):** found and fixed — RTL side-jumping
+  of the avatar/user bubble (physical anchoring), topbar title selector broken by the
+  new hamburger, drawer close behavior. Verified 1440 + 390×844 across all views;
+  horizontal-scroll check programmatically false; console clean except pre-auth 401s.
+- **Deployed:** pushed, deployed checkout ff'd + rebuilt, `amrita-web` restarted; public
+  link re-verified desktop + mobile (screenshots).
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
