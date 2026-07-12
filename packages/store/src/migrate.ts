@@ -34,6 +34,7 @@ export const MIGRATIONS: readonly Migration[] = [
   load(5, 'brand_previews'),
   load(6, 'task_external_ref'),
   load(7, 'whatsapp_channel'),
+  load(8, 'project_delete_cascade'),
 ];
 
 function ensureMigrationsTable(db: DB): void {

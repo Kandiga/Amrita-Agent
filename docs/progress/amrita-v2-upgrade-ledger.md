@@ -904,3 +904,37 @@ One ledger, updated per phase — no scattered notes.
   tags, tracking `.claude/rules/`, resolving the CLAUDE.md WIP hunk — all sequenced in R0.
 - **Next:** R0 slice 1 — ADR for protocol RPC-result schemas + WS frame union, then the
   enum-export sweep (master plan §7/§9).
+
+## Phase E — Screenshot-Brief layout inversion (2026-07-12)
+- **Directive:** the 5-region PDF brief — (1) delete a project / a session, (2) fold the
+  right rail into Settings, (3) Settings entry bottom-left with topic pages, (4) chat at
+  the side, (5) the center is a live interactive canvas showing what Amrita builds.
+- **ADR-0038** (`docs/adr/0038-project-delete-session-archive.md`): session "delete" =
+  `conversation.archive` (existing `conversation.archived` event; history preserved);
+  `project.delete` = the single sanctioned destructive verb — `store.deleteProject` cascades
+  over every owned table in ONE transaction; the reserved `system` project is refused
+  (`conflict`). Migration `0008_project_delete_cascade` re-scopes the `decisions_no_delete`
+  trigger behind a same-transaction guard flag keyed to the exact project id — casual
+  decision deletes still abort. Wire coverage (ADR-0032) forces result schemas for both
+  verbs; round-trip test exercises them.
+- **Layout inversion (`apps/web`):** grid is now sidebar · **center stage** · chat (right,
+  clamp 330–430px). The stage hosts Canvas (default) / Project / Brain / Settings behind
+  segmented tabs; the inspector rail is deleted — its knowledge panels became the Project
+  board (auto-fill card grid), the token card became Settings → **Access** (jumps there on
+  401), approvals render inside the chat column whenever pending. The canvas auto-opens
+  the newest artifact produced mid-session ("she builds, you watch"); gallery + premium
+  empty state otherwise. Sidebar: per-session archive (✕) + compress (⤓), per-project
+  delete (🗑 → type-the-slug confirm), **Settings pinned bottom-left** with a token dot.
+  Mobile tabs: Chat / Canvas / Project / Brain; Settings via the drawer footer.
+- **Design bugs found & fixed in browser QA:** `.sidebar .list button {width:100%}`
+  stretched tree icon buttons (scoped opt-out); shell modifier `stage-<view>` collided
+  with the `.stage-project` pane class (dropped the shell modifier); multicol masonry
+  overflowed horizontally inside the fixed-height stage (switched to auto-fill grid);
+  stage Refresh now reloads the project list too; delete-confirm buttons wrap.
+- **Verification:** root gates ✓ (typecheck 0 · lint 0 · **429/429 tests**, incl. new
+  `delete-archive.test.ts` cascade/refusal/idempotence + migration reversibility at v8);
+  web gates ✓ (tsc 0 · 74/74 · vite build); Playwright QA on a throwaway stack
+  (temp DB, :7481/:7482) — desktop 1440×900: stage tabs, canvas auto-open on seeded brief,
+  project grid, Settings→Access, delete flow end-to-end (Scratch removed, fallback to
+  System), session archive (auto-creates next session); mobile 390×844: 4 tabs, drawer
+  Settings, settings pill nav; **0 console errors**.

@@ -135,7 +135,8 @@ code {
 /* ── shell layout ────────────────────────────────────────────────────────── */
 .app-shell {
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr) minmax(300px, 380px);
+  /* Screenshot-Brief inversion: sidebar · center stage (canvas) · chat at the side */
+  grid-template-columns: 264px minmax(0, 1fr) clamp(330px, 30vw, 430px);
   height: 100dvh;
   overflow: hidden;
 }
@@ -144,12 +145,17 @@ code {
 .sidebar {
   background: var(--ivory);
   border-inline-end: 1px solid var(--border);
-  padding: 16px 12px;
+  padding: 16px 12px 10px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  overflow-y: auto;
+  overflow: hidden;
   min-width: 0;
+}
+.sidebar-projects {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .brand {
   display: flex;
@@ -213,6 +219,16 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* icon buttons inside tree rows opt OUT of the full-width row treatment */
+.sidebar .list .session-compress,
+.sidebar .list .session-archive,
+.sidebar .list .project-delete {
+  display: grid;
+  place-items: center;
+  width: auto;
+  flex: none;
+  white-space: nowrap;
+}
 .sidebar .list button small {
   display: block;
   color: var(--stone);
@@ -256,6 +272,7 @@ code {
   flex-direction: column;
   min-width: 0;
   background: var(--paper);
+  border-inline-start: 1px solid var(--border);
 }
 .topbar {
   display: flex;
@@ -300,25 +317,6 @@ code {
   font-size: 12.5px;
   max-width: 180px;
   color: var(--ink);
-}
-.settings-toggle {
-  background: none;
-  border: 1px solid var(--border-mid);
-  border-radius: var(--r-pill);
-  padding: 6px 14px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--slate);
-  transition: all 150ms var(--ease);
-}
-.settings-toggle:hover {
-  color: var(--ink);
-  border-color: var(--stone);
-}
-.settings-toggle.active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
 }
 .conn {
   display: inline-flex;
@@ -527,15 +525,127 @@ code {
 }
 
 /* ── inspector (right rail of cards) ─────────────────────────────────────── */
-.inspector {
+/* ── center stage: canvas · project board · brain · settings ─────────────── */
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   background: var(--paper);
-  border-inline-start: 1px solid var(--border);
+}
+.stage-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  min-height: 54px;
+}
+.stage-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--cloud);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 3px;
+}
+.stage-tabs button {
+  background: none;
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--slate);
+  transition: all 150ms var(--ease);
+}
+.stage-tabs button:hover {
+  color: var(--ink);
+}
+.stage-tabs button.active {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+}
+.stage-crumb {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.stage-refresh {
+  margin-inline-start: auto;
+  background: none;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--slate);
+}
+.stage-refresh:hover {
+  color: var(--ink);
+  border-color: var(--stone);
+}
+.stage-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.stage-body > * {
+  flex: 1;
+  min-height: 0;
+}
+/* the project board: masonry of knowledge cards in the center */
+.stage-project {
   overflow-y: auto;
-  padding: 16px 14px calc(24px + env(safe-area-inset-bottom));
+  padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 14px;
+  align-items: start;
+  align-content: start;
+}
+.stage-brain {
+  overflow-y: auto;
+  padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-width: 0;
+  max-width: 60rem;
+  width: 100%;
+  margin: 0 auto;
+}
+.stage-gallery {
+  overflow-y: auto;
+  padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
+  background: var(--ivory);
+}
+.stage-gallery > * {
+  max-width: 64rem;
+  margin: 0 auto;
+}
+.stage-empty {
+  margin: 14vh auto 0;
+  max-width: 30rem;
+  text-align: center;
+  color: var(--slate);
+}
+.stage-empty span {
+  font-family: var(--font-display);
+  font-size: 42px;
+  color: var(--clay);
+}
+.stage-empty h1 {
+  font-size: 27px;
+  margin: 10px 0 8px;
+}
+.stage-empty p {
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
 }
 .card {
   background: var(--surface);
@@ -1378,9 +1488,6 @@ code {
   .topbar-controls label {
     display: none; /* provider select lives in Settings on mobile */
   }
-  .settings-toggle {
-    display: none; /* replaced by the bottom tabs */
-  }
   .messages {
     padding: 20px 14px 8px;
   }
@@ -1396,19 +1503,24 @@ code {
     margin-top: 7vh;
   }
 
-  /* single-pane switching via the bottom tabs */
-  .inspector {
+  /* single-pane switching via the bottom tabs: the chat pane OR the stage */
+  .app-shell.mobile-chat .stage {
+    display: none;
+  }
+  .app-shell:not(.mobile-chat) .chat-panel {
+    display: none;
+  }
+  .chat-panel {
     border-inline-start: none;
-    padding: 12px 12px calc(20px + env(safe-area-inset-bottom));
   }
-  .app-shell.mobile-chat .inspector {
-    display: none;
+  .stage-head {
+    padding: 8px 12px;
   }
-  .app-shell:not(.mobile-chat) .chat-panel .messages,
-  .app-shell:not(.mobile-chat) .chat-panel .composer,
-  .app-shell:not(.mobile-chat) .chat-panel .turn-meta,
-  .app-shell:not(.mobile-chat) .chat-panel .error {
-    display: none;
+  .stage-tabs {
+    display: none; /* replaced by the bottom tabs */
+  }
+  .stage-crumb {
+    padding-inline-start: 2px;
   }
 
   .mobile-tabs {
@@ -1567,9 +1679,6 @@ code {
   .activity-bar {
     width: calc(100% - 20px);
   }
-  .app-shell:not(.mobile-chat) .chat-panel .activity-bar {
-    display: none;
-  }
 }
 
 /* ── project tree: project-owned sessions (claude.ai IA) ─────────────────── */
@@ -1678,8 +1787,9 @@ code {
   display: flex;
   flex-direction: column;
   background: var(--ivory);
-  border-inline-start: 1px solid var(--border);
   min-width: 0;
+  min-height: 0;
+  flex: 1;
 }
 .canvas-head {
   display: flex;
@@ -1742,23 +1852,6 @@ code {
   font-size: 11px;
   color: var(--stone);
   border-top: 1px solid var(--border);
-}
-
-@media (min-width: 961px) {
-  .app-shell.canvas-open {
-    grid-template-columns: 264px minmax(0, 0.85fr) minmax(440px, 1.3fr);
-  }
-  .inspector.canvas-hidden {
-    display: none;
-  }
-}
-@media (max-width: 960px) {
-  .canvas-panel {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    border: none;
-  }
 }
 
 /* ── settings as a full page (claude.ai pattern: left sub-nav + content) ─── */
@@ -1842,8 +1935,174 @@ code {
   }
 }
 
-@media (min-width: 961px) {
-  .app-shell.settings-open:not(.canvas-open) {
-    grid-template-columns: 264px minmax(0, 1fr);
-  }
+/* ── sidebar footer: Settings entry at the bottom-left (claude.ai) ───────── */
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.sidebar-settings {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  padding: 9px 10px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--slate);
+  text-align: start;
+  transition: background 150ms var(--ease);
+}
+.sidebar-settings:hover {
+  background: var(--cloud);
+  color: var(--ink);
+}
+.sidebar-settings.active {
+  background: var(--cloud);
+  color: var(--ink);
+}
+.sidebar-settings .gear {
+  font-size: 15px;
+}
+.token-dot {
+  margin-inline-start: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.token-dot.ok {
+  background: var(--ok, #7d9b76);
+}
+.token-dot.warn {
+  background: var(--clay);
+}
+
+/* ── delete / archive controls (ADR-0038) ────────────────────────────────── */
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.project-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.project-delete {
+  flex: none;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  filter: grayscale(1);
+  opacity: 0;
+  transition: opacity 150ms var(--ease);
+}
+.project-node:hover .project-delete,
+.project-delete:focus-visible {
+  opacity: 0.6;
+}
+.project-delete:hover {
+  opacity: 1;
+  background: var(--cloud);
+}
+.delete-confirm {
+  margin: 6px 4px 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--clay) 45%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--clay) 6%, var(--paper));
+}
+.delete-confirm p {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--slate);
+}
+.delete-confirm code {
+  font-weight: 600;
+  color: var(--ink);
+}
+.delete-confirm input {
+  width: 100%;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-sm);
+  padding: 7px 9px;
+  font-size: 12.5px;
+  background: var(--paper);
+  margin-bottom: 8px;
+}
+.delete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.delete-actions button {
+  white-space: nowrap;
+}
+.delete-actions button {
+  border-radius: var(--r-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border-mid);
+  background: none;
+  color: var(--slate);
+}
+.delete-actions button.danger {
+  background: var(--clay-strong);
+  border-color: var(--clay-strong);
+  color: #faf9f5;
+}
+.delete-actions button.danger:disabled {
+  opacity: 0.45;
+}
+.session-archive {
+  flex: none;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  color: var(--stone);
+  opacity: 0;
+  transition: opacity 150ms var(--ease);
+}
+.session-row:hover .session-archive,
+.session-archive:focus-visible {
+  opacity: 0.8;
+}
+.session-archive:hover {
+  background: var(--cloud);
+  color: var(--ink);
+}
+
+/* ── approvals + errors inside the chat column ───────────────────────────── */
+.chat-approvals {
+  padding: 0 20px 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.error-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+}
+.chat-panel .empty h1 {
+  font-size: 21px;
+}
+.chat-panel .empty span {
+  font-size: 34px;
 }

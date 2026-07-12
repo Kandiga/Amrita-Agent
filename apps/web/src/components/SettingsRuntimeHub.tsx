@@ -1,5 +1,5 @@
 import { PROVIDER_ROLES, type ProviderRole } from '@amrita/protocol';
-import { useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import type {
   CodingRuntimeLite,
   ConnectorStatusLite,
@@ -54,6 +54,10 @@ interface SettingsRuntimeHubProps {
   writeCtx: { projectId: string; conversationId: string } | null;
   onTasksChanged: () => void;
   onError: (e: unknown) => void;
+  /** The Access (token) section, owned by the shell — rendered as a settings page. */
+  accessSlot?: ReactNode;
+  /** True on a 401: jump straight to the Access section. */
+  focusAccess?: boolean;
 }
 
 /**
@@ -68,6 +72,8 @@ export function SettingsRuntimeHub({
   writeCtx,
   onTasksChanged,
   onError,
+  accessSlot,
+  focusAccess,
 }: SettingsRuntimeHubProps) {
   const [status, setStatus] = useState<RuntimeStatusLite | null>(null);
   const [catalog, setCatalog] = useState<ProviderCatalogEntryLite[] | null>(null);
@@ -157,9 +163,14 @@ export function SettingsRuntimeHub({
   }
 
   /** claude.ai-style settings sub-navigation (left nav on desktop). */
-  const [section, setSection] = useState<'brain' | 'providers' | 'runtimes' | 'connectors'>(
-    'brain',
-  );
+  const [section, setSection] = useState<
+    'brain' | 'providers' | 'runtimes' | 'connectors' | 'access'
+  >('brain');
+
+  // A 401 anywhere lands the user exactly where the fix lives.
+  useEffect(() => {
+    if (focusAccess && accessSlot) setSection('access');
+  }, [focusAccess, accessSlot]);
 
   if (!status) {
     return (
@@ -175,6 +186,9 @@ export function SettingsRuntimeHub({
     { id: 'providers', label: 'Providers', hint: 'every brain Amrita knows, honest states' },
     { id: 'runtimes', label: 'Coding runtimes', hint: 'Claude Code and friends' },
     { id: 'connectors', label: 'Connectors', hint: 'sources like GitHub' },
+    ...(accessSlot
+      ? [{ id: 'access' as const, label: 'Access', hint: 'runtime token for this browser' }]
+      : []),
   ];
 
   return (
@@ -193,6 +207,7 @@ export function SettingsRuntimeHub({
         ))}
       </nav>
       <div className="settings-content">
+        {section === 'access' ? accessSlot : null}
         {section === 'brain' ? (
           <section className="card">
             <h2>Amrita brain</h2>

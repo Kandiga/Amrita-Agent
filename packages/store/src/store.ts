@@ -346,6 +346,59 @@ export class Store {
     return row;
   }
 
+  /**
+   * Delete a project and EVERYTHING it owns in one transaction (ADR-0038).
+   * The single sanctioned destructive verb: events, messages, conversations,
+   * companion rows, project memory, lanes, tasks, decisions — all gone,
+   * atomically. Other projects' rows are untouched. Not recoverable.
+   */
+  deleteProject(projectId: string): { deleted: true } {
+    const run = this.db.transaction(() => {
+      // open the append-only gate for THIS project only (see migration 0008);
+      // cleared before commit, so the gate never outlives the transaction.
+      this.db
+        .prepare(
+          "INSERT INTO settings (key, value_json, updated_at) VALUES ('cascade.project.delete', ?, ?) " +
+            'ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at',
+        )
+        .run(JSON.stringify(projectId), now());
+      const convIds = (
+        this.db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(projectId) as {
+          id: string;
+        }[]
+      ).map((r) => r.id);
+      const inConv = `(${convIds.map(() => '?').join(',')})`;
+      if (convIds.length > 0) {
+        this.db.prepare(`DELETE FROM events WHERE conversation_id IN ${inConv}`).run(...convIds);
+        this.db.prepare(`DELETE FROM messages WHERE conversation_id IN ${inConv}`).run(...convIds);
+        this.db
+          .prepare(`DELETE FROM channel_pairings WHERE conversation_id IN ${inConv}`)
+          .run(...convIds);
+        this.db.prepare(`DELETE FROM artifacts WHERE conversation_id IN ${inConv}`).run(...convIds);
+      }
+      for (const table of [
+        'tasks',
+        'decisions',
+        'open_questions',
+        'risks',
+        'milestones',
+        'project_briefs',
+        'project_brands',
+        'preview_approvals',
+        'memory_entries',
+        'lanes',
+      ]) {
+        this.db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
+      }
+      this.db.prepare('DELETE FROM channel_pairings WHERE project_id = ?').run(projectId);
+      this.db.prepare('DELETE FROM conversations WHERE project_id = ?').run(projectId);
+      this.db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+      this.db.prepare("DELETE FROM settings WHERE key = 'cascade.project.delete'").run();
+    });
+    run();
+    return { deleted: true };
+  }
+
   createConversation(input: {
     projectId: string;
     title?: string;

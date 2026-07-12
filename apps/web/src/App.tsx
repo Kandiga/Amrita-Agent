@@ -47,7 +47,13 @@ import { type EventStreamHandle, type StreamState, openEventStream } from './str
 import { buildSurfaceArtifacts } from './surface.ts';
 
 type Project = { id: string; slug: string; name: string };
-type Conversation = { id: string; projectId: string; title?: string | null; createdAt?: string };
+type Conversation = {
+  id: string;
+  projectId: string;
+  title?: string | null;
+  createdAt?: string;
+  archivedAt?: string | null;
+};
 type Provider = {
   id: string;
   available?: boolean;
@@ -64,6 +70,11 @@ type ChatResult = {
   usage?: { inputTokens: number; outputTokens: number } | null;
 };
 
+/** Center-stage views. Chat is not a stage — it lives in the right panel. */
+type StageView = 'canvas' | 'project' | 'brain' | 'settings';
+/** Mobile is single-pane: chat is a tab alongside the stage views. */
+type MobileView = 'chat' | StageView;
+
 const STREAM_LABELS: Record<StreamState, string> = {
   connecting: 'Connecting…',
   open: 'Live',
@@ -71,6 +82,12 @@ const STREAM_LABELS: Record<StreamState, string> = {
   error: 'Offline',
   closed: 'Disconnected',
 };
+
+const STAGE_TABS: { id: Exclude<StageView, 'settings'>; label: string; hint: string }[] = [
+  { id: 'canvas', label: 'Canvas', hint: 'everything Amrita builds, live' },
+  { id: 'project', label: 'Project', hint: 'brief, tasks, decisions, lanes' },
+  { id: 'brain', label: 'Brain', hint: 'the maintained knowledge harness' },
+];
 
 function extractArray<T>(value: unknown, keys: string[]): T[] {
   if (Array.isArray(value)) return value as T[];
@@ -131,24 +148,28 @@ export function App() {
   const [timeline, setTimeline] = useState<AmritaEventLite[]>([]);
   /** Effective fast/main/deep model resolution for the open project (§2.8). */
   const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
-  /** Inspector mode: project panels, the brain harness, or the Settings & Runtime Hub. */
-  const [inspectorView, setInspectorView] = useState<'project' | 'brain' | 'settings'>('project');
+  /** The center stage: live canvas (default), project board, brain, or settings. */
+  const [stageView, setStageView] = useState<StageView>('canvas');
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
   /** Live backstage feed (Hermes-style): what runs, waits, or thinks now. */
   const [activity, setActivity] = useState<readonly ActivityLine[]>([]);
   /** Optimistic project switch: the sidebar responds instantly, data follows. */
   const [projectLoading, setProjectLoading] = useState(false);
-  /** The live canvas (Claude-Design style): an open artifact id, or null. */
+  /** The open live-canvas artifact id, or null (gallery). */
   const [canvasId, setCanvasId] = useState<string | null>(null);
+  /** ADR-0038 delete flow: which project is arming, and the typed slug. */
+  const [deleteArm, setDeleteArm] = useState<string | null>(null);
+  const [deleteDraft, setDeleteDraft] = useState('');
   /** Mobile: sidebar drawer + single-pane tab (Claude app pattern). */
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [mobileView, setMobileView] = useState<'chat' | 'project' | 'brain' | 'settings'>('chat');
+  const [mobileView, setMobileView] = useState<MobileView>('chat');
 
-  /** One switch drives both the mobile pane and the desktop inspector. */
-  function switchView(view: 'chat' | 'project' | 'brain' | 'settings'): void {
+  /** One switch drives both the mobile pane and the desktop stage. */
+  function switchStage(view: StageView): void {
+    setStageView(view);
     setMobileView(view);
-    if (view !== 'chat') setInspectorView(view);
+    setSidebarOpen(false);
   }
 
   // The reducer is the single source of truth for the transcript; the stream and
@@ -156,7 +177,7 @@ export function App() {
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
 
-  // A 401/403 surfaces the auth panel instead of a raw error line.
+  // A 401/403 surfaces the Access section instead of a raw error line.
   function reportError(e: unknown): void {
     if (e instanceof RpcError && e.code === 'unauthorized') {
       setUnauthorized(true);
@@ -251,6 +272,24 @@ export function App() {
     return () => handle?.close();
   }, [conversationId, authToken]);
 
+  // The stage is live: when Amrita produces a NEW openable artifact mid-session,
+  // the canvas opens on it by itself — the Screenshot-Brief "she builds, you watch"
+  // behavior. Initial project load only primes the known set (no surprise jumps).
+  const knownArtifactIds = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const openable = surfaceArtifacts.filter(
+      (a) => a.kind === 'html-preview' || a.kind === 'design-page',
+    );
+    if (knownArtifactIds.current === null) {
+      knownArtifactIds.current = new Set(openable.map((a) => a.id));
+      return;
+    }
+    const fresh = openable.filter((a) => !knownArtifactIds.current?.has(a.id));
+    for (const a of openable) knownArtifactIds.current.add(a.id);
+    const newest = fresh[fresh.length - 1];
+    if (newest && stageView === 'canvas') setCanvasId(newest.id);
+  }, [surfaceArtifacts, stageView]);
+
   async function refreshBase() {
     setError('');
     const [projectResult, providerResult, healthResult, doctorResult] = await Promise.all([
@@ -276,6 +315,8 @@ export function App() {
     setProjectLoading(true);
     setConversations([]);
     setCanvasId(null);
+    knownArtifactIds.current = null;
+    setDeleteArm(null);
     setBusy(true);
     try {
       const ensured = (await client.call('project.ensure', {
@@ -291,7 +332,8 @@ export function App() {
       const listResult = await client.call('conversation.list', { projectId: project.id });
       const list = extractArray<Conversation>(listResult, ['conversations']);
       setConversations(list);
-      if (list[0]) openConversation(list[0].id);
+      const firstLive = list.find((c) => !c.archivedAt);
+      if (firstLive) openConversation(firstLive.id);
       else await createConversation(project.id);
       await Promise.all([
         loadTasks(project.id),
@@ -340,6 +382,48 @@ export function App() {
       setConversations(extractArray<Conversation>(listResult, ['conversations']));
       openConversation(r.childConversationId);
       await loadCompanion(); // the digest just landed in project memory
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Shelve a session (ADR-0038): it leaves the sidebar; its history stays. */
+  async function archiveSession(id: string): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await client.call('conversation.archive', { conversationId: id });
+      const listResult = await client.call('conversation.list', {
+        projectId: selectedProject?.id,
+      });
+      const list = extractArray<Conversation>(listResult, ['conversations']);
+      setConversations(list);
+      if (id === conversationId) {
+        const nextLive = list.find((c) => !c.archivedAt);
+        if (nextLive) openConversation(nextLive.id);
+        else await createConversation();
+      }
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** ADR-0038: the one destructive verb. Requires the typed slug to match. */
+  async function deleteProject(p: Project): Promise<void> {
+    if (busy || deleteDraft.trim() !== p.slug) return;
+    setBusy(true);
+    try {
+      await client.call('project.delete', { projectId: p.id });
+      setDeleteArm(null);
+      setDeleteDraft('');
+      const remaining = projects.filter((x) => x.id !== p.id);
+      setProjects(remaining);
+      const next = remaining.find((x) => x.slug === 'system') ?? remaining[0];
+      await ensureProjectAndLoad(next?.slug ?? 'system');
     } catch (e) {
       reportError(e);
     } finally {
@@ -410,6 +494,11 @@ export function App() {
   const writeCtx =
     selectedProject && conversationId ? { projectId: selectedProject.id, conversationId } : null;
 
+  const pendingApprovals = useMemo(
+    () => approvals.filter((a) => a.projectId === selectedProject?.id),
+    [approvals, selectedProject],
+  );
+
   /** Durably approve a proposed preview's exact content (ADR-0020). */
   async function approvePreview(previewId: string, contentHash: string): Promise<void> {
     if (!writeCtx) return;
@@ -470,12 +559,41 @@ export function App() {
       .catch((e) => reportError(e));
   }, [authToken]);
 
+  /** The Access section (Settings): the ONLY place the token is managed. */
+  const accessSection = (
+    <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
+      <h2>Access token</h2>
+      <p className={authToken ? 'token-set' : ''}>
+        {authToken
+          ? `token set · ${maskToken(authToken)}`
+          : 'No token set — the runtime may require one.'}
+      </p>
+      <div className="search">
+        <input
+          type="password"
+          value={tokenDraft}
+          onChange={(e) => setTokenDraft(e.target.value)}
+          placeholder="Paste bearer token"
+          autoComplete="off"
+        />
+        <button type="button" onClick={applyToken} disabled={!tokenDraft.trim()}>
+          Save
+        </button>
+      </div>
+      {authToken ? (
+        <button type="button" onClick={forgetToken}>
+          Clear token
+        </button>
+      ) : null}
+      <p className="access-note">
+        Stored only in this browser and sent as a bearer header — never written to the store or
+        logs.
+      </p>
+    </section>
+  );
+
   return (
-    <main
-      className={`app-shell mobile-${mobileView}${canvasArtifact ? ' canvas-open' : ''}${
-        inspectorView === 'settings' ? ' settings-open' : ''
-      }`}
-    >
+    <main className={`app-shell mobile-${mobileView}`}>
       <button
         type="button"
         className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`}
@@ -491,35 +609,76 @@ export function App() {
             <small>project-aware agent OS</small>
           </div>
         </div>
-        <button
-          className="primary"
-          type="button"
-          onClick={() => ensureProjectAndLoad(projectSlug)}
-          disabled={busy}
-        >
-          Refresh
-        </button>
-        <section>
+        <section className="sidebar-projects">
           <h2>Projects</h2>
           <div className="list project-tree">
             {projects.map((p) => {
               const active = p.slug === projectSlug;
-              const liveSessions = active
-                ? conversations.filter((c) => !(c as { archivedAt?: string | null }).archivedAt)
-                : [];
+              const liveSessions = active ? conversations.filter((c) => !c.archivedAt) : [];
               const compressedCount = active ? conversations.length - liveSessions.length : 0;
+              const arming = deleteArm === p.id;
               return (
                 <div key={p.id} className={`project-node${active ? ' active' : ''}`}>
-                  <button
-                    type="button"
-                    className={active ? 'active' : ''}
-                    onClick={() => {
-                      if (!active) void ensureProjectAndLoad(p.slug);
-                    }}
-                  >
-                    <span className="project-caret">{active ? '▾' : '▸'}</span>
-                    {p.name}
-                  </button>
+                  <div className="project-row">
+                    <button
+                      type="button"
+                      className={active ? 'active' : ''}
+                      onClick={() => {
+                        if (!active) void ensureProjectAndLoad(p.slug);
+                      }}
+                    >
+                      <span className="project-caret">{active ? '▾' : '▸'}</span>
+                      {p.name}
+                    </button>
+                    {active && p.slug !== 'system' ? (
+                      <button
+                        type="button"
+                        className="project-delete"
+                        title="Delete this project and everything it owns"
+                        aria-label={`Delete project ${p.name}`}
+                        onClick={() => {
+                          setDeleteArm(arming ? null : p.id);
+                          setDeleteDraft('');
+                        }}
+                      >
+                        🗑
+                      </button>
+                    ) : null}
+                  </div>
+                  {arming ? (
+                    <div className="delete-confirm">
+                      <p>
+                        Deletes every session, memory, task and decision this project owns. This
+                        cannot be undone. Type <code>{p.slug}</code> to confirm.
+                      </p>
+                      <input
+                        type="text"
+                        value={deleteDraft}
+                        onChange={(e) => setDeleteDraft(e.target.value)}
+                        placeholder={p.slug}
+                        autoComplete="off"
+                      />
+                      <div className="delete-actions">
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={deleteDraft.trim() !== p.slug || busy}
+                          onClick={() => void deleteProject(p)}
+                        >
+                          Delete forever
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeleteArm(null);
+                            setDeleteDraft('');
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   {active ? (
                     <div className="session-list">
                       {projectLoading ? (
@@ -539,6 +698,7 @@ export function App() {
                                 className="session-open"
                                 onClick={() => {
                                   setSidebarOpen(false);
+                                  if (mobileView !== 'chat') setMobileView('chat');
                                   openConversation(c.id);
                                 }}
                               >
@@ -555,6 +715,16 @@ export function App() {
                                   ⤓
                                 </button>
                               ) : null}
+                              <button
+                                type="button"
+                                className="session-archive"
+                                title="Archive this session — it leaves the list; its history stays in the project"
+                                aria-label={`Archive session ${titleFor(c)}`}
+                                onClick={() => void archiveSession(c.id)}
+                                disabled={busy}
+                              >
+                                ✕
+                              </button>
                             </div>
                           ))}
                           <button
@@ -567,7 +737,7 @@ export function App() {
                           </button>
                           {compressedCount > 0 ? (
                             <small className="session-archived-note">
-                              {compressedCount} compressed into project memory
+                              {compressedCount} compressed or archived in project memory
                             </small>
                           ) : null}
                         </>
@@ -579,7 +749,232 @@ export function App() {
             })}
           </div>
         </section>
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className={`sidebar-settings${stageView === 'settings' ? ' active' : ''}`}
+            onClick={() => switchStage('settings')}
+          >
+            <span className="gear">⚙</span>
+            Settings
+            <span
+              className={`token-dot ${authToken ? 'ok' : 'warn'}`}
+              title={authToken ? 'access token set' : 'no access token'}
+            />
+          </button>
+        </div>
       </aside>
+
+      <section className="stage">
+        <header className="stage-head">
+          <button
+            type="button"
+            className="hamburger"
+            aria-label="Open menu"
+            onClick={() => setSidebarOpen(true)}
+          >
+            ☰
+          </button>
+          <nav className="stage-tabs" aria-label="Workspace views">
+            {STAGE_TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={stageView === t.id ? 'active' : ''}
+                title={t.hint}
+                onClick={() => switchStage(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+            {stageView === 'settings' ? (
+              <span className="stage-crumb" aria-current="page">
+                Settings
+              </span>
+            ) : null}
+          </nav>
+          <button
+            type="button"
+            className="stage-refresh"
+            onClick={() => void refreshBase().then(() => ensureProjectAndLoad(projectSlug))}
+            disabled={busy}
+            title="Reload projects and this project's state"
+          >
+            Refresh
+          </button>
+        </header>
+
+        <div className="stage-body">
+          {stageView === 'settings' ? (
+            <div className="settings-page">
+              <h1 className="settings-title">Settings</h1>
+              <SettingsRuntimeHub
+                projectId={selectedProject?.id}
+                projectName={selectedProject?.name}
+                writeCtx={writeCtx}
+                onTasksChanged={() => void loadTasks()}
+                onError={reportError}
+                accessSlot={accessSection}
+                focusAccess={unauthorized}
+              />
+            </div>
+          ) : stageView === 'brain' ? (
+            <div className="stage-brain">
+              <BrainPanel
+                projectId={selectedProject?.id}
+                writeCtx={writeCtx}
+                onError={reportError}
+              />
+            </div>
+          ) : stageView === 'project' ? (
+            <div className="stage-project">
+              <NextActionsPanel actions={companionActions} />
+              <BriefPanel
+                brief={companion?.brief ?? null}
+                writeCtx={writeCtx}
+                onChanged={() => void loadCompanion()}
+                onError={reportError}
+              />
+              <BrandPanel
+                brand={companion?.brand ?? null}
+                writeCtx={writeCtx}
+                onChanged={() => void loadCompanion()}
+                onError={reportError}
+              />
+              <RuntimePanel doctor={doctor} />
+              <section className="card">
+                <h2>Provider status</h2>
+                <div className="provider-row">
+                  <strong>{selectedProvider?.id ?? provider}</strong>
+                  <span>{selectedProvider?.available === false ? 'unavailable' : 'available'}</span>
+                </div>
+                <p>
+                  configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
+                  {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
+                </p>
+                <p>
+                  {selectedProvider?.streaming
+                    ? 'streams replies live (model.delta)'
+                    : 'replies arrive whole — live streaming for this provider is not built yet'}
+                </p>
+                {roleInfo.length > 0 ? (
+                  <p className="role-line">
+                    {roleInfo
+                      .map(
+                        (r) =>
+                          `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
+                            r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
+                          }`,
+                      )
+                      .join(' · ')}
+                  </p>
+                ) : null}
+              </section>
+              <MemoryPanel
+                projectId={selectedProject?.id}
+                writeCtx={writeCtx}
+                onError={reportError}
+              />
+              <TasksPanel
+                tasks={tasks}
+                milestones={companion?.milestones ?? []}
+                writeCtx={writeCtx}
+                onChanged={() => void loadTasks()}
+                onError={reportError}
+              />
+              <MilestonesPanel
+                milestones={companion?.milestones ?? []}
+                tasks={tasks}
+                writeCtx={writeCtx}
+                onChanged={() => void loadCompanion()}
+                onError={reportError}
+              />
+              <QuestionsPanel
+                items={companion?.questions ?? []}
+                writeCtx={writeCtx}
+                onChanged={() => void loadCompanion()}
+                onError={reportError}
+              />
+              <RisksPanel
+                items={companion?.risks ?? []}
+                writeCtx={writeCtx}
+                onChanged={() => void loadCompanion()}
+                onError={reportError}
+              />
+              <DecisionsPanel
+                decisions={decisions}
+                writeCtx={writeCtx}
+                onChanged={() => void loadDecisions()}
+                onError={reportError}
+              />
+              <LanesPanel
+                lanes={laneViews}
+                conversationId={conversationId}
+                realExecAvailable={realExecAvailable}
+                onError={reportError}
+              />
+              <TimelinePanel events={timeline} />
+            </div>
+          ) : canvasArtifact ? (
+            <section className="canvas-panel" aria-label="Live canvas">
+              <header className="canvas-head">
+                <span className="artifact-kind">
+                  {canvasArtifact.kind === 'design-page' ? 'design' : 'preview'}
+                </span>
+                <strong dir="auto">{canvasArtifact.title}</strong>
+                <span className={`doc-badge preview-${canvasArtifact.status}`}>
+                  {canvasArtifact.status}
+                </span>
+                <div className="canvas-actions">
+                  {canvasArtifact.status === 'proposed' ? (
+                    <button
+                      type="button"
+                      className="canvas-approve"
+                      onClick={() =>
+                        void approvePreview(canvasArtifact.id, canvasArtifact.contentHash)
+                      }
+                    >
+                      Approve
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="canvas-close"
+                    aria-label="Back to the gallery"
+                    onClick={() => setCanvasId(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </header>
+              <CanvasFrame html={canvasArtifact.html} title={canvasArtifact.title} />
+              <p className="canvas-live-note">
+                Live canvas — re-renders from this project's typed state (brief · brand ·
+                milestones); confined to the zero-network sandbox.
+              </p>
+            </section>
+          ) : (
+            <div className="stage-gallery">
+              {surfaceArtifacts.length === 0 ? (
+                <div className="stage-empty">
+                  <span>अ</span>
+                  <h1>The live canvas</h1>
+                  <p>
+                    Everything Amrita builds shows up here while she works — briefs, boards, pages,
+                    previews. Ask for something in the chat and watch it land.
+                  </p>
+                </div>
+              ) : (
+                <SurfacePanel
+                  artifacts={surfaceArtifacts}
+                  onApprovePreview={approvePreview}
+                  onOpenCanvas={(id) => setCanvasId(id)}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </section>
 
       <section className="chat-panel">
         <header className="topbar">
@@ -603,24 +998,6 @@ export function App() {
           <div className="topbar-controls">
             <button
               type="button"
-              className={inspectorView === 'brain' ? 'settings-toggle active' : 'settings-toggle'}
-              onClick={() => switchView(inspectorView === 'brain' ? 'project' : 'brain')}
-              title="Organizational brain — maintained knowledge harness"
-            >
-              {inspectorView === 'brain' ? 'Project' : 'Brain'}
-            </button>
-            <button
-              type="button"
-              className={
-                inspectorView === 'settings' ? 'settings-toggle active' : 'settings-toggle'
-              }
-              onClick={() => switchView(inspectorView === 'settings' ? 'project' : 'settings')}
-              title="Runtime settings — models, providers, coding runtimes"
-            >
-              {inspectorView === 'settings' ? 'Project' : 'Settings'}
-            </button>
-            <button
-              type="button"
               className={`conn conn-${streamState}`}
               onClick={refreshTranscript}
               title="Connection state — click to replay from the daemon"
@@ -642,287 +1019,118 @@ export function App() {
             </label>
           </div>
         </header>
-        {inspectorView === 'settings' ? (
-          <div className="settings-page">
-            <h1 className="settings-title">Settings</h1>
-            <SettingsRuntimeHub
-              projectId={selectedProject?.id}
-              projectName={selectedProject?.name}
-              writeCtx={writeCtx}
-              onTasksChanged={() => void loadTasks()}
-              onError={reportError}
-            />
-          </div>
-        ) : (
-          <>
-            <div className="messages" aria-live="polite">
-              {messages.length === 0 ? (
-                <div className="empty">
-                  <span>अ</span>
-                  <h1>Talk to Amrita</h1>
-                  <p>
-                    Every project keeps its own memory, tasks and decisions. Say what you need —
-                    replies stream in live, and lanes can take on the bigger jobs.
-                  </p>
-                </div>
-              ) : null}
-              {messages.map((m) => (
-                <article
-                  key={m.id}
-                  className={`bubble ${m.role}${m.pending ? ' pending' : ''}`}
-                  dir={textDir(m.text)}
-                >
-                  {m.text}
-                  {m.pending ? <span className="caret" /> : null}
-                </article>
-              ))}
-              {busy ? (
-                <article className="bubble agent thinking" aria-label="Amrita is working">
-                  <span className="dots">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                </article>
-              ) : null}
+        <div className="messages" aria-live="polite">
+          {messages.length === 0 ? (
+            <div className="empty">
+              <span>अ</span>
+              <h1>Talk to Amrita</h1>
+              <p>
+                Every project keeps its own memory, tasks and decisions. Say what you need — what
+                she builds appears on the canvas, live.
+              </p>
             </div>
-            {(() => {
-              const now = currentActivity(activity, busy);
-              return activity.length > 0 || now ? (
-                <details className="activity-bar">
-                  <summary>
-                    <span className={`activity-now activity-${now?.tone ?? 'info'}`}>
-                      {now ? now.text : 'idle — full backstage log'}
-                    </span>
-                    <small>{activity.length} events</small>
-                  </summary>
-                  <div className="activity-log" dir="ltr">
-                    {[...activity].reverse().map((l) => (
-                      <p key={l.id} className={`activity-line activity-${l.tone}`}>
-                        <span className="activity-ts">{l.ts ? l.ts.slice(11, 19) : ''}</span>
-                        {l.text}
-                      </p>
-                    ))}
-                  </div>
-                </details>
-              ) : null;
-            })()}
-            {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
-            {unauthorized ? (
-              <div className="error" role="alert">
-                Unauthorized — set a valid access token in the panel on the right to reach the
-                runtime.
-              </div>
-            ) : null}
-            {error ? (
-              <div className="error" role="alert">
-                {error}
-              </div>
-            ) : null}
-            <form
-              className="composer"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void send();
-              }}
-            >
-              <textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                dir={textDir(draft)}
-                placeholder="Message Amrita…"
-                rows={2}
-              />
-              <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
-                {busy ? '…' : '↑'}
-              </button>
-            </form>
-          </>
-        )}
-      </section>
-
-      {canvasArtifact ? (
-        <section className="canvas-panel" aria-label="Live canvas">
-          <header className="canvas-head">
-            <span className="artifact-kind">
-              {canvasArtifact.kind === 'design-page' ? 'design' : 'preview'}
-            </span>
-            <strong dir="auto">{canvasArtifact.title}</strong>
-            <span className={`doc-badge preview-${canvasArtifact.status}`}>
-              {canvasArtifact.status}
-            </span>
-            <div className="canvas-actions">
-              {canvasArtifact.status === 'proposed' ? (
-                <button
-                  type="button"
-                  className="canvas-approve"
-                  onClick={() => void approvePreview(canvasArtifact.id, canvasArtifact.contentHash)}
-                >
-                  Approve
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="canvas-close"
-                aria-label="Close canvas"
-                onClick={() => setCanvasId(null)}
-              >
-                ✕
-              </button>
-            </div>
-          </header>
-          <CanvasFrame html={canvasArtifact.html} title={canvasArtifact.title} />
-          <p className="canvas-live-note">
-            Live canvas — re-renders from this project's typed state (brief · brand · milestones);
-            confined to the zero-network sandbox.
-          </p>
-        </section>
-      ) : null}
-      <aside
-        className={`inspector${canvasArtifact || inspectorView === 'settings' ? ' canvas-hidden' : ''}`}
-      >
-        <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
-          <h2>Access token</h2>
-          <p className={authToken ? 'token-set' : ''}>
-            {authToken
-              ? `token set · ${maskToken(authToken)}`
-              : 'No token set — the runtime may require one.'}
-          </p>
-          <div className="search">
-            <input
-              type="password"
-              value={tokenDraft}
-              onChange={(e) => setTokenDraft(e.target.value)}
-              placeholder="Paste bearer token"
-              autoComplete="off"
-            />
-            <button type="button" onClick={applyToken} disabled={!tokenDraft.trim()}>
-              Save
-            </button>
-          </div>
-          {authToken ? (
-            <button type="button" onClick={forgetToken}>
-              Clear token
-            </button>
           ) : null}
-        </section>
-        {inspectorView === 'brain' ? (
-          <BrainPanel projectId={selectedProject?.id} writeCtx={writeCtx} onError={reportError} />
-        ) : (
-          <>
-            <NextActionsPanel actions={companionActions} />
+          {messages.map((m) => (
+            <article
+              key={m.id}
+              className={`bubble ${m.role}${m.pending ? ' pending' : ''}`}
+              dir={textDir(m.text)}
+            >
+              {m.text}
+              {m.pending ? <span className="caret" /> : null}
+            </article>
+          ))}
+          {busy ? (
+            <article className="bubble agent thinking" aria-label="Amrita is working">
+              <span className="dots">
+                <i />
+                <i />
+                <i />
+              </span>
+            </article>
+          ) : null}
+        </div>
+        {(() => {
+          const now = currentActivity(activity, busy);
+          return activity.length > 0 || now ? (
+            <details className="activity-bar">
+              <summary>
+                <span className={`activity-now activity-${now?.tone ?? 'info'}`}>
+                  {now ? now.text : 'idle — full backstage log'}
+                </span>
+                <small>{activity.length} events</small>
+              </summary>
+              <div className="activity-log" dir="ltr">
+                {[...activity].reverse().map((l) => (
+                  <p key={l.id} className={`activity-line activity-${l.tone}`}>
+                    <span className="activity-ts">{l.ts ? l.ts.slice(11, 19) : ''}</span>
+                    {l.text}
+                  </p>
+                ))}
+              </div>
+            </details>
+          ) : null;
+        })()}
+        {pendingApprovals.length > 0 ? (
+          <div className="chat-approvals">
             <ApprovalsPanel
-              approvals={approvals.filter((a) => a.projectId === selectedProject?.id)}
+              approvals={pendingApprovals}
               onResolve={(id, d) => void resolveApproval(id, d)}
             />
-            <BriefPanel
-              brief={companion?.brief ?? null}
-              writeCtx={writeCtx}
-              onChanged={() => void loadCompanion()}
-              onError={reportError}
-            />
-            <BrandPanel
-              brand={companion?.brand ?? null}
-              writeCtx={writeCtx}
-              onChanged={() => void loadCompanion()}
-              onError={reportError}
-            />
-            <SurfacePanel
-              artifacts={surfaceArtifacts}
-              onApprovePreview={approvePreview}
-              onOpenCanvas={(id) => setCanvasId(id)}
-            />
-            <RuntimePanel doctor={doctor} />
-            <section className="card">
-              <h2>Provider status</h2>
-              <div className="provider-row">
-                <strong>{selectedProvider?.id ?? provider}</strong>
-                <span>{selectedProvider?.available === false ? 'unavailable' : 'available'}</span>
-              </div>
-              <p>
-                configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
-                {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
-              </p>
-              <p>
-                {selectedProvider?.streaming
-                  ? 'streams replies live (model.delta)'
-                  : 'replies arrive whole — live streaming for this provider is not built yet'}
-              </p>
-              {roleInfo.length > 0 ? (
-                <p className="role-line">
-                  {roleInfo
-                    .map(
-                      (r) =>
-                        `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
-                          r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
-                        }`,
-                    )
-                    .join(' · ')}
-                </p>
-              ) : null}
-            </section>
-            <MemoryPanel
-              projectId={selectedProject?.id}
-              writeCtx={writeCtx}
-              onError={reportError}
-            />
-            <TasksPanel
-              tasks={tasks}
-              milestones={companion?.milestones ?? []}
-              writeCtx={writeCtx}
-              onChanged={() => void loadTasks()}
-              onError={reportError}
-            />
-            <MilestonesPanel
-              milestones={companion?.milestones ?? []}
-              tasks={tasks}
-              writeCtx={writeCtx}
-              onChanged={() => void loadCompanion()}
-              onError={reportError}
-            />
-            <QuestionsPanel
-              items={companion?.questions ?? []}
-              writeCtx={writeCtx}
-              onChanged={() => void loadCompanion()}
-              onError={reportError}
-            />
-            <RisksPanel
-              items={companion?.risks ?? []}
-              writeCtx={writeCtx}
-              onChanged={() => void loadCompanion()}
-              onError={reportError}
-            />
-            <DecisionsPanel
-              decisions={decisions}
-              writeCtx={writeCtx}
-              onChanged={() => void loadDecisions()}
-              onError={reportError}
-            />
-            <LanesPanel
-              lanes={laneViews}
-              conversationId={conversationId}
-              realExecAvailable={realExecAvailable}
-              onError={reportError}
-            />
-            <TimelinePanel events={timeline} />
-          </>
-        )}
-      </aside>
+          </div>
+        ) : null}
+        {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
+        {unauthorized ? (
+          <div className="error" role="alert">
+            Unauthorized — set a valid access token in{' '}
+            <button type="button" className="error-link" onClick={() => switchStage('settings')}>
+              Settings → Access
+            </button>{' '}
+            to reach the runtime.
+          </div>
+        ) : null}
+        {error ? (
+          <div className="error" role="alert">
+            {error}
+          </div>
+        ) : null}
+        <form
+          className="composer"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send();
+          }}
+        >
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            dir={textDir(draft)}
+            placeholder="Message Amrita…"
+            rows={2}
+          />
+          <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
+            {busy ? '…' : '↑'}
+          </button>
+        </form>
+      </section>
 
       <nav className="mobile-tabs" aria-label="Sections">
         {(
           [
             ['chat', 'Chat'],
+            ['canvas', 'Canvas'],
             ['project', 'Project'],
             ['brain', 'Brain'],
-            ['settings', 'Settings'],
           ] as const
         ).map(([view, label]) => (
           <button
             type="button"
             key={view}
             className={mobileView === view ? 'active' : ''}
-            onClick={() => switchView(view)}
+            onClick={() => {
+              if (view === 'chat') setMobileView('chat');
+              else switchStage(view);
+            }}
           >
             {label}
           </button>

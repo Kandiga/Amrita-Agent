@@ -458,6 +458,33 @@ export class AmritaKernel {
     return this.store.getEvents(conversationId, sinceSeq ?? 0);
   }
 
+  /** Archive a session (ADR-0038): the event does the work; history stays. */
+  archiveConversation(conversationId: string): { ok: true } {
+    const conv = this.store.getConversation(conversationId);
+    if (!conv) throw new Error(`no such conversation: ${conversationId}`);
+    if (conv.archivedAt) return { ok: true }; // idempotent
+    this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId: conv.projectId,
+      conversationId,
+      origin: 'user',
+      type: 'conversation.archived',
+      payload: {},
+    } as UnsealedEvent);
+    return { ok: true };
+  }
+
+  /** Delete a project and everything it owns (ADR-0038). `system` is refused. */
+  deleteProject(projectId: string): { deleted: true } {
+    const project = this.store.getProject(projectId);
+    if (!project) throw new Error(`no such project: ${projectId}`);
+    if (project.slug === 'system') {
+      throw new Error('conflict: the reserved system project cannot be deleted');
+    }
+    return this.store.deleteProject(projectId);
+  }
+
   /**
    * Compress a conversation into a lineage child (ADR-0033): the child starts
    * with a deterministic digest as `message.system`, the parent records

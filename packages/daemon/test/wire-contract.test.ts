@@ -222,6 +222,13 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     // R6 (ADR-0037)
     await run('operator.command', { projectId: p.id, text: '/help' });
 
+    // ADR-0038: archive a session, delete a throwaway project
+    await run('conversation.archive', { conversationId: c2.id });
+    const doomed = (await call('project.ensure', { slug: 'doomed', name: 'Doomed' })) as {
+      id: string;
+    };
+    await run('project.delete', { projectId: doomed.id });
+
     // R3 verbs (ADR-0036)
     await run('system.health');
     await run('system.audit', { record: true });

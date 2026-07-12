@@ -455,6 +455,8 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'conversation.get': conversationNodeSchema.nullable(),
   'conversation.list': z.array(conversationNodeSchema),
   'conversation.compress': compressResultSchema,
+  'conversation.archive': okTrueSchema,
+  'project.delete': z.object({ deleted: z.literal(true) }),
 
   'message.user.record': z.object({ messageId: idSchema, event: sealedEventShellSchema }),
   'events.list': sealedEventListSchema,

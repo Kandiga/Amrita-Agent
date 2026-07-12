@@ -147,6 +147,13 @@ export const METHODS: Record<string, RpcMethod> = {
   'conversation.compress': def(z.object({ conversationId: z.string() }), (k, p) =>
     k.compressConversation(p.conversationId),
   ),
+  // Session archive + project delete (ADR-0038).
+  'conversation.archive': def(z.object({ conversationId: z.string() }), (k, p) =>
+    k.archiveConversation(p.conversationId),
+  ),
+  'project.delete': def(z.object({ projectId: z.string() }), (k, p) =>
+    k.deleteProject(p.projectId),
+  ),
 
   'message.user.record': def(
     z.object({
