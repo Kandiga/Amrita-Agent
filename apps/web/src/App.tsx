@@ -114,6 +114,15 @@ export function App() {
   const [inspectorView, setInspectorView] = useState<'project' | 'brain' | 'settings'>('project');
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
+  /** Mobile: sidebar drawer + single-pane tab (Claude app pattern). */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<'chat' | 'project' | 'brain' | 'settings'>('chat');
+
+  /** One switch drives both the mobile pane and the desktop inspector. */
+  function switchView(view: 'chat' | 'project' | 'brain' | 'settings'): void {
+    setMobileView(view);
+    if (view !== 'chat') setInspectorView(view);
+  }
 
   // The reducer is the single source of truth for the transcript; the stream and
   // any manual replay both feed it, de-duped by event id.
@@ -397,8 +406,15 @@ export function App() {
   }, [authToken]);
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
+    <main className={`app-shell mobile-${mobileView}`}>
+      <button
+        type="button"
+        className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`}
+        aria-label="Close menu"
+        onClick={() => setSidebarOpen(false)}
+        tabIndex={sidebarOpen ? 0 : -1}
+      />
+      <aside className={`sidebar${sidebarOpen ? ' open' : ''}`}>
         <div className="brand">
           <span className="mark">अ</span>
           <div>
@@ -422,7 +438,10 @@ export function App() {
                 type="button"
                 key={p.id}
                 className={p.slug === projectSlug ? 'active' : ''}
-                onClick={() => ensureProjectAndLoad(p.slug)}
+                onClick={() => {
+                  setSidebarOpen(false);
+                  void ensureProjectAndLoad(p.slug);
+                }}
               >
                 {p.name}
                 <small>{p.slug}</small>
@@ -445,7 +464,10 @@ export function App() {
                 type="button"
                 key={c.id}
                 className={c.id === conversationId ? 'active' : ''}
-                onClick={() => openConversation(c.id)}
+                onClick={() => {
+                  setSidebarOpen(false);
+                  openConversation(c.id);
+                }}
               >
                 {titleFor(c)}
                 <small>{c.id.slice(0, 12)}</small>
@@ -457,7 +479,15 @@ export function App() {
 
       <section className="chat-panel">
         <header className="topbar">
-          <div>
+          <button
+            type="button"
+            className="hamburger"
+            aria-label="Open menu"
+            onClick={() => setSidebarOpen(true)}
+          >
+            ☰
+          </button>
+          <div className="topbar-title">
             <strong>{selectedProject?.name ?? projectSlug}</strong>
             <small>
               {(() => {
@@ -470,7 +500,7 @@ export function App() {
             <button
               type="button"
               className={inspectorView === 'brain' ? 'settings-toggle active' : 'settings-toggle'}
-              onClick={() => setInspectorView((v) => (v === 'brain' ? 'project' : 'brain'))}
+              onClick={() => switchView(inspectorView === 'brain' ? 'project' : 'brain')}
               title="Organizational brain — maintained knowledge harness"
             >
               {inspectorView === 'brain' ? 'Project' : 'Brain'}
@@ -480,7 +510,7 @@ export function App() {
               className={
                 inspectorView === 'settings' ? 'settings-toggle active' : 'settings-toggle'
               }
-              onClick={() => setInspectorView((v) => (v === 'settings' ? 'project' : 'settings'))}
+              onClick={() => switchView(inspectorView === 'settings' ? 'project' : 'settings')}
               title="Runtime settings — models, providers, coding runtimes"
             >
               {inspectorView === 'settings' ? 'Project' : 'Settings'}
@@ -554,8 +584,8 @@ export function App() {
             placeholder="Message Amrita…"
             rows={2}
           />
-          <button type="submit" disabled={busy || !draft.trim()}>
-            {busy ? '…' : 'Send'}
+          <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
+            {busy ? '…' : '↑'}
           </button>
         </form>
       </section>
@@ -692,6 +722,26 @@ export function App() {
           </>
         )}
       </aside>
+
+      <nav className="mobile-tabs" aria-label="Sections">
+        {(
+          [
+            ['chat', 'Chat'],
+            ['project', 'Project'],
+            ['brain', 'Brain'],
+            ['settings', 'Settings'],
+          ] as const
+        ).map(([view, label]) => (
+          <button
+            type="button"
+            key={view}
+            className={mobileView === view ? 'active' : ''}
+            onClick={() => switchView(view)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
     </main>
   );
 }
