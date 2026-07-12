@@ -24,6 +24,7 @@ import { cinemaProviders, runCinemaVerb } from './cinema.ts';
 import { runDoctor } from './doctor.ts';
 import { GithubError } from './github.ts';
 import type { AmritaKernel } from './kernel.ts';
+import { runOperatorCommand } from './operator.ts';
 import { ProviderError } from './provider.ts';
 import { systemAudit, systemHealth, systemManage, systemPlan } from './system.ts';
 import { clean } from './util.ts';
@@ -550,6 +551,13 @@ export const METHODS: Record<string, RpcMethod> = {
     k.listSkills(p?.projectId),
   ),
 
+  // Terminal/remote parity (ADR-0037): the SAME kernel interpreter every
+  // chat channel uses, exposed over RPC so `amrita op` answers identically.
+  'operator.command': def(
+    z.object({ projectId: z.string(), text: z.string().min(1).max(500) }),
+    async (k, p) => ({ reply: await runOperatorCommand(k, p.text, p.projectId) }),
+  ),
+
   // ── Global Amrita / System Brain (ADR-0036) ────────────────────────────────
   'system.health': def(z.object({}).optional(), (k) => systemHealth(k)),
   'system.audit': def(z.object({ record: z.boolean().optional() }).optional(), (k, p) =>
@@ -598,17 +606,26 @@ export const METHODS: Record<string, RpcMethod> = {
           status: 'needs_setup',
           note: 'runner available — set TELEGRAM_BOT_TOKEN + AMRITA_TELEGRAM_ALLOWED_IDS, start amritad --telegram',
         },
+    // WhatsApp (ADR-0037): adapter + contract tests exist; the live Cloud-API
+    // webhook runner is not bundled yet — needs_setup states exactly that.
+    {
+      id: 'whatsapp',
+      kind: 'whatsapp',
+      ready: false,
+      status: 'needs_setup',
+      note: 'adapter ready; webhook runner not bundled yet — needs WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID + WHATSAPP_VERIFY_TOKEN and an HTTPS webhook (next slice)',
+    },
   ]),
   'channels.pairing.create': def(
     z.object({
-      channel: z.enum(['web', 'telegram']).optional(),
+      channel: z.enum(['web', 'telegram', 'whatsapp']).optional(),
       projectId: z.string(),
       conversationId: z.string().optional(),
     }),
     (k, p) => k.createPairing({ channel: p.channel ?? 'telegram', ...clean(p) }),
   ),
   'channels.pairing.list': def(
-    z.object({ channel: z.enum(['web', 'telegram']).optional() }),
+    z.object({ channel: z.enum(['web', 'telegram', 'whatsapp']).optional() }),
     (k, p) => k.listPairings(p.channel),
   ),
 

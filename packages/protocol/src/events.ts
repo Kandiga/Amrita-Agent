@@ -18,7 +18,7 @@ import { laneMandateSchema, mergeReportSchema, usageSchema } from './lane.ts';
 export const eventOriginSchema = z.enum(['user', 'agent', 'lane', 'system']);
 export type EventOrigin = z.infer<typeof eventOriginSchema>;
 
-export const eventChannelSchema = z.enum(['web', 'telegram', 'cli', 'api']);
+export const eventChannelSchema = z.enum(['web', 'telegram', 'whatsapp', 'cli', 'api']);
 export type EventChannel = z.infer<typeof eventChannelSchema>;
 
 // ── shared domain enums (ADR-0032) ───────────────────────────────────────────

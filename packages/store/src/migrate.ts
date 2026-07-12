@@ -33,6 +33,7 @@ export const MIGRATIONS: readonly Migration[] = [
   load(4, 'companion'),
   load(5, 'brand_previews'),
   load(6, 'task_external_ref'),
+  load(7, 'whatsapp_channel'),
 ];
 
 function ensureMigrationsTable(db: DB): void {

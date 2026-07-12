@@ -1,11 +1,6 @@
-import { type AmritaKernel, runOperatorCommand } from '@amrita/daemon';
-import {
-  type Channel,
-  type ChannelResult,
-  type InboundUpdate,
-  chunkText,
-  safeMessage,
-} from './types.ts';
+import type { AmritaKernel } from '@amrita/daemon';
+import { runChannelUpdate } from './base.ts';
+import type { Channel, ChannelResult, InboundUpdate } from './types.ts';
 
 /** The outbound surface a real Telegram bot provides — injected (faked in tests). */
 export interface TelegramSender {
@@ -21,20 +16,13 @@ export interface TelegramChannelOptions {
 
 const TELEGRAM_MAX = 4000;
 
-/** `/pair CODE` → `CODE`, else null. */
-function parsePairCommand(text: string): string | null {
-  const m = text.trim().match(/^\/pair\s+(\S+)/i);
-  return m ? (m[1] ?? null) : null;
-}
-
 /**
- * The Telegram channel skeleton. **Deny-by-default**: only allowlisted numeric
- * user ids are processed, and the gate applies to BOTH messages and callback
- * queries. An allowed owner links a Telegram identity to an Amrita project via a
- * pairing code (`/pair CODE`), after which messages run chat turns whose replies
- * are chunked to Telegram's size limit. No real Telegram API call happens here —
- * the outbound `sender` is injected. The bot token lives in env/config, never in
- * this object, the DB, events, or any output.
+ * The Telegram channel. **Deny-by-default**: only allowlisted numeric user ids
+ * are processed (messages AND callback queries). The whole chat flow — pairing,
+ * operator commands, chat turns, chunked replies — is the SHARED handler
+ * (`base.ts`, ADR-0037), so Telegram answers exactly what every other channel
+ * answers. The bot token lives in env/config, never in this object, the DB,
+ * events, or any output.
  */
 export class TelegramChannel implements Channel {
   readonly id = 'telegram';
@@ -53,97 +41,18 @@ export class TelegramChannel implements Channel {
   }
 
   async handleUpdate(update: InboundUpdate): Promise<ChannelResult> {
-    // Owner gate — deny-by-default, applies to messages AND callbacks.
-    if (!this.allowed.has(Number(update.userId))) {
-      this.droppedUserIds.push(update.userId);
-      return { channel: 'telegram', handled: false, outcome: 'denied', replies: [] };
-    }
-
-    const code = parsePairCommand(update.text);
-    if (code) {
-      try {
-        const link = this.kernel.consumePairing({
-          channel: 'telegram',
-          code,
-          externalUserId: update.userId,
-        });
-        const reply = `paired to project ${link.projectId}`;
-        await this.send(update.chatId, [reply]);
-        return {
-          channel: 'telegram',
-          handled: true,
-          outcome: 'paired',
-          ...(link.conversationId ? { conversationId: link.conversationId } : {}),
-          replies: [reply],
-        };
-      } catch (e) {
-        const reply = `pairing failed: ${safeMessage(e)}`;
-        await this.send(update.chatId, [reply]);
-        return {
-          channel: 'telegram',
-          handled: false,
-          outcome: 'error',
-          replies: [reply],
-          error: safeMessage(e),
-        };
-      }
-    }
-
-    // One brain (R2): the kernel session resolver maps this channel identity
-    // into the same store-backed conversation every other surface sees.
-    const link = this.kernel.resolveChannelSession('telegram', update.userId);
-    if (!link) {
-      const reply = 'not linked yet — send: /pair <code>';
-      await this.send(update.chatId, [reply]);
-      return { channel: 'telegram', handled: true, outcome: 'unpaired', replies: [reply] };
-    }
-
-    // Operator commands (ADR-0021 / R2): interpreted by the kernel-level
-    // operator service — every channel answers identically; this adapter renders.
-    if (update.text.trim().startsWith('/')) {
-      const reply = await runOperatorCommand(this.kernel, update.text.trim(), link.projectId);
-      await this.send(update.chatId, chunkText(reply, this.chunkSize));
-      return {
-        channel: 'telegram',
-        handled: true,
-        outcome: 'command',
-        conversationId: link.conversationId,
-        replies: [reply],
-      };
-    }
-
-    try {
-      const turn = await this.kernel.runChatTurn({
-        conversationId: link.conversationId,
-        text: update.text,
-        channel: 'telegram',
-      });
-      const chunks = chunkText(turn.text ?? '(no reply)', this.chunkSize);
-      await this.send(update.chatId, chunks);
-      return {
-        channel: 'telegram',
-        handled: true,
-        outcome: 'replied',
-        conversationId: link.conversationId,
-        replies: chunks,
-      };
-    } catch (e) {
-      const reply = `error: ${safeMessage(e)}`;
-      await this.send(update.chatId, [reply]);
-      return {
-        channel: 'telegram',
-        handled: false,
-        outcome: 'error',
-        replies: [reply],
-        error: safeMessage(e),
-      };
-    }
-  }
-
-  /** Send chunks in order (await each so Telegram message order is preserved). */
-  private async send(chatId: string, chunks: string[]): Promise<void> {
-    for (const c of chunks) {
-      await this.sender.sendMessage(chatId, c);
-    }
+    return runChannelUpdate(
+      this.kernel,
+      {
+        channelId: 'telegram',
+        isAllowed: (userId) => this.allowed.has(Number(userId)),
+        send: (chatId, text) => this.sender.sendMessage(chatId, text),
+        chunkSize: this.chunkSize,
+        onDenied: (userId) => {
+          this.droppedUserIds.push(userId);
+        },
+      },
+      update,
+    );
   }
 }

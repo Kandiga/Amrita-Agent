@@ -524,6 +524,8 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'projects.context': projectContextSchema,
   'skills.list': z.array(skillStatusSchema),
 
+  'operator.command': z.object({ reply: z.string() }),
+
   'system.health': systemHealthResultSchema,
   'system.audit': systemAuditResultSchema,
   'system.plan': z.object({ entryId: idSchema, kind: z.string() }),

@@ -414,6 +414,21 @@ export const COMMANDS: Record<string, Command> = {
     },
   },
 
+  op: {
+    describe:
+      'run an operator command (/status /lanes /approvals /approve /deny /stop) — same interpreter as Telegram/WhatsApp',
+    async run(client, { positionals, flags }) {
+      const text = positionals.join(' ').trim();
+      const project = strFlag(flags, 'project');
+      if (!text || !project) {
+        throw new CliError("usage: amrita op '/status' --project <ID_OR_SLUG>");
+      }
+      const projectId = await resolveProjectId(client, project);
+      const r = await client.call<{ reply: string }>('operator.command', { projectId, text });
+      return { result: r, summary: r.reply };
+    },
+  },
+
   'system health': {
     describe: 'Global Amrita health: doctor + per-project brain counts + scheduler heartbeat',
     async run(client) {

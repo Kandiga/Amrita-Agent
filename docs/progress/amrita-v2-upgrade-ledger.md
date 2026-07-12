@@ -719,6 +719,27 @@ One ledger, updated per phase — no scattered notes.
   hostile-text escaping, hash lifecycle + drift, determinism) · web build ok · root
   419/419 · typecheck/lint clean.
 
+## R6 — WhatsApp adapter, shared channel flow, terminal parity (ADR-0037, migration 0007)
+
+- **Date:** 2026-07-12 · roadmap stage R6
+- **What landed:**
+  - **One shared chat-channel flow** (`channels/base.ts`): gate → pair → session
+    resolution → operator commands → chat turn → chunked replies. Telegram now
+    delegates to it; **no channel re-implements a single decision**.
+  - **WhatsApp adapter** (`channels/whatsapp.ts`): official Cloud API surface only;
+    deny-by-default string-id allowlist; full contract-test suite (deny / pair / chat /
+    operator parity / unpaired guidance). **The live webhook runner is NOT bundled** —
+    `channels.list` reports `needs_setup` with the exact env NAMES and states the gap.
+    Nothing faked.
+  - **`whatsapp` in the protocol channel enum** + **migration `0007_whatsapp_channel`**
+    (the events-table CHECK is rebuilt; reversible down refuses if whatsapp rows exist).
+  - **Terminal parity:** `operator.command` RPC + `amrita op '/status' --project <p>` —
+    the same kernel interpreter as Telegram/WhatsApp, proven by a parity assertion.
+  - **One-brain fitness test:** telegram + web turns land in the SAME conversation with
+    per-channel provenance — the no-memory-duplication guarantee is executable.
+- **Verification:** root 425/425 (6 new whatsapp/one-brain tests; migration up/down/up
+  suite extended to 0007) · typecheck/lint clean.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

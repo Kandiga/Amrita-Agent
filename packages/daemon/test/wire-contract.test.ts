@@ -219,6 +219,9 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     });
     await run('conversation.compress', { conversationId: c2.id });
 
+    // R6 (ADR-0037)
+    await run('operator.command', { projectId: p.id, text: '/help' });
+
     // R3 verbs (ADR-0036)
     await run('system.health');
     await run('system.audit', { record: true });

@@ -62,15 +62,15 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000..0006 all apply
-    expect(migrateUp(db)).toBe(7);
-    expect(currentVersion(db)).toBe(6);
+    // up: 0000..0007 all apply
+    expect(migrateUp(db)).toBe(8);
+    expect(currentVersion(db)).toBe(7);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
     // full down: all revert; even the lineage + milestone columns are gone
-    expect(migrateDown(db)).toBe(7);
+    expect(migrateDown(db)).toBe(8);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
@@ -81,8 +81,8 @@ describe('migrations', () => {
     expect(tableNames(db)).not.toContain('project_brands');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(7);
-    expect(currentVersion(db)).toBe(6);
+    expect(migrateUp(db)).toBe(8);
+    expect(currentVersion(db)).toBe(7);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
@@ -90,8 +90,8 @@ describe('migrations', () => {
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → 0002 (FTS) + 0003 (pairings) + 0004 (companion) + 0005 (brand) + 0006 (external ref)
-    expect(migrateDown(db, 1)).toBe(5);
+    // revert only above version 1 → 0002..0007 (FTS, pairings, companion, brand, external ref, whatsapp)
+    expect(migrateDown(db, 1)).toBe(6);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
