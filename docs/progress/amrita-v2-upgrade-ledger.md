@@ -587,6 +587,43 @@ One ledger, updated per phase — no scattered notes.
     functions pass; execution stays in the sibling Aba Adama repo.
 - **Lesson recorded:** phase-done now includes a ledger entry (reorganization checklist).
 
+## R0 — Core closure: wire-contract jurisdiction + governance (ADR-0032)
+
+- **Date:** 2026-07-12 · commits `6601326`/`3753709`/`fc601d2` · roadmap stage R0
+- **What landed:** protocol/rpc.ts rewritten to the REAL transport (rpc envelopes, WS
+  frame union incl. `replayed`, `rpcResultSchemas` covering every RPC method; dead
+  ADR-0009 unions removed; protocol 0.4.0); shared enums exported and every inline copy
+  deleted (roles ×15 → 1; task/auth/milestone/etc. via drizzle `columnEnum`); daemon
+  dispatch parses+strips results on the way out; role-resolution builder deduplicated;
+  apps/web depends on `@amrita/protocol` and parses envelope + per-method results + WS
+  frames; `.claude/rules/` now tracked in git (G-1); spec authority banners (R-7);
+  CLAUDE.md WIP hunk committed (G-3); local branch renamed `main` → `v2-main` (§6 hazard).
+- **Fitness functions:** METHODS↔rpcResultSchemas exact-coverage test; full kernel
+  round-trip contract test; enum-duplication grep clean.
+- **Verification:** root 400/400 · web 65/65 · typecheck/lint clean · web build ok.
+
+## R1 — Project Brain: compression, context probes, skill registry (ADR-0033/0034/0035)
+
+- **Date:** 2026-07-12 · roadmap stage R1
+- **What landed:**
+  - **Compression-as-lineage (ADR-0033):** `conversation.compress` RPC + CLI; child
+    conversation via existing `parent_id` with a deterministic digest `message.system`;
+    parent gets `conversation.compressed` (new event) + `conversation.archived` (now
+    projected — sets `archived_at`); refusals (`empty`, already-archived) map to RPC
+    `conflict`; log stays append-only and replayable.
+  - **Project context probes (ADR-0034):** `daemon/context.ts` — bounded read-only git
+    probes (branch/dirty/ahead-behind/last commit via the injectable prober) + capped
+    file summary; `projects.context` RPC; Brain view "Project context" card; `amrita
+    context`. Honest needs-setup when no root. `knowledge_records` persistence stays
+    deferred per ADR-0027 (no automatic external ingest yet — documented, not skipped).
+  - **Skill registry (ADR-0035):** `protocol/skill.ts` manifest schema — registry entry,
+    deny-by-default permissions, and usage docs are MANDATORY; tiers system (3 real
+    code-registered skills over existing verbs) / shared (`~/.amrita/skills`) / project
+    (`<root>/.amrita/skills`); unregistered/invalid/undocumented dirs are refused and
+    reported; `skills.list` RPC, doctor `skills` section, `amrita skills`.
+- **Verification:** root 408/408 (8 new R1 tests + wire round-trip extended) · web 65/65 ·
+  typecheck/lint clean · web build ok.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

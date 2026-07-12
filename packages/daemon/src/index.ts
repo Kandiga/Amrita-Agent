@@ -1,3 +1,4 @@
+export * from './context.ts';
 export * from './doctor.ts';
 export * from './harness.ts';
 export * from './home.ts';
@@ -5,6 +6,7 @@ export * from './kernel.ts';
 export * from './runtimes.ts';
 export * from './provider.ts';
 export * from './rpc.ts';
+export * from './skills.ts';
 export * from './stdio.ts';
 export * from './http.ts';
 export * from './auth.ts';

@@ -206,6 +206,19 @@ describe('wire-contract round-trip (ADR-0032)', () => {
       report: { mandateId: mandate.mandateId, exit: 'done', summary: 'rendered' },
     });
 
+    // R1 verbs (ADR-0033/0034/0035)
+    await run('projects.context', { projectId: p.id });
+    await run('skills.list', { projectId: p.id });
+    const c2 = (await call('conversation.create', { projectId: p.id, title: 'long one' })) as {
+      id: string;
+    };
+    await call('message.user.record', {
+      projectId: p.id,
+      conversationId: c2.id,
+      text: 'compress me',
+    });
+    await run('conversation.compress', { conversationId: c2.id });
+
     await run('doctor');
 
     const missed = Object.keys(METHODS).filter((m2) => !exercised.has(m2));

@@ -333,6 +333,87 @@ export const COMMANDS: Record<string, Command> = {
     },
   },
 
+  'conversation compress': {
+    describe: 'compress a conversation into a lineage child with a digest (ADR-0033)',
+    async run(client, { positionals }) {
+      const id = positionals[0];
+      if (!id) throw new CliError('usage: amrita conversation compress <CONVERSATION_ID>');
+      const r = await client.call<{
+        childConversationId: string;
+        summary: string;
+        messageCount: number;
+      }>('conversation.compress', { conversationId: id });
+      return {
+        result: r,
+        summary: `compressed ${r.messageCount} messages -> child ${r.childConversationId} (parent archived)`,
+      };
+    },
+  },
+
+  context: {
+    describe: 'read-only project context: git + files, bounded probes (ADR-0034)',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      if (!project) throw new CliError('usage: amrita context --project <ID_OR_SLUG>');
+      const projectId = await resolveProjectId(client, project);
+      const c = await client.call<{
+        configured: boolean;
+        root: string | null;
+        exists: boolean;
+        git: {
+          isRepo: boolean;
+          branch?: string;
+          dirtyCount?: number;
+          ahead?: number;
+          behind?: number;
+          lastCommit?: string;
+        } | null;
+        files: { totalFiles: number; truncated: boolean } | null;
+      }>('projects.context', { projectId });
+      if (!c.configured) {
+        return {
+          result: c,
+          summary:
+            'no project root configured — set one with `amrita project ensure <slug> <name> --root <PATH>`',
+        };
+      }
+      if (!c.exists) {
+        return { result: c, summary: `root ${c.root} does not exist on this machine` };
+      }
+      const lines = [`root ${c.root}`];
+      if (c.git?.isRepo) {
+        const bits = [
+          `branch ${c.git.branch ?? '?'}`,
+          c.git.dirtyCount !== undefined ? `dirty ${c.git.dirtyCount}` : null,
+          c.git.ahead !== undefined ? `ahead ${c.git.ahead}` : null,
+          c.git.behind !== undefined ? `behind ${c.git.behind}` : null,
+        ].filter(Boolean);
+        lines.push(`git: ${bits.join(' · ')}`);
+        if (c.git.lastCommit) lines.push(`last: ${c.git.lastCommit}`);
+      } else {
+        lines.push('git: not a repository');
+      }
+      if (c.files) {
+        lines.push(`files: ${c.files.totalFiles}${c.files.truncated ? '+ (truncated scan)' : ''}`);
+      }
+      return { result: c, summary: lines.join('\n') };
+    },
+  },
+
+  skills: {
+    describe: 'the skill registry (ADR-0035): system/shared/project tiers, honest states',
+    async run(client, { flags }) {
+      const project = strFlag(flags, 'project');
+      const projectId = project ? await resolveProjectId(client, project) : undefined;
+      const rows = await client.call<
+        { name: string; tier: string; state: string; detail: string; source: string }[]
+      >('skills.list', projectId ? { projectId } : {});
+      const mark = (s: string) => (s === 'active' ? 'OK ' : 'WARN');
+      const lines = rows.map((r) => `${mark(r.state)} ${r.tier.padEnd(7)} ${r.name}  ${r.detail}`);
+      return { result: rows, summary: lines.join('\n') || '(no skills)' };
+    },
+  },
+
   'message user': {
     describe: 'record a user message in a conversation',
     async run(client, { positionals }) {

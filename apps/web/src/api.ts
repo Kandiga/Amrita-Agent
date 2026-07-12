@@ -30,11 +30,13 @@ import {
   type ProjectBrain,
   type ProjectBrandRowWire,
   type ProjectBriefRowWire,
+  type ProjectContextWire,
   type ProviderCatalogEntryWire,
   type ProviderRole,
   type RiskRowWire,
   type RoleResolution,
   type RuntimeStatusWire,
+  type SkillStatus,
   parseRpcResult,
   rpcResponseSchema,
   sealedEventShellSchema,
@@ -108,6 +110,8 @@ export type MaintenanceEventLite = MaintenanceEvent;
 export type HarnessTopologyLite = HarnessTopology;
 export type HarnessAgentLite = HarnessTopology['agents'][number];
 export type ProjectBrainLite = ProjectBrain;
+export type ProjectContextLite = ProjectContextWire;
+export type SkillStatusLite = SkillStatus;
 
 /** Live connector status (ADR-0022). `connected` only ever follows a real probe. */
 export type ConnectorStatusLite = ConnectorStatusReport;
@@ -436,6 +440,16 @@ export class RpcClient {
     source?: string;
   }): Promise<{ entryId: string; kind: string }> {
     return this.call<{ entryId: string; kind: string }>('harness.capture', params);
+  }
+
+  /** Read-only project context: git + files, bounded probes (ADR-0034). */
+  projectContext(projectId: string): Promise<ProjectContextLite> {
+    return this.call<ProjectContextLite>('projects.context', { projectId });
+  }
+
+  /** The skill registry (ADR-0035): register + gate, never execute. */
+  skillsList(projectId?: string): Promise<SkillStatusLite[]> {
+    return this.call<SkillStatusLite[]>('skills.list', projectId ? { projectId } : {});
   }
 
   // ── connectors + GitHub import (ADR-0022) ───────────────────────────────

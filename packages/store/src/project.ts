@@ -23,6 +23,17 @@ type Bind = string | number | null;
  */
 export function applyEventProjection(db: DB, ev: AmritaEvent): void {
   switch (ev.type) {
+    // ── conversation lifecycle ────────────────────────────────────────────
+    // Activated by ADR-0033 (compression archives the parent conversation).
+    case 'conversation.archived': {
+      db.prepare('UPDATE conversations SET archived_at = ?, updated_at = ? WHERE id = ?').run(
+        ev.ts,
+        ev.ts,
+        ev.conversationId,
+      );
+      return;
+    }
+
     // ── transcript: every message.* materializes one row (id == event id) ──
     case 'message.user':
     case 'message.agent':

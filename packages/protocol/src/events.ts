@@ -128,6 +128,15 @@ export const eventPayloads = {
   'conversation.created': z.object({ title: z.string().optional() }).strict(),
   'conversation.renamed': z.object({ title: z.string() }).strict(),
   'conversation.archived': empty,
+  // Compression-as-lineage (ADR-0033): emitted on the PARENT; the child carries
+  // the digest as its first message.system. Parent is archived in the same flow.
+  'conversation.compressed': z
+    .object({
+      childConversationId: idSchema,
+      summary: z.string().min(1).max(4000),
+      messageCount: z.number().int().positive(),
+    })
+    .strict(),
 
   // messages
   'message.user': z

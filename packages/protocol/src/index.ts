@@ -6,5 +6,6 @@ export * from './rpc.ts';
 export * from './secrets.ts';
 export * from './connector.ts';
 export * from './harness.ts';
+export * from './skill.ts';
 export * from './cinema.ts';
 export * from './cinema-audio.ts';

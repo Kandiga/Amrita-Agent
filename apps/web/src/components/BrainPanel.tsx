@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { HarnessTopologyLite, KnowledgeRecordLite, ProjectBrainLite } from '../api.ts';
+import type {
+  HarnessTopologyLite,
+  KnowledgeRecordLite,
+  ProjectBrainLite,
+  ProjectContextLite,
+} from '../api.ts';
 import { client } from '../client.ts';
 import {
   SOURCE_STATUS_LABEL,
@@ -33,6 +38,7 @@ interface BrainPanelProps {
  */
 export function BrainPanel({ projectId, writeCtx, onError }: BrainPanelProps) {
   const [brain, setBrain] = useState<ProjectBrainLite | null>(null);
+  const [context, setContext] = useState<ProjectContextLite | null>(null);
   const [topology, setTopology] = useState<HarnessTopologyLite | null>(null);
   const [draft, setDraft] = useState({
     kind: 'decision' as KnowledgeRecordLite['kind'],
@@ -48,6 +54,7 @@ export function BrainPanel({ projectId, writeCtx, onError }: BrainPanelProps) {
     if (!projectId) return;
     try {
       setBrain(await client.harnessBrain(projectId));
+      setContext(await client.projectContext(projectId));
     } catch (e) {
       onError(e);
     }
@@ -119,6 +126,53 @@ export function BrainPanel({ projectId, writeCtx, onError }: BrainPanelProps) {
           </p>
         ) : (
           <p className="empty-note">Loading the brain…</p>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Project context</h2>
+        <p className="hub-note">
+          Read-only, bounded probes of the project's working tree (ADR-0034) — git state and a file
+          summary. Paths and counts only.
+        </p>
+        {!context ? (
+          <p className="empty-note">Probing…</p>
+        ) : !context.configured ? (
+          <p className="empty-note">
+            No project root configured — set one with{' '}
+            <code className="hub-cmd">
+              amrita project ensure &lt;slug&gt; &lt;name&gt; --root &lt;PATH&gt;
+            </code>
+          </p>
+        ) : !context.exists ? (
+          <p className="empty-note">
+            Root <code>{context.root}</code> does not exist on the daemon's machine.
+          </p>
+        ) : (
+          <div className="hub-runtime">
+            <p className="hub-detail">
+              root <code>{context.root}</code>
+            </p>
+            <p className="hub-detail">
+              {context.git?.isRepo
+                ? `git: ${context.git.branch ?? '?'}${
+                    context.git.dirtyCount !== undefined ? ` · ${context.git.dirtyCount} dirty` : ''
+                  }${context.git.ahead !== undefined ? ` · ahead ${context.git.ahead}` : ''}${
+                    context.git.behind !== undefined ? ` · behind ${context.git.behind}` : ''
+                  }`
+                : 'git: not a repository'}
+            </p>
+            {context.git?.lastCommit ? (
+              <p className="hub-detail">last: {context.git.lastCommit}</p>
+            ) : null}
+            {context.files ? (
+              <p className="hub-detail">
+                files: {context.files.totalFiles}
+                {context.files.truncated ? '+ (truncated scan)' : ''} across{' '}
+                {context.files.topDirs.length} top-level dirs
+              </p>
+            ) : null}
+          </div>
         )}
       </section>
 

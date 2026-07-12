@@ -9,7 +9,9 @@ import {
   type KnowledgeSource,
   type MergeReport,
   type ProjectBrain,
+  type ProjectContextWire,
   type ProjectRow,
+  type SkillStatus,
   type UnsealedEvent,
   cinemaMandateReportSchema,
   cinemaMandateSchema,
@@ -47,6 +49,7 @@ import {
   openStore,
 } from '@amrita/store';
 import { connectorStatuses } from './connectors.ts';
+import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
 import { fetchGithubIssues } from './github.ts';
 import {
   HARNESS_TOPOLOGY,
@@ -87,6 +90,7 @@ import {
   getClaudeCodeStatus,
   getRuntimesStatus,
 } from './runtimes.ts';
+import { loadSkillStatuses } from './skills.ts';
 import { clean } from './util.ts';
 
 /** A chat turn request. */
@@ -213,6 +217,27 @@ interface LaneSettleResult {
 
 /** Catalog probes run at a human moment (the chooser) — give the CLI real time. */
 const CATALOG_PROBE_TIMEOUT_MS = 10_000;
+
+/** Deterministic compression digest (ADR-0033): counts + span + last messages. */
+export function buildCompressionDigest(
+  title: string | null,
+  messages: { role: string; text: string; createdAt: string }[],
+): string {
+  const users = messages.filter((m) => m.role === 'user').length;
+  const agents = messages.filter((m) => m.role === 'agent').length;
+  const first = messages[0];
+  const last = messages[messages.length - 1];
+  const lines = [
+    `Compressed continuation of "${title ?? 'conversation'}" — ${messages.length} messages ` +
+      `(${users} user / ${agents} agent) between ${first?.createdAt ?? '?'} and ${last?.createdAt ?? '?'}.`,
+    'Recent context:',
+    ...messages.slice(-5).map((m) => {
+      const text = m.text.length > 200 ? `${m.text.slice(0, 200)}…` : m.text;
+      return `- [${m.role}] ${text.replace(/\s+/g, ' ')}`;
+    }),
+  ];
+  return lines.join('\n').slice(0, 4000);
+}
 
 /** Parse a `:`-separated list of workspace roots (e.g. `AMRITA_LANES_ALLOWED_ROOTS`). */
 function parseAllowedRoots(value: string | undefined): string[] {
@@ -412,6 +437,97 @@ export class AmritaKernel {
 
   listEvents(conversationId: string, sinceSeq?: number): AmritaEvent[] {
     return this.store.getEvents(conversationId, sinceSeq ?? 0);
+  }
+
+  /**
+   * Compress a conversation into a lineage child (ADR-0033): the child starts
+   * with a deterministic digest as `message.system`, the parent records
+   * `conversation.compressed` and is archived. The log is never rewritten.
+   */
+  compressConversation(conversationId: string): {
+    childConversationId: string;
+    summary: string;
+    messageCount: number;
+  } {
+    const conv = this.store.getConversation(conversationId);
+    if (!conv) throw new Error(`no such conversation: ${conversationId}`);
+    if (conv.archivedAt) {
+      throw new Error(
+        `conflict: conversation ${conversationId} is already archived — continue in its compression child`,
+      );
+    }
+    const messages = this.store.listMessages(conversationId);
+    if (messages.length === 0) {
+      throw new Error('conflict: nothing to compress — the conversation has no messages');
+    }
+    const summary = buildCompressionDigest(conv.title, messages);
+    const child = this.store.createConversation({
+      projectId: conv.projectId,
+      title: `${conv.title ?? 'conversation'} · continued`,
+      parentId: conversationId,
+    });
+    this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId: conv.projectId,
+      conversationId: child.id,
+      origin: 'system',
+      type: 'message.system',
+      payload: { text: summary },
+    } as UnsealedEvent);
+    this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId: conv.projectId,
+      conversationId,
+      origin: 'system',
+      type: 'conversation.compressed',
+      payload: { childConversationId: child.id, summary, messageCount: messages.length },
+    } as UnsealedEvent);
+    this.store.appendEvent({
+      id: newId(),
+      ts: new Date().toISOString(),
+      projectId: conv.projectId,
+      conversationId,
+      origin: 'system',
+      type: 'conversation.archived',
+      payload: {},
+    } as UnsealedEvent);
+    return { childConversationId: child.id, summary, messageCount: messages.length };
+  }
+
+  /** Read-only project context: git + files, bounded probes (ADR-0034). */
+  async getProjectContext(projectId: string): Promise<ProjectContextWire> {
+    const project = this.store.getProject(projectId);
+    if (!project) throw new Error(`no such project: ${projectId}`);
+    if (!project.root) {
+      return { projectId, configured: false, root: null, exists: false, git: null, files: null };
+    }
+    if (!rootExists(project.root)) {
+      return {
+        projectId,
+        configured: true,
+        root: project.root,
+        exists: false,
+        git: null,
+        files: null,
+      };
+    }
+    const git = await probeGitContext(project.root, this.codingRuntimeProber ?? undefined);
+    return {
+      projectId,
+      configured: true,
+      root: project.root,
+      exists: true,
+      git,
+      files: summarizeFiles(project.root),
+    };
+  }
+
+  /** The skill registry (ADR-0035): register + gate, never execute. */
+  listSkills(projectId?: string): SkillStatus[] {
+    const root = projectId ? (this.store.getProject(projectId)?.root ?? undefined) : undefined;
+    return loadSkillStatuses(root ? { projectRoot: root } : {});
   }
 
   // ── chat turn + providers ────────────────────────────────────────────────

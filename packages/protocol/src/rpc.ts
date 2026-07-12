@@ -29,6 +29,7 @@ import {
 import { harnessTopologySchema, knowledgeSourceSchema, projectBrainSchema } from './harness.ts';
 import { idSchema, isoTimestampSchema } from './ids.ts';
 import { mergeReportSchema } from './lane.ts';
+import { skillStatusSchema } from './skill.ts';
 
 /**
  * The daemon↔client wire contract (ADR-0032). This module describes the REAL
@@ -340,6 +341,43 @@ export const cinemaMandateRowSchema = z.object({
   report: cinemaMandateReportSchema.optional(),
 });
 
+/** Compression result (ADR-0033): the child continues; the parent is archived. */
+export const compressResultSchema = z.object({
+  childConversationId: idSchema,
+  summary: z.string().min(1).max(4000),
+  messageCount: z.number().int().positive(),
+});
+export type CompressResultWire = z.infer<typeof compressResultSchema>;
+
+/** Read-only, bounded project context probe (ADR-0034). Paths + counts only. */
+export const projectGitContextSchema = z.object({
+  isRepo: z.boolean(),
+  branch: z.string().optional(),
+  dirtyCount: z.number().int().nonnegative().optional(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  lastCommit: z.string().optional(),
+});
+export type ProjectGitContext = z.infer<typeof projectGitContextSchema>;
+
+export const projectFilesContextSchema = z.object({
+  totalFiles: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  topDirs: z.array(z.object({ name: z.string(), files: z.number().int().nonnegative() })).max(40),
+});
+export type ProjectFilesContext = z.infer<typeof projectFilesContextSchema>;
+
+export const projectContextSchema = z.object({
+  projectId: idSchema,
+  /** False = no root configured — honest needs-setup, not an invented tree. */
+  configured: z.boolean(),
+  root: z.string().nullable(),
+  exists: z.boolean(),
+  git: projectGitContextSchema.nullable(),
+  files: projectFilesContextSchema.nullable(),
+});
+export type ProjectContextWire = z.infer<typeof projectContextSchema>;
+
 // ── the method → result contract map (full coverage; see ADR-0032) ──────────
 
 const sealedEventListSchema = z.array(sealedEventShellSchema);
@@ -365,6 +403,7 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'conversation.tree': z.array(conversationNodeSchema),
   'conversation.get': conversationNodeSchema.nullable(),
   'conversation.list': z.array(conversationNodeSchema),
+  'conversation.compress': compressResultSchema,
 
   'message.user.record': z.object({ messageId: idSchema, event: sealedEventShellSchema }),
   'events.list': sealedEventListSchema,
@@ -430,6 +469,9 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'harness.sources': z.array(knowledgeSourceSchema),
   'harness.brain': projectBrainSchema,
   'harness.capture': z.object({ entryId: idSchema, kind: z.string() }),
+
+  'projects.context': projectContextSchema,
+  'skills.list': z.array(skillStatusSchema),
 
   'channels.list': z.array(channelStatusEntrySchema),
   'channels.pairing.create': pairingRowSchema,

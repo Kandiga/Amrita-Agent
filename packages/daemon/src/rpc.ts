@@ -141,6 +141,10 @@ export const METHODS: Record<string, RpcMethod> = {
   'conversation.list': def(z.object({ projectId: z.string() }), (k, p) =>
     k.listConversations(p.projectId),
   ),
+  // Compression-as-lineage (ADR-0033).
+  'conversation.compress': def(z.object({ conversationId: z.string() }), (k, p) =>
+    k.compressConversation(p.conversationId),
+  ),
 
   'message.user.record': def(
     z.object({
@@ -535,6 +539,16 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.captureKnowledge(clean(p)),
   ),
 
+  // Read-only project context probe (ADR-0034).
+  'projects.context': def(z.object({ projectId: z.string() }), (k, p) =>
+    k.getProjectContext(p.projectId),
+  ),
+
+  // The skill registry (ADR-0035): register + gate, never execute.
+  'skills.list': def(z.object({ projectId: z.string().optional() }).optional(), (k, p) =>
+    k.listSkills(p?.projectId),
+  ),
+
   // Honest readiness: `ready` only when the surface actually works end-to-end
   // from THIS daemon right now. Telegram is ready only while its runner is live.
   'channels.list': def(z.object({}).optional(), (k) => [
@@ -619,6 +633,7 @@ export const METHOD_NAMES: readonly string[] = Object.keys(METHODS);
 function classify(message: string): RpcErrorCode {
   if (/no such|not found/i.test(message)) return 'not_found';
   if (/not a safe env-var|refusing to bind/i.test(message)) return 'invalid_params';
+  if (/^conflict:/i.test(message)) return 'conflict';
   return 'internal';
 }
 

@@ -406,6 +406,31 @@ function authSection(): DoctorSection {
  * ordered home → store → providers → runtimes → lanes → channels → connectors →
  * auth so the operator reads "where things live" before "what's wired".
  */
+/** Skill registry health (ADR-0035): counts + honest warnings for refused dirs. */
+function skillsSection(kernel: AmritaKernel): DoctorSection {
+  const rows = kernel.listSkills();
+  const active = rows.filter((r) => r.state === 'active').length;
+  const refused = rows.filter((r) => r.state !== 'active');
+  const checks: DoctorCheck[] = [
+    {
+      id: 'skills.registry',
+      label: 'skill registry',
+      status: 'ok',
+      detail: `${active} registered (${rows.filter((r) => r.tier === 'system').length} system) — registry gates only; no executor exists yet`,
+    },
+  ];
+  for (const r of refused.slice(0, 5)) {
+    checks.push({
+      id: `skills.${r.tier}.${r.name}`,
+      label: `skill ${r.name} (${r.tier})`,
+      status: 'warn',
+      detail: r.detail,
+      fix: 'add a valid skill.json (name/tier/version/description/owner/permissions/usage) — see ADR-0035',
+    });
+  }
+  return { title: 'skills', checks };
+}
+
 export async function runDoctor(kernel: AmritaKernel): Promise<DoctorReport> {
   const runtimes = await kernel.getCodingRuntimes();
   const sections = [
@@ -417,6 +442,7 @@ export async function runDoctor(kernel: AmritaKernel): Promise<DoctorReport> {
     channelSection(),
     connectorSection(),
     await cinemaSection(),
+    skillsSection(kernel),
     authSection(),
   ];
   const all = sections.flatMap((s) => s.checks);
