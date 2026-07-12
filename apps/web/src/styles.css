@@ -1590,8 +1590,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-inline-start: 18px;
-  padding-inline-end: 6px;
+  margin-inline-start: 12px;
+  padding-inline-end: 4px;
 }
 .session-row {
   display: flex;
@@ -1605,6 +1605,9 @@ code {
 .session-open {
   flex: 1;
   min-width: 0;
+  max-width: 100%;
+  direction: ltr;
+  text-align: left;
   background: none;
   border: none;
   text-align: start;

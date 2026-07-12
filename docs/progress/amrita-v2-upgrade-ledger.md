@@ -838,6 +838,16 @@ One ledger, updated per phase — no scattered notes.
   browser QA on the public link (sessions tree, compress round-trip, canvas open/close,
   mobile overlay).
 
+## Settings as a full claude.ai-style page (directive round 3 — completion)
+
+- **Date:** 2026-07-12 · commit `c38a7c1` — closes the one item the previous entry left
+  honest-open: Settings moved out of the inspector into the main column, claude.ai
+  pattern: serif page title, LEFT SUB-NAVIGATION (Amrita brain / Providers / Coding
+  runtimes / Connectors), one content pane per section; the desktop grid drops the
+  inspector column while open; mobile renders the nav as pill chips on the Settings tab.
+- **Verification:** web 74/74 · build ok · live QA on the public link: nav sections
+  switch (screenshot desktop + providers + mobile), mobile horizontal scroll false.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
