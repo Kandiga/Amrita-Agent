@@ -49,9 +49,9 @@ export function SurfacePanel({ artifacts, onApprovePreview }: SurfacePanelProps)
               </article>
             );
           }
-          if (a.kind === 'html-preview') {
+          if (a.kind === 'html-preview' || a.kind === 'design-page') {
             const sandboxed = buildSandboxedPreview({
-              kind: 'html-preview',
+              kind: a.kind,
               id: a.id,
               projectId: a.projectId,
               title: a.title,
@@ -60,7 +60,9 @@ export function SurfacePanel({ artifacts, onApprovePreview }: SurfacePanelProps)
             return (
               <article key={a.id} className="artifact artifact-preview">
                 <div className="preview-head">
-                  <span className="artifact-kind">preview</span>
+                  <span className="artifact-kind">
+                    {a.kind === 'design-page' ? 'design' : 'preview'}
+                  </span>
                   <span className={`doc-badge preview-${a.status}`}>{a.status}</span>
                 </div>
                 <iframe

@@ -697,6 +697,28 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** web 66/66 (+1 mode-mapping test) · web build ok · root 419/419 ·
   typecheck/lint clean.
 
+## R5 — Design Runtime: the first design ArtifactSpec (`design-page`)
+
+- **Date:** 2026-07-12 · roadmap stage R5 (no protocol/store change — extends the
+  ADR-0020 preview-approval seam and the Stage-B sandbox exactly as designed)
+- **What landed:**
+  - **`design-page` artifact**: a full brand-aware page design — header with brand
+    identity, hero from the brief goal, scope cards, milestones strip — rendered by a
+    deterministic renderer over typed state. Brand palette/typography tokens applied;
+    brand-less projects say "neutral design", never an invented identity.
+  - **Interactive, confined**: section navigation via a self-contained inline script;
+    renders ONLY inside the Stage-B sandbox (allow-scripts, zero-network CSP,
+    no-same-origin) — zero external references, everything escaped.
+  - **Same approval lifecycle**: proposed → approved keyed to the exact content hash
+    (`preview_approvals`, id `design-page:<projectId>`); any state drift demotes back
+    to proposed. Never auto-approved.
+  - Original system: the flyer-cookbook lesson (deterministic HTML/CSS typesetting)
+    imported as METHOD; Open Design remains inspiration only. `design-animation` /
+    `design-asset-board` kinds are the documented next steps, not stubs.
+- **Verification:** web 70/70 (+4 design-runtime tests: brand tokens, interactivity,
+  hostile-text escaping, hash lifecycle + drift, determinism) · web build ok · root
+  419/419 · typecheck/lint clean.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

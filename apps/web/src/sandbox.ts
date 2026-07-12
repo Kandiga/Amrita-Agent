@@ -30,7 +30,7 @@ export const PREVIEW_CSP =
 export const MAX_PREVIEW_BYTES = 256 * 1024;
 
 export interface HtmlPreviewSpec {
-  kind: 'html-preview';
+  kind: 'html-preview' | 'design-page';
   id: string;
   projectId: string;
   title: string;

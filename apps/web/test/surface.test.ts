@@ -37,7 +37,7 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
 
   it('a brief becomes a brief-summary artifact with provenance (plus its preview)', () => {
     const artifacts = buildSurfaceArtifacts(base({ brief }));
-    expect(artifacts.map((a) => a.kind)).toEqual(['brief-summary', 'html-preview']);
+    expect(artifacts.map((a) => a.kind)).toEqual(['brief-summary', 'html-preview', 'design-page']);
     expect(artifacts[0]).toMatchObject({
       kind: 'brief-summary',
       id: 'brief-summary:P1',
@@ -188,10 +188,97 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
       'brief-summary',
       'milestone-board',
       'html-preview',
+      'design-page',
     ]);
     // determinism: same inputs, same output
     expect(
       buildSurfaceArtifacts(base({ brief, milestones: [milestone({ id: 'M1', title: 'Alpha' })] })),
     ).toEqual(artifacts);
+  });
+});
+
+describe('design runtime (R5 — design-page)', () => {
+  it('derives a brand-aware, interactive design-page when a brief exists', () => {
+    const artifacts = buildSurfaceArtifacts(
+      base({
+        brief,
+        brand: {
+          projectId: 'P1',
+          name: 'Nimbus',
+          audience: null,
+          tone: 'premium, calm',
+          styleNotes: [],
+          palette: ['#0EA5E9 cyan accents'],
+          typography: null,
+          doNotUse: [],
+          sourceMessageId: null,
+          createdAt: '2026-06-11T09:00:00.000Z',
+          updatedAt: '2026-06-11T10:00:00.000Z',
+        },
+        milestones: [milestone({ id: 'M1', title: 'Alpha', status: 'active' })],
+      }),
+    );
+    const page = artifacts.find((a) => a.kind === 'design-page');
+    if (page?.kind !== 'design-page') throw new Error('expected design-page');
+    expect(page.title).toBe('Nimbus — page design');
+    expect(page.html).toContain('#0EA5E9'); // brand accent applied
+    expect(page.html).toContain('ship the CRM'); // brief goal in the hero
+    expect(page.html).toContain('Alpha'); // milestones section
+    expect(page.html).toContain('<script>'); // self-contained interactivity
+    expect(page.html).not.toContain('http'); // zero network references
+    expect(page.status).toBe('proposed'); // never auto-approved
+  });
+
+  it('no brief -> no design page (design needs real intent, not sample data)', () => {
+    expect(buildSurfaceArtifacts(base()).some((a) => a.kind === 'design-page')).toBe(false);
+  });
+
+  it('escapes hostile project text and follows the hash-approval lifecycle', () => {
+    const hostile = buildSurfaceArtifacts(
+      base({ brief: { ...brief, goal: '<script>alert(1)</script>' } }),
+    ).find((a) => a.kind === 'design-page');
+    if (hostile?.kind !== 'design-page') throw new Error('expected design-page');
+    expect(hostile.html).toContain('&lt;script&gt;alert'); // escaped, not executable
+    // approval keyed to the EXACT hash; drift demotes honestly
+    const approved = buildSurfaceArtifacts(
+      base({
+        brief,
+        previewApprovals: [
+          {
+            projectId: 'P1',
+            previewId: 'design-page:P1',
+            contentHash: (
+              buildSurfaceArtifacts(base({ brief })).find((a) => a.kind === 'design-page') as {
+                contentHash: string;
+              }
+            ).contentHash,
+            sourceMessageId: null,
+            approvedAt: '2026-06-11T11:00:00.000Z',
+          },
+        ],
+      }),
+    ).find((a) => a.kind === 'design-page');
+    expect(approved?.kind === 'design-page' && approved.status).toBe('approved');
+    const drifted = buildSurfaceArtifacts(
+      base({
+        brief: { ...brief, goal: 'ship the CRM v3' },
+        previewApprovals: [
+          {
+            projectId: 'P1',
+            previewId: 'design-page:P1',
+            contentHash: 'stale-hash',
+            sourceMessageId: null,
+            approvedAt: '2026-06-11T11:00:00.000Z',
+          },
+        ],
+      }),
+    ).find((a) => a.kind === 'design-page');
+    expect(drifted?.kind === 'design-page' && drifted.status).toBe('proposed');
+  });
+
+  it('is deterministic: same inputs, same html and hash', () => {
+    const a = buildSurfaceArtifacts(base({ brief })).find((x) => x.kind === 'design-page');
+    const b = buildSurfaceArtifacts(base({ brief })).find((x) => x.kind === 'design-page');
+    expect(a).toEqual(b);
   });
 });
