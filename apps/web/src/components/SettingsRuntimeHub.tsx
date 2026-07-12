@@ -172,15 +172,6 @@ export function SettingsRuntimeHub({
     if (focusAccess && accessSlot) setSection('access');
   }, [focusAccess, accessSlot]);
 
-  if (!status) {
-    return (
-      <section className="card">
-        <h2>Runtime settings</h2>
-        <p className="empty-note">Loading runtime status…</p>
-      </section>
-    );
-  }
-
   const NAV: { id: typeof section; label: string; hint: string }[] = [
     { id: 'brain', label: 'Amrita brain', hint: 'which model thinks for each role' },
     { id: 'providers', label: 'Providers', hint: 'every brain Amrita knows, honest states' },
@@ -190,6 +181,42 @@ export function SettingsRuntimeHub({
       ? [{ id: 'access' as const, label: 'Access', hint: 'runtime token for this browser' }]
       : []),
   ];
+
+  // No runtime status yet — the nav and the Access section MUST stay reachable:
+  // the most common reason status can't load is exactly a missing token, and
+  // entering the token happens in Access. Never gate the door behind the lock.
+  if (!status) {
+    return (
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Settings sections">
+          {NAV.map((n) => (
+            <button
+              type="button"
+              key={n.id}
+              className={section === n.id ? 'active' : ''}
+              title={n.hint}
+              onClick={() => setSection(n.id)}
+            >
+              {n.label}
+            </button>
+          ))}
+        </nav>
+        <div className="settings-content">
+          {section === 'access' && accessSlot ? (
+            accessSlot
+          ) : (
+            <section className="card">
+              <h2>Runtime settings</h2>
+              <p className="empty-note">
+                Loading runtime status… If this never finishes, the runtime probably needs your
+                access token — open the <strong>Access</strong> section.
+              </p>
+            </section>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="settings-layout">

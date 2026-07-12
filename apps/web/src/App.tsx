@@ -809,6 +809,7 @@ export function App() {
             <div className="settings-page">
               <h1 className="settings-title">Settings</h1>
               <SettingsRuntimeHub
+                key={authToken ?? 'no-token'}
                 projectId={selectedProject?.id}
                 projectName={selectedProject?.name}
                 writeCtx={writeCtx}
