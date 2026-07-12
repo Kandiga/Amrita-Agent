@@ -561,3 +561,66 @@ One ledger, updated per phase — no scattered notes.
   extraction agents are `planned`; the brain-cited answer-agent (Ask-Amrita-from-the-brain with
   citations) is `planned` — today's chat answers are not yet brain-cited; duplicate-merge and
   automated contradiction resolution beyond markers/superseded are future.
+
+## Cinema stream — module federation (ADR-0028…0031) — BACKFILLED
+
+- **Date range:** 2026-06-18…2026-07-06 · **Backfilled:** 2026-07-12 (audit finding G-2 —
+  this stream shipped with receipts only in commit messages, violating the one-ledger rule;
+  reconstructed here from commits `9a14f20`…`99ac653` and the four ADRs).
+- **What landed (by commit):**
+  - `9a14f20` ADR-0028 — cinema module contract: `protocol/src/cinema.ts` (delegated
+    action/video-op verb subset, project digest with in-schema byte cap, mandate shapes);
+    zod 3→4 upgrade; protocol became a buildable/packable package for the sibling repo.
+  - `e54d616` — `cinema.chat` + `cinema.assetAnalysis` RPC verbs: thin authenticated proxy
+    to the module brain (brain-bridge :8799); module stays payload authority.
+  - `1361f2d` — cinema provider honesty merge: `cinema.providers` RPC + per-provider
+    doctor rows computed from the bridge's own /health (no probe → no green).
+  - `1698ebf` — cinema contract 0.1.1: batch-generate plan kind.
+  - `9d91d71` — browser CORS (deny-by-default allowlist; local pages only by default) +
+    Cinema module runbook (`docs/cinema-module.md`).
+  - `644f127` ADR-0029 — cinema mandates: `module.mandate.issued/resolved` events,
+    derived open/resolved projection, `cinema.mandate.*` RPC.
+  - `ff498bc` ADR-0030 — cinema knowledge ingest: `module` source kind; cinema memory →
+    `project-context` brain records; `cinema-extractor` agent active in the harness.
+  - `99ac653` ADR-0031 — video-grounded audio authority Phase 0: `cinema-audio.ts`
+    contracts (605 LOC) + tests; feature implementation explicitly blocked until fitness
+    functions pass; execution stays in the sibling Aba Adama repo.
+- **Lesson recorded:** phase-done now includes a ledger entry (reorganization checklist).
+
+## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
+
+- **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
+- **Known gap this entry does NOT fix:** the Cinema stream (ADR-0028…0031, commits
+  `9a14f20`…`99ac653`) still has no ledger entries of its own — recorded as audit finding
+  G-2; backfill is roadmap stage R0.
+- **What landed:**
+  - `docs/AMRITA_ROOT_CAUSE_AUDIT.md` — full intended-vs-actual system map with file:line
+    evidence. Baseline: typecheck/lint green, **396/396 tests** at `99ac653`. Headline
+    findings: the protocol constitution stops at the store (web↔daemon RPC results + WS
+    frames cross unparsed, `as T`; 28 hand-typed `*Lite` shapes); role/entity enums
+    re-declared up to 15× because protocol keeps them private and `daemon/rpc.ts` imports
+    nothing from the protocol; `.claude/rules/` product-direction files are **not in git**
+    (`.gitignore` ignores `.claude/` — contradicts CLAUDE.md and this ledger's own Phase-6
+    claim); ledger stale since Phase 17; 12 commits unpushed; remote branch layout shares
+    one repo with frozen v0.1 (`main` = v0.1 — push hazard); zero tags.
+  - `docs/HERMES_INSPIRATION_RESEARCH.md` — mechanics of the installed Hermes 0.18.0
+    (memory layers incl. two-file curated memory + compaction-as-child-session, dual hook
+    systems, in-gateway cron, two-signal heartbeat, ~70 slash commands + per-channel ACL,
+    session-key channel identity, profiles-as-isolated-brains, skills/curator, doctor/
+    update). Includes corrections to `hermes-parity-roadmap.md` (cron understated, memory
+    misframed as RAG, MCP outdated) and an adoption shortlist.
+  - `docs/strategy/reorganization-master-plan.md` — STORM-planned phases 3–8: Project
+    Brain + skill registry (System/Shared/Project, mandatory registry/permissions/docs),
+    Preview Windows incl. Claude-CLI remote (lane-console over the lane contract),
+    native Design Runtime, Global Amrita + System Brain (reserved system project,
+    two-signal heartbeat, typed cron), multi-channel (operator-service extraction first,
+    session-key identity, WhatsApp official-API-only), repo governance (branch rename,
+    tags, changelog, rollback, phase-done checklist), and the staged roadmap R0–R6.
+    **Binding rule recorded: no preview/canvas/design features before R0–R1 close.**
+- **Verification:** full gates run this session (typecheck ✓ · lint ✓ · test 396/396 ✓);
+  git/remote state verified against `git ls-remote`; Hermes claims read from the live
+  install at `/usr/local/lib/hermes-agent` + `/root/.hermes` (read-only, no secret values).
+- **Explicitly not done (needs approval):** committing/pushing anything, branch rename,
+  tags, tracking `.claude/rules/`, resolving the CLAUDE.md WIP hunk — all sequenced in R0.
+- **Next:** R0 slice 1 — ADR for protocol RPC-result schemas + WS frame union, then the
+  enum-export sweep (master plan §7/§9).
