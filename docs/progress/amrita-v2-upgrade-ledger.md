@@ -848,6 +848,25 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** web 74/74 · build ok · live QA on the public link: nav sections
   switch (screenshot desktop + providers + mobile), mobile horizontal scroll false.
 
+## Async CLI exec — the daemon no longer freezes during chat turns
+
+- **Date:** 2026-07-12 · commit `6086a1d` · trigger: Natanel hit
+  `provider_unavailable: not found or timed out` mid-conversation.
+- **Root cause (double):** (1) the claude-code adapter used `spawnSync`, blocking the
+  ENTIRE Node event loop — RPC, WS stream, scheduler, approvals — for the full duration
+  of every turn (the real source of every "Amrita stopped responding" impression);
+  (2) the error message conflated a timeout with a missing CLI.
+- **Fix at the source:** `defaultCliExec` is a real async `spawn` (fixed argv,
+  `shell:false`, bounded, SIGKILL on timeout); `CliExec` accepts sync fakes so every
+  existing test fixture stays valid. Honest three-way classification
+  (timeout / not_found / spawn_error) with actionable messages. Turn budget 180s→300s
+  default, `AMRITA_CHAT_CLI_TIMEOUT_MS` tunable (deployed at 420s).
+- **E4 proof:** while a REAL turn was thinking on the deployed daemon, `/health`
+  answered in 15ms and RPC ping in 13ms; the turn then completed normally
+  (claude-code · sonnet). Side win: the activity feed now streams DURING turns.
+- **Verification:** root 425/425 · typecheck/lint clean · live concurrent-responsiveness
+  measurement above.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
