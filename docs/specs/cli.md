@@ -1,5 +1,12 @@
 # Spec: the `amrita` CLI
 
+> **Authority note (2026-07-12, audit R-7):** this prose spec lags the shipped code by
+> several ADRs and is kept as an orientation document only. The code and its ADRs are
+> the source of truth — for the wire surface see `packages/protocol/src` (ADR-0032:
+> `eventPayloads`, `rpcResultSchemas`, `wsServerFrameSchema`) and `packages/daemon/src/rpc.ts`
+> (`METHODS`). Refresh or extend this file only alongside the ADR that changes the behavior.
+
+
 `@amrita/cli` is a local command-line client for the amritad kernel. It speaks the JSON-RPC layer
 **in process** (it opens a kernel on `--db` and dispatches directly — no subprocess), so it is fast
 and deterministic. See [ADR-0009](../adr/0009-amritad-kernel-and-rpc.md) for the RPC boundary.

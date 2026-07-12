@@ -13,7 +13,7 @@ Implemented and tested (see [`docs/progress/amrita-v2-upgrade-ledger.md`](docs/p
 for the full phase history and [`docs/strategy/hermes-parity-roadmap.md`](docs/strategy/hermes-parity-roadmap.md)
 for what is matched vs planned against a Hermes-grade operational skeleton):
 
-- **`@amrita/protocol`** — the constitution. A namespaced Zod event protocol (envelope + ~54 typed
+- **`@amrita/protocol`** — the constitution. A namespaced Zod event protocol (envelope + 60+ typed
   payloads), the lane contract (`LaneMandate` / `MergeReport`), the client/server RPC union, and
   entity row schemas. `model.delta` is stream-only and never persisted.
 - **`@amrita/store`** — a Drizzle + better-sqlite3 event store. Hand-written reversible migrations,

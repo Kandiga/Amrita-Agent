@@ -25,8 +25,9 @@ secrets.env
 .vscode/
 *.swp
 
-# agent-local
-.claude/
+# agent-local — but .claude/rules/ is versioned product law (audit finding G-1)
+.claude/*
+!.claude/rules/
 .claude-remote-logs/
 *.rvf
 *.rvf.lock

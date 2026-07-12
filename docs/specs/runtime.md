@@ -1,5 +1,12 @@
 # Spec: the amritad runtime (kernel + JSON-RPC)
 
+> **Authority note (2026-07-12, audit R-7):** this prose spec lags the shipped code by
+> several ADRs and is kept as an orientation document only. The code and its ADRs are
+> the source of truth — for the wire surface see `packages/protocol/src` (ADR-0032:
+> `eventPayloads`, `rpcResultSchemas`, `wsServerFrameSchema`) and `packages/daemon/src/rpc.ts`
+> (`METHODS`). Refresh or extend this file only alongside the ADR that changes the behavior.
+
+
 `@amrita/daemon` is Amrita's runtime shell. This is the prose companion to the code; the code is
 authoritative. See [ADR-0009](../adr/0009-amritad-kernel-and-rpc.md). **No provider calls, tool
 execution, or lanes run here yet** — this is the control boundary only.

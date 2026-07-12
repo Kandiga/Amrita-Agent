@@ -1,5 +1,12 @@
 # Spec: the event protocol
 
+> **Authority note (2026-07-12, audit R-7):** this prose spec lags the shipped code by
+> several ADRs and is kept as an orientation document only. The code and its ADRs are
+> the source of truth — for the wire surface see `packages/protocol/src` (ADR-0032:
+> `eventPayloads`, `rpcResultSchemas`, `wsServerFrameSchema`) and `packages/daemon/src/rpc.ts`
+> (`METHODS`). Refresh or extend this file only alongside the ADR that changes the behavior.
+
+
 `@amrita/protocol` is Amrita's constitution. This document is the prose companion to the code in
 `packages/protocol/src/`; the code is authoritative. Changing either requires an ADR.
 

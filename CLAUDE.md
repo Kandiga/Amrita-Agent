@@ -21,6 +21,14 @@ copy-paste source. See `docs/v01-harvest.md` for what to mine from it and what t
 5. **Conventional commits.** `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 6. **Honest integrations only.** Never fake an auth path or a capability. Unconfigured surfaces say
    "needs setup". (Carried forward from v0.1 — it is the project's identity.)
+7. **Prompt Engineering Copilot discipline.** Prompt Engineering Copilot v0.2 is installed and enabled
+   in Natanel/Boni's Hermes environment. When work involves writing/reviewing a prompt, Claude/Codex
+   handoff, agent instruction, dynamic workflow, context engineering, MCP/skills/hooks, acceptance
+   criteria, or prompt debugging, explicitly use the relevant copilot skill/lens before answering or
+   implementing: `prompt-architect`, `agent-handoff`, `evals-acceptance`, `claude-patterns`,
+   `dynamic-workflows`, `context-engineering`, `context-ingestion`, or `prompt-debugger`. Keep outputs
+   Hebrew-first for Natanel unless code/spec snippets benefit from English; prefer concise operational
+   prompts over generic prompt-engineering ceremony.
 
 ## Product direction (v3 north star)
 

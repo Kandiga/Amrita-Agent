@@ -59,7 +59,7 @@ Every event shares the envelope: `id` (ULID), `seq` (per-conversation, store-ass
 
 ### 3.2 Event types
 
-~54 namespaced types across: `conversation.*`, `message.*`, `turn.*`, `model.*`, `tool.*`,
+60+ namespaced types (64 at ADR-0032) across: `conversation.*`, `message.*`, `turn.*`, `model.*`, `tool.*`,
 `lane.*`, `approval.*`, `memory.*`, `artifact.*`, `project.*`, `channel.*`, `task.*`, `decision.*`,
 `provider.*`, `connector.*`, `settings.*`, `error.*`, `audit.*`. The entity namespaces (`task.*`,
 `decision.*`, `provider.*`, `connector.*`, `settings.*`, and the row-level `memory.*`) were added in

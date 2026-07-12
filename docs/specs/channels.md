@@ -1,5 +1,12 @@
 # Spec: the channel layer
 
+> **Authority note (2026-07-12, audit R-7):** this prose spec lags the shipped code by
+> several ADRs and is kept as an orientation document only. The code and its ADRs are
+> the source of truth — for the wire surface see `packages/protocol/src` (ADR-0032:
+> `eventPayloads`, `rpcResultSchemas`, `wsServerFrameSchema`) and `packages/daemon/src/rpc.ts`
+> (`METHODS`). Refresh or extend this file only alongside the ADR that changes the behavior.
+
+
 `@amrita/channels` (Phase 3) turns inbound messages from a surface into Amrita chat turns. See
 [ADR-0013](../adr/0013-channel-layer.md). **No real Telegram network call happens in this package** —
 the outbound surface is injected.
