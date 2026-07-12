@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ActivityLine, currentActivity, pushActivity } from './activity.ts';
 import {
   type AmritaEventLite,
   type CompanionState,
@@ -114,6 +115,8 @@ export function App() {
   const [inspectorView, setInspectorView] = useState<'project' | 'brain' | 'settings'>('project');
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
+  /** Live backstage feed (Hermes-style): what runs, waits, or thinks now. */
+  const [activity, setActivity] = useState<readonly ActivityLine[]>([]);
   /** Mobile: sidebar drawer + single-pane tab (Claude app pattern). */
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'project' | 'brain' | 'settings'>('chat');
@@ -204,6 +207,7 @@ export function App() {
     if (!conversationId) return;
     setTranscript(emptyTranscript());
     setLanes(emptyLanes());
+    setActivity([]);
     setPending([]);
     setStreamState('connecting');
     let handle: EventStreamHandle | null = null;
@@ -213,6 +217,7 @@ export function App() {
         onEvent: (ev) => {
           setTranscript((s) => reduceEvent(s, ev));
           setLanes((s) => reduceLaneEvent(s, ev));
+          setActivity((s) => pushActivity(s, ev));
           if (ev.type.startsWith('approval.')) void loadApprovals();
         },
         onState: (s) => setStreamState(s),
@@ -561,7 +566,37 @@ export function App() {
               {m.pending ? <span className="caret" /> : null}
             </article>
           ))}
+          {busy ? (
+            <article className="bubble agent thinking" aria-label="Amrita is working">
+              <span className="dots">
+                <i />
+                <i />
+                <i />
+              </span>
+            </article>
+          ) : null}
         </div>
+        {(() => {
+          const now = currentActivity(activity, busy);
+          return activity.length > 0 || now ? (
+            <details className="activity-bar">
+              <summary>
+                <span className={`activity-now activity-${now?.tone ?? 'info'}`}>
+                  {now ? now.text : 'idle — full backstage log'}
+                </span>
+                <small>{activity.length} events</small>
+              </summary>
+              <div className="activity-log" dir="ltr">
+                {[...activity].reverse().map((l) => (
+                  <p key={l.id} className={`activity-line activity-${l.tone}`}>
+                    <span className="activity-ts">{l.ts ? l.ts.slice(11, 19) : ''}</span>
+                    {l.text}
+                  </p>
+                ))}
+              </div>
+            </details>
+          ) : null;
+        })()}
         {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
         {unauthorized ? (
           <div className="error" role="alert">

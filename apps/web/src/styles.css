@@ -1453,3 +1453,121 @@ code {
     height: 240px;
   }
 }
+
+/* ── live activity feed (Hermes-style backstage log) ─────────────────────── */
+.bubble.thinking {
+  min-height: 28px;
+}
+.dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  height: 24px;
+}
+.dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--stone);
+  animation: think 1.2s infinite var(--ease);
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes think {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.activity-bar {
+  width: min(46rem, calc(100% - 32px));
+  margin: 0 auto;
+  background: var(--ivory);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+.activity-bar summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--slate);
+}
+.activity-bar summary::-webkit-details-marker {
+  display: none;
+}
+.activity-bar summary small {
+  color: var(--stone);
+  flex: none;
+}
+.activity-now {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.activity-work {
+  color: var(--clay-strong);
+}
+.activity-wait {
+  color: var(--warn);
+}
+.activity-ok {
+  color: var(--ok);
+}
+.activity-error {
+  color: var(--error);
+}
+.activity-now.activity-work::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--clay-strong);
+  margin-inline-end: 7px;
+  animation: pulse 1.2s infinite;
+}
+.activity-now.activity-wait::before {
+  content: "⏸ ";
+}
+.activity-log {
+  max-height: 180px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.activity-line {
+  margin: 3px 0;
+  color: var(--ink-soft);
+}
+.activity-ts {
+  color: var(--stone);
+  margin-inline-end: 8px;
+}
+
+@media (max-width: 960px) {
+  .activity-bar {
+    width: calc(100% - 20px);
+  }
+  .app-shell:not(.mobile-chat) .chat-panel .activity-bar {
+    display: none;
+  }
+}
