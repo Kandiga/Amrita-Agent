@@ -227,6 +227,7 @@ function sourceIdForMemory(source: string | null): string {
   if (
     s.startsWith('telegram') ||
     s.startsWith('chat') ||
+    s.startsWith('session') ||
     s.startsWith('slack') ||
     s.startsWith('discord')
   )

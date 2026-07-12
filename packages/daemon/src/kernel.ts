@@ -512,6 +512,17 @@ export class AmritaKernel {
       type: 'conversation.archived',
       payload: {},
     } as UnsealedEvent);
+    // ADR-0033 amendment (session→memory-layers): the digest ALSO lands in the
+    // project's memory layer, so the Brain keeps every session's summary with
+    // chat provenance — the conversation is the session, the memory is durable.
+    this.store.putMemoryEntry({
+      projectId: conv.projectId,
+      conversationId: child.id,
+      scope: 'project',
+      content: summary.slice(0, 4000),
+      source: `session:compress:${conversationId}`,
+      origin: 'system',
+    });
     return { childConversationId: child.id, summary, messageCount: messages.length };
   }
 

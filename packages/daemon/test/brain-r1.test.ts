@@ -51,6 +51,19 @@ describe('conversation compression (ADR-0033)', () => {
     expect(types).toContain('conversation.archived');
     expect(kernel.getConversation(conversationId)?.archivedAt).toBeTypeOf('string');
     expect(r.messageCount).toBe(2);
+
+    // amendment: the digest lands in the project memory layer with session provenance
+    const memories = kernel.searchMemory('Compressed continuation', { projectId: 'ignored' });
+    const hit = kernel.store
+      .listMemoryEntries(kernel.getConversation(conversationId)?.projectId ?? '')
+      .find((m) => (m.source ?? '').startsWith('session:compress:'));
+    expect(hit?.content).toContain('Compressed continuation');
+    // and the Brain shows it as a chat-provenance record
+    const brain = kernel.getProjectBrain(kernel.getConversation(conversationId)?.projectId ?? '');
+    expect(
+      brain.records.some((rec) => rec.provenance.sourceId === 'chat' && rec.body.includes('PDF')),
+    ).toBe(true);
+    void memories;
   });
 
   it('refuses an empty conversation and a double compression, as `conflict` over RPC', async () => {

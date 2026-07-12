@@ -26,6 +26,13 @@ provider-gated enhancement — a deterministic digest is honest and replayable t
 New wire surface: RPC `conversation.compress` (+ result schema in `rpcResultSchemas`,
 enforced by the ADR-0032 coverage test) and CLI `amrita compress`.
 
+## Amendment (2026-07-12 — session → memory layers)
+
+The digest is ALSO written to the project's memory layer
+(`memory_entries`, scope `project`, source `session:compress:<parentId>`), so the
+Brain durably holds every session's summary with chat provenance. A conversation
+is a session; ending it compresses it into the project's layered memory.
+
 ## Invariants & guards
 
 - The event log stays append-only; replaying the parent still works (E1 test).

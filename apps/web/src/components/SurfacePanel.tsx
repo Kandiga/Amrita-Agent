@@ -6,6 +6,8 @@ interface SurfacePanelProps {
   artifacts: ArtifactSpec[];
   /** Durably approve a proposed preview's exact content (ADR-0020). */
   onApprovePreview: (previewId: string, contentHash: string) => void;
+  /** Open a preview/design artifact in the live canvas beside the chat. */
+  onOpenCanvas?: (artifactId: string) => void;
 }
 
 /**
@@ -13,7 +15,7 @@ interface SurfacePanelProps {
  * first Stage-B `html-preview` — which renders ONLY inside the sandbox harness
  * (no same-origin, zero-network CSP) and is never auto-approved.
  */
-export function SurfacePanel({ artifacts, onApprovePreview }: SurfacePanelProps) {
+export function SurfacePanel({ artifacts, onApprovePreview, onOpenCanvas }: SurfacePanelProps) {
   return (
     <section className="card surface-card">
       <h2>Surface</h2>
@@ -64,6 +66,15 @@ export function SurfacePanel({ artifacts, onApprovePreview }: SurfacePanelProps)
                     {a.kind === 'design-page' ? 'design' : 'preview'}
                   </span>
                   <span className={`doc-badge preview-${a.status}`}>{a.status}</span>
+                  {onOpenCanvas ? (
+                    <button
+                      type="button"
+                      className="canvas-open-btn"
+                      onClick={() => onOpenCanvas(a.id)}
+                    >
+                      Open canvas ⤢
+                    </button>
+                  ) : null}
                 </div>
                 <iframe
                   className="preview-frame"

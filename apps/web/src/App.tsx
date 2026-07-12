@@ -42,6 +42,7 @@ import {
   reduceEvent,
   transcriptMessages,
 } from './live-transcript.ts';
+import { buildSandboxedPreview } from './sandbox.ts';
 import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
 import { buildSurfaceArtifacts } from './surface.ts';
 
@@ -78,6 +79,25 @@ function extractArray<T>(value: unknown, keys: string[]): T[] {
     for (const key of keys) if (Array.isArray(obj[key])) return obj[key] as T[];
   }
   return [];
+}
+
+/** The live-canvas frame: same Stage-B sandbox as every preview (ADR-0020). */
+function CanvasFrame({ html, title }: { html: string; title: string }) {
+  const sandboxed = buildSandboxedPreview({
+    kind: 'html-preview',
+    id: 'canvas',
+    projectId: 'canvas',
+    title,
+    html,
+  });
+  return (
+    <iframe
+      className="canvas-frame"
+      title={title}
+      sandbox={sandboxed.sandbox}
+      srcDoc={sandboxed.srcDoc}
+    />
+  );
 }
 
 function titleFor(c: Conversation): string {
@@ -117,6 +137,10 @@ export function App() {
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
   /** Live backstage feed (Hermes-style): what runs, waits, or thinks now. */
   const [activity, setActivity] = useState<readonly ActivityLine[]>([]);
+  /** Optimistic project switch: the sidebar responds instantly, data follows. */
+  const [projectLoading, setProjectLoading] = useState(false);
+  /** The live canvas (Claude-Design style): an open artifact id, or null. */
+  const [canvasId, setCanvasId] = useState<string | null>(null);
   /** Mobile: sidebar drawer + single-pane tab (Claude app pattern). */
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'project' | 'brain' | 'settings'>('chat');
@@ -247,6 +271,11 @@ export function App() {
   }
 
   async function ensureProjectAndLoad(slug: string) {
+    // Optimistic: the click responds NOW; data streams in behind the skeleton.
+    setProjectSlug(slug);
+    setProjectLoading(true);
+    setConversations([]);
+    setCanvasId(null);
     setBusy(true);
     try {
       const ensured = (await client.call('project.ensure', {
@@ -274,6 +303,7 @@ export function App() {
       reportError(e);
     } finally {
       setBusy(false);
+      setProjectLoading(false);
     }
   }
 
@@ -293,6 +323,28 @@ export function App() {
   function openConversation(id: string) {
     // Switching the id resets the transcript and reopens the stream (effect above).
     setConversationId(id);
+  }
+
+  /** End the session: compress it into the project's memory layers (ADR-0033)
+   *  and continue in the lineage child. */
+  async function compressSession(id: string): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await client.call<{ childConversationId: string }>('conversation.compress', {
+        conversationId: id,
+      });
+      const listResult = await client.call('conversation.list', {
+        projectId: selectedProject?.id,
+      });
+      setConversations(extractArray<Conversation>(listResult, ['conversations']));
+      openConversation(r.childConversationId);
+      await loadCompanion(); // the digest just landed in project memory
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** Manual replay fallback — folds `GET /events` into the reducers (de-duped). */
@@ -347,6 +399,12 @@ export function App() {
       reportError(e);
     }
   }
+
+  /** The open live-canvas artifact (Claude-Design style), re-derived live. */
+  const canvasArtifact = useMemo(() => {
+    const a = surfaceArtifacts.find((x) => x.id === canvasId);
+    return a && (a.kind === 'html-preview' || a.kind === 'design-page') ? a : null;
+  }, [surfaceArtifacts, canvasId]);
 
   /** The write envelope shared by every knowledge panel. */
   const writeCtx =
@@ -413,7 +471,7 @@ export function App() {
   }, [authToken]);
 
   return (
-    <main className={`app-shell mobile-${mobileView}`}>
+    <main className={`app-shell mobile-${mobileView}${canvasArtifact ? ' canvas-open' : ''}`}>
       <button
         type="button"
         className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`}
@@ -439,47 +497,82 @@ export function App() {
         </button>
         <section>
           <h2>Projects</h2>
-          <div className="list">
-            {projects.map((p) => (
-              <button
-                type="button"
-                key={p.id}
-                className={p.slug === projectSlug ? 'active' : ''}
-                onClick={() => {
-                  setSidebarOpen(false);
-                  void ensureProjectAndLoad(p.slug);
-                }}
-              >
-                {p.name}
-                <small>{p.slug}</small>
-              </button>
-            ))}
-          </div>
-        </section>
-        <section>
-          <h2>Conversations</h2>
-          <button
-            type="button"
-            onClick={() => createConversation()}
-            disabled={!selectedProject || busy}
-          >
-            + New chat
-          </button>
-          <div className="list">
-            {conversations.map((c) => (
-              <button
-                type="button"
-                key={c.id}
-                className={c.id === conversationId ? 'active' : ''}
-                onClick={() => {
-                  setSidebarOpen(false);
-                  openConversation(c.id);
-                }}
-              >
-                {titleFor(c)}
-                <small>{c.id.slice(0, 12)}</small>
-              </button>
-            ))}
+          <div className="list project-tree">
+            {projects.map((p) => {
+              const active = p.slug === projectSlug;
+              const liveSessions = active
+                ? conversations.filter((c) => !(c as { archivedAt?: string | null }).archivedAt)
+                : [];
+              const compressedCount = active ? conversations.length - liveSessions.length : 0;
+              return (
+                <div key={p.id} className={`project-node${active ? ' active' : ''}`}>
+                  <button
+                    type="button"
+                    className={active ? 'active' : ''}
+                    onClick={() => {
+                      if (!active) void ensureProjectAndLoad(p.slug);
+                    }}
+                  >
+                    <span className="project-caret">{active ? '▾' : '▸'}</span>
+                    {p.name}
+                  </button>
+                  {active ? (
+                    <div className="session-list">
+                      {projectLoading ? (
+                        <>
+                          <span className="session-skeleton" />
+                          <span className="session-skeleton" />
+                        </>
+                      ) : (
+                        <>
+                          {liveSessions.map((c) => (
+                            <div
+                              key={c.id}
+                              className={`session-row${c.id === conversationId ? ' active' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                className="session-open"
+                                onClick={() => {
+                                  setSidebarOpen(false);
+                                  openConversation(c.id);
+                                }}
+                              >
+                                {titleFor(c)}
+                              </button>
+                              {c.id === conversationId ? (
+                                <button
+                                  type="button"
+                                  className="session-compress"
+                                  title="End this session — compress it into the project's memory layers and continue in a fresh linked session"
+                                  onClick={() => void compressSession(c.id)}
+                                  disabled={busy}
+                                >
+                                  ⤓
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            className="session-new"
+                            onClick={() => void createConversation()}
+                            disabled={busy}
+                          >
+                            + New session
+                          </button>
+                          {compressedCount > 0 ? (
+                            <small className="session-archived-note">
+                              {compressedCount} compressed into project memory
+                            </small>
+                          ) : null}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </section>
       </aside>
@@ -628,7 +721,44 @@ export function App() {
         </form>
       </section>
 
-      <aside className="inspector">
+      {canvasArtifact ? (
+        <section className="canvas-panel" aria-label="Live canvas">
+          <header className="canvas-head">
+            <span className="artifact-kind">
+              {canvasArtifact.kind === 'design-page' ? 'design' : 'preview'}
+            </span>
+            <strong dir="auto">{canvasArtifact.title}</strong>
+            <span className={`doc-badge preview-${canvasArtifact.status}`}>
+              {canvasArtifact.status}
+            </span>
+            <div className="canvas-actions">
+              {canvasArtifact.status === 'proposed' ? (
+                <button
+                  type="button"
+                  className="canvas-approve"
+                  onClick={() => void approvePreview(canvasArtifact.id, canvasArtifact.contentHash)}
+                >
+                  Approve
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="canvas-close"
+                aria-label="Close canvas"
+                onClick={() => setCanvasId(null)}
+              >
+                ✕
+              </button>
+            </div>
+          </header>
+          <CanvasFrame html={canvasArtifact.html} title={canvasArtifact.title} />
+          <p className="canvas-live-note">
+            Live canvas — re-renders from this project's typed state (brief · brand · milestones);
+            confined to the zero-network sandbox.
+          </p>
+        </section>
+      ) : null}
+      <aside className={`inspector${canvasArtifact ? ' canvas-hidden' : ''}`}>
         <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
           <h2>Access token</h2>
           <p className={authToken ? 'token-set' : ''}>
@@ -683,7 +813,11 @@ export function App() {
               onChanged={() => void loadCompanion()}
               onError={reportError}
             />
-            <SurfacePanel artifacts={surfaceArtifacts} onApprovePreview={approvePreview} />
+            <SurfacePanel
+              artifacts={surfaceArtifacts}
+              onApprovePreview={approvePreview}
+              onOpenCanvas={(id) => setCanvasId(id)}
+            />
             <RuntimePanel doctor={doctor} />
             <section className="card">
               <h2>Provider status</h2>
