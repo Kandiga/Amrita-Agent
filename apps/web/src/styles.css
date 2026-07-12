@@ -1079,3 +1079,29 @@ section h2,
     width: 100%;
   }
 }
+
+/* Lane console (R4): the live progress window over a lane's event stream. */
+.lane-console {
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.lane-console-line {
+  margin: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lane-console-toggle {
+  font-size: 12px;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}

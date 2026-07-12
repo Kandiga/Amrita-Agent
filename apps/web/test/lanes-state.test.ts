@@ -119,3 +119,17 @@ describe('lanes-state reducer', () => {
     expect(isActive(done)).toBe(false);
   });
 });
+
+describe('lane modes (R4)', () => {
+  it('maps ask/plan to the operator-gated policy and auto to auto-safe', async () => {
+    const { approvalsForMode, LANE_MODES } = await import('../src/lanes-state.ts');
+    expect(approvalsForMode('ask')).toBe('forward');
+    expect(approvalsForMode('auto')).toBe('auto-safe');
+    // plan is honestly unsupported: it is listed, disabled, and never faked
+    const plan = LANE_MODES.find((m) => m.id === 'plan');
+    expect(plan?.supported).toBe(false);
+    expect(plan?.label).toContain('unsupported');
+    // even if forced, plan falls back to the gated policy — never a silent auto
+    expect(approvalsForMode('plan')).toBe('forward');
+  });
+});

@@ -139,6 +139,8 @@ export interface LaneStartParams {
   real?: boolean;
   detach?: boolean;
   budget?: LaneBudgetInput;
+  /** Mandate approval policy (R4 lane console): forward = operator-gated. */
+  approvals?: 'forward' | 'auto-safe' | 'sandboxed';
 }
 
 export interface BrandUpdateParams {

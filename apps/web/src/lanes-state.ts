@@ -170,3 +170,34 @@ export function lanesList(state: LanesState): LaneView[] {
 export function isActive(lane: LaneView): boolean {
   return lane.status === 'spawned' || lane.status === 'running' || lane.status === 'merging';
 }
+
+/** Lane-console execution modes (R4). `plan` is honestly unsupported today:
+ * the Claude Code runner has no read-only planning flag yet — the UI must say
+ * so, never fake it (product rule: unsupported is stated, not simulated). */
+export type LaneMode = 'ask' | 'auto' | 'plan';
+
+export const LANE_MODES: { id: LaneMode; label: string; supported: boolean; hint: string }[] = [
+  {
+    id: 'ask',
+    label: 'ask',
+    supported: true,
+    hint: 'every real action is forwarded to the operator approval broker',
+  },
+  {
+    id: 'auto',
+    label: 'auto',
+    supported: true,
+    hint: 'pre-authorized within scope (daemon real-execution opt-in still required)',
+  },
+  {
+    id: 'plan',
+    label: 'plan (unsupported)',
+    supported: false,
+    hint: 'the Claude Code lane runner has no read-only planning mode yet — not faked',
+  },
+];
+
+/** Map a UI mode to the lane mandate approval policy. */
+export function approvalsForMode(mode: LaneMode): 'forward' | 'auto-safe' {
+  return mode === 'auto' ? 'auto-safe' : 'forward';
+}

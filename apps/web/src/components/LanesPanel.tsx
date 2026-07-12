@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { client } from '../client.ts';
-import type { LaneView } from '../lanes-state.ts';
-import { isActive } from '../lanes-state.ts';
+import type { LaneMode, LaneView } from '../lanes-state.ts';
+import { LANE_MODES, approvalsForMode, isActive } from '../lanes-state.ts';
 import { textDir } from '../lib.ts';
 
 interface LanesPanelProps {
@@ -19,6 +19,8 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
   const [goal, setGoal] = useState('');
   const [dryRun, setDryRun] = useState(true);
   const [real, setReal] = useState(false);
+  const [mode, setMode] = useState<LaneMode>('ask');
+  const [openConsole, setOpenConsole] = useState<string | null>(null);
   const [maxTurns, setMaxTurns] = useState('');
   const [maxMinutes, setMaxMinutes] = useState('');
   const [busy, setBusy] = useState(false);
@@ -37,7 +39,8 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
         goal: goal.trim(),
         dryRun,
         real,
-        detach: true, // observe via the live event stream
+        detach: true, // observe via the live event stream (the lane console)
+        approvals: approvalsForMode(mode),
         ...(Object.keys(budget).length > 0 ? { budget } : {}),
       });
       setGoal('');
@@ -89,6 +92,20 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
             placeholder="max min"
           />
         </div>
+        <label className="lane-check" title={LANE_MODES.find((m) => m.id === mode)?.hint}>
+          mode{' '}
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as LaneMode)}
+            aria-label="Lane mode"
+          >
+            {LANE_MODES.map((m) => (
+              <option key={m.id} value={m.id} disabled={!m.supported}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="lane-check">
           <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
           Dry run (record mandate only)
@@ -134,7 +151,29 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
                 </p>
               ) : null}
               {lane.progress.length > 0 ? (
-                <p className="lane-progress">{lane.progress.at(-1)?.note}</p>
+                openConsole === lane.id ? (
+                  <div className="lane-console" aria-label="Lane console">
+                    {lane.progress.map((n, i) => (
+                      <p key={`${lane.id}-${i}`} className="lane-console-line" dir="auto">
+                        {n.note}
+                        {n.pct !== undefined ? ` (${n.pct}%)` : ''}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="lane-progress">{lane.progress.at(-1)?.note}</p>
+                )
+              ) : null}
+              {lane.progress.length > 1 ? (
+                <button
+                  type="button"
+                  className="lane-console-toggle"
+                  onClick={() => setOpenConsole(openConsole === lane.id ? null : lane.id)}
+                >
+                  {openConsole === lane.id
+                    ? 'collapse console'
+                    : `open console (${lane.progress.length} lines)`}
+                </button>
               ) : null}
               {lane.exit ? (
                 <p className="lane-exit">

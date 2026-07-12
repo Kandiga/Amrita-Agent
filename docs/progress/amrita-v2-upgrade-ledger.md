@@ -673,6 +673,30 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** root 419/419 (7 new system/scheduler tests; wire round-trip extended
   to the 4 new verbs) · typecheck/lint clean.
 
+## R4 — Preview windows: the lane console + honest mode control
+
+- **Date:** 2026-07-12 · roadmap stage R4 (no protocol/store change — rides the ADR-0014/
+  0015/0021 lane + approval seams; the wire was already typed by ADR-0032)
+- **What landed:**
+  - **Lane console**: each lane card in the web app expands into a live console window —
+    the full `lane.progress` stream (monospace, RTL-safe, bounded scroll), goal, status,
+    merge summary, cancel. The console is a *view over the lane contract*, never a second
+    execution path (master-plan conflict #5 honored).
+  - **Mode control**: `ask` → mandate `approvals: 'forward'` (every real action gated by
+    the operator broker — approve from web ApprovalsPanel or Telegram `/approve`);
+    `auto` → `'auto-safe'` (pre-authorized within scope; daemon real-execution opt-in
+    still required); **`plan` is listed but disabled with an honest "unsupported" label**
+    — the Claude Code lane runner has no read-only planning flag yet, and per the product
+    rule an unsupported mode is stated, never simulated. Mapping is a pure, tested
+    function (`approvalsForMode`); a forced `plan` falls back to the GATED policy.
+  - `approvals` policy now flows web → `lanes.start` (param existed since ADR-0021; the
+    UI finally exposes it).
+- **Remote note:** the browser already reaches the Hostinger daemon over the tokened
+  HTTP/WS surface — the lane console IS the remote Claude window; CORS stays
+  deny-by-default.
+- **Verification:** web 66/66 (+1 mode-mapping test) · web build ok · root 419/419 ·
+  typecheck/lint clean.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
