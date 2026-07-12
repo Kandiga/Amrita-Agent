@@ -92,7 +92,7 @@ export function App() {
   const [streamState, setStreamState] = useState<StreamState>('connecting');
   const [projectSlug, setProjectSlug] = useState('system');
   const [conversationId, setConversationId] = useState('');
-  const [provider, setProvider] = useState('mock');
+  const [provider, setProvider] = useState('auto');
   const [draft, setDraft] = useState('');
   const [lastTurn, setLastTurn] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -384,7 +384,9 @@ export function App() {
       const result = await client.call<ChatResult>('chat.turn', {
         text,
         conversationId,
-        provider,
+        // 'auto' = the role resolver decides (project > global binding > auto),
+        // so the bound brain answers. An explicit pick still always wins.
+        ...(provider === 'auto' ? { role: 'main' } : { provider }),
       });
       setLastTurn(`${result.provider} · ${result.model} · ${formatUsage(result.usage)}`);
       // Fallback replay: if the live socket is offline, this still lands the turn;
@@ -527,6 +529,7 @@ export function App() {
             <label>
               Provider
               <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                <option value="auto">auto — your bound brain</option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.id}
