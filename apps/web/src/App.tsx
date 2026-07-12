@@ -471,7 +471,11 @@ export function App() {
   }, [authToken]);
 
   return (
-    <main className={`app-shell mobile-${mobileView}${canvasArtifact ? ' canvas-open' : ''}`}>
+    <main
+      className={`app-shell mobile-${mobileView}${canvasArtifact ? ' canvas-open' : ''}${
+        inspectorView === 'settings' ? ' settings-open' : ''
+      }`}
+    >
       <button
         type="button"
         className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`}
@@ -638,87 +642,103 @@ export function App() {
             </label>
           </div>
         </header>
-        <div className="messages" aria-live="polite">
-          {messages.length === 0 ? (
-            <div className="empty">
-              <span>अ</span>
-              <h1>Talk to Amrita</h1>
-              <p>
-                Every project keeps its own memory, tasks and decisions. Say what you need — replies
-                stream in live, and lanes can take on the bigger jobs.
-              </p>
-            </div>
-          ) : null}
-          {messages.map((m) => (
-            <article
-              key={m.id}
-              className={`bubble ${m.role}${m.pending ? ' pending' : ''}`}
-              dir={textDir(m.text)}
-            >
-              {m.text}
-              {m.pending ? <span className="caret" /> : null}
-            </article>
-          ))}
-          {busy ? (
-            <article className="bubble agent thinking" aria-label="Amrita is working">
-              <span className="dots">
-                <i />
-                <i />
-                <i />
-              </span>
-            </article>
-          ) : null}
-        </div>
-        {(() => {
-          const now = currentActivity(activity, busy);
-          return activity.length > 0 || now ? (
-            <details className="activity-bar">
-              <summary>
-                <span className={`activity-now activity-${now?.tone ?? 'info'}`}>
-                  {now ? now.text : 'idle — full backstage log'}
-                </span>
-                <small>{activity.length} events</small>
-              </summary>
-              <div className="activity-log" dir="ltr">
-                {[...activity].reverse().map((l) => (
-                  <p key={l.id} className={`activity-line activity-${l.tone}`}>
-                    <span className="activity-ts">{l.ts ? l.ts.slice(11, 19) : ''}</span>
-                    {l.text}
+        {inspectorView === 'settings' ? (
+          <div className="settings-page">
+            <h1 className="settings-title">Settings</h1>
+            <SettingsRuntimeHub
+              projectId={selectedProject?.id}
+              projectName={selectedProject?.name}
+              writeCtx={writeCtx}
+              onTasksChanged={() => void loadTasks()}
+              onError={reportError}
+            />
+          </div>
+        ) : (
+          <>
+            <div className="messages" aria-live="polite">
+              {messages.length === 0 ? (
+                <div className="empty">
+                  <span>अ</span>
+                  <h1>Talk to Amrita</h1>
+                  <p>
+                    Every project keeps its own memory, tasks and decisions. Say what you need —
+                    replies stream in live, and lanes can take on the bigger jobs.
                   </p>
-                ))}
+                </div>
+              ) : null}
+              {messages.map((m) => (
+                <article
+                  key={m.id}
+                  className={`bubble ${m.role}${m.pending ? ' pending' : ''}`}
+                  dir={textDir(m.text)}
+                >
+                  {m.text}
+                  {m.pending ? <span className="caret" /> : null}
+                </article>
+              ))}
+              {busy ? (
+                <article className="bubble agent thinking" aria-label="Amrita is working">
+                  <span className="dots">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                </article>
+              ) : null}
+            </div>
+            {(() => {
+              const now = currentActivity(activity, busy);
+              return activity.length > 0 || now ? (
+                <details className="activity-bar">
+                  <summary>
+                    <span className={`activity-now activity-${now?.tone ?? 'info'}`}>
+                      {now ? now.text : 'idle — full backstage log'}
+                    </span>
+                    <small>{activity.length} events</small>
+                  </summary>
+                  <div className="activity-log" dir="ltr">
+                    {[...activity].reverse().map((l) => (
+                      <p key={l.id} className={`activity-line activity-${l.tone}`}>
+                        <span className="activity-ts">{l.ts ? l.ts.slice(11, 19) : ''}</span>
+                        {l.text}
+                      </p>
+                    ))}
+                  </div>
+                </details>
+              ) : null;
+            })()}
+            {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
+            {unauthorized ? (
+              <div className="error" role="alert">
+                Unauthorized — set a valid access token in the panel on the right to reach the
+                runtime.
               </div>
-            </details>
-          ) : null;
-        })()}
-        {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
-        {unauthorized ? (
-          <div className="error" role="alert">
-            Unauthorized — set a valid access token in the panel on the right to reach the runtime.
-          </div>
-        ) : null}
-        {error ? (
-          <div className="error" role="alert">
-            {error}
-          </div>
-        ) : null}
-        <form
-          className="composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
-          }}
-        >
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            dir={textDir(draft)}
-            placeholder="Message Amrita…"
-            rows={2}
-          />
-          <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
-            {busy ? '…' : '↑'}
-          </button>
-        </form>
+            ) : null}
+            {error ? (
+              <div className="error" role="alert">
+                {error}
+              </div>
+            ) : null}
+            <form
+              className="composer"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void send();
+              }}
+            >
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                dir={textDir(draft)}
+                placeholder="Message Amrita…"
+                rows={2}
+              />
+              <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
+                {busy ? '…' : '↑'}
+              </button>
+            </form>
+          </>
+        )}
       </section>
 
       {canvasArtifact ? (
@@ -758,7 +778,9 @@ export function App() {
           </p>
         </section>
       ) : null}
-      <aside className={`inspector${canvasArtifact ? ' canvas-hidden' : ''}`}>
+      <aside
+        className={`inspector${canvasArtifact || inspectorView === 'settings' ? ' canvas-hidden' : ''}`}
+      >
         <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
           <h2>Access token</h2>
           <p className={authToken ? 'token-set' : ''}>
@@ -784,15 +806,7 @@ export function App() {
             </button>
           ) : null}
         </section>
-        {inspectorView === 'settings' ? (
-          <SettingsRuntimeHub
-            projectId={selectedProject?.id}
-            projectName={selectedProject?.name}
-            writeCtx={writeCtx}
-            onTasksChanged={() => void loadTasks()}
-            onError={reportError}
-          />
-        ) : inspectorView === 'brain' ? (
+        {inspectorView === 'brain' ? (
           <BrainPanel projectId={selectedProject?.id} writeCtx={writeCtx} onError={reportError} />
         ) : (
           <>

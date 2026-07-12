@@ -156,6 +156,11 @@ export function SettingsRuntimeHub({
     }
   }
 
+  /** claude.ai-style settings sub-navigation (left nav on desktop). */
+  const [section, setSection] = useState<'brain' | 'providers' | 'runtimes' | 'connectors'>(
+    'brain',
+  );
+
   if (!status) {
     return (
       <section className="card">
@@ -165,232 +170,269 @@ export function SettingsRuntimeHub({
     );
   }
 
+  const NAV: { id: typeof section; label: string; hint: string }[] = [
+    { id: 'brain', label: 'Amrita brain', hint: 'which model thinks for each role' },
+    { id: 'providers', label: 'Providers', hint: 'every brain Amrita knows, honest states' },
+    { id: 'runtimes', label: 'Coding runtimes', hint: 'Claude Code and friends' },
+    { id: 'connectors', label: 'Connectors', hint: 'sources like GitHub' },
+  ];
+
   return (
-    <>
-      <section className="card">
-        <h2>Amrita brain</h2>
-        <p className="hub-note">
-          Which model thinks for each role. Resolution: project override → global → auto. Switching
-          never touches project memory — history and state live in Amrita's store, not in any
-          provider.
-        </p>
-        {status.roles.map((r) => {
-          const role = r.role as Role;
-          const draft = drafts[role];
-          return (
-            <div key={r.role} className="hub-role">
-              <div className="hub-role-head">
-                <strong>{r.role}</strong>
-                <span className="hub-role-effective">
-                  → {r.resolvesTo}
-                  {r.model ? ` (${r.model})` : ''}
-                  <span className={`hub-via hub-via-${r.via}`}>{r.via}</span>
-                </span>
-              </div>
-              <small>{ROLE_HINT[role]}</small>
-              <div className="hub-role-controls">
-                <select
-                  value={draft.provider}
-                  onChange={(e) =>
-                    setDrafts((d) => ({ ...d, [role]: { ...d[role], provider: e.target.value } }))
-                  }
-                >
-                  <option value="">choose provider…</option>
-                  {status.providers.map((p) => {
-                    const entry = catalog?.find((c) => c.id === p.id);
-                    return (
-                      <option key={p.id} value={p.id}>
-                        {entry ? catalogOptionLabel(entry) : p.id}
-                      </option>
-                    );
-                  })}
-                </select>
-                <input
-                  value={draft.model}
-                  onChange={(e) =>
-                    setDrafts((d) => ({ ...d, [role]: { ...d[role], model: e.target.value } }))
-                  }
-                  placeholder="model (optional)"
-                />
-              </div>
-              <div className="hub-role-actions">
-                <button
-                  type="button"
-                  disabled={busy || !draft.provider}
-                  onClick={() => void apply(role, 'global')}
-                >
-                  Set global
-                </button>
-                {r.binding ? (
-                  <button type="button" disabled={busy} onClick={() => void clear(role, 'global')}>
-                    Clear global
-                  </button>
-                ) : null}
-                {projectId ? (
-                  <>
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label="Settings sections">
+        {NAV.map((n) => (
+          <button
+            type="button"
+            key={n.id}
+            className={section === n.id ? 'active' : ''}
+            title={n.hint}
+            onClick={() => setSection(n.id)}
+          >
+            {n.label}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-content">
+        {section === 'brain' ? (
+          <section className="card">
+            <h2>Amrita brain</h2>
+            <p className="hub-note">
+              Which model thinks for each role. Resolution: project override → global → auto.
+              Switching never touches project memory — history and state live in Amrita's store, not
+              in any provider.
+            </p>
+            {status.roles.map((r) => {
+              const role = r.role as Role;
+              const draft = drafts[role];
+              return (
+                <div key={r.role} className="hub-role">
+                  <div className="hub-role-head">
+                    <strong>{r.role}</strong>
+                    <span className="hub-role-effective">
+                      → {r.resolvesTo}
+                      {r.model ? ` (${r.model})` : ''}
+                      <span className={`hub-via hub-via-${r.via}`}>{r.via}</span>
+                    </span>
+                  </div>
+                  <small>{ROLE_HINT[role]}</small>
+                  <div className="hub-role-controls">
+                    <select
+                      value={draft.provider}
+                      onChange={(e) =>
+                        setDrafts((d) => ({
+                          ...d,
+                          [role]: { ...d[role], provider: e.target.value },
+                        }))
+                      }
+                    >
+                      <option value="">choose provider…</option>
+                      {status.providers.map((p) => {
+                        const entry = catalog?.find((c) => c.id === p.id);
+                        return (
+                          <option key={p.id} value={p.id}>
+                            {entry ? catalogOptionLabel(entry) : p.id}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <input
+                      value={draft.model}
+                      onChange={(e) =>
+                        setDrafts((d) => ({ ...d, [role]: { ...d[role], model: e.target.value } }))
+                      }
+                      placeholder="model (optional)"
+                    />
+                  </div>
+                  <div className="hub-role-actions">
                     <button
                       type="button"
                       disabled={busy || !draft.provider}
-                      onClick={() => void apply(role, 'project')}
+                      onClick={() => void apply(role, 'global')}
                     >
-                      Set for {projectName ?? 'project'}
+                      Set global
                     </button>
-                    {r.projectBinding ? (
+                    {r.binding ? (
                       <button
                         type="button"
                         disabled={busy}
-                        onClick={() => void clear(role, 'project')}
+                        onClick={() => void clear(role, 'global')}
                       >
-                        Clear project override
+                        Clear global
                       </button>
                     ) : null}
-                  </>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="card">
-        <h2>Brain providers — catalog</h2>
-        <p className="hub-note">
-          Every provider Amrita knows, with its honest state. "ready" only ever follows real
-          evidence — a key present in the environment, a live CLI login probe, or a configured local
-          endpoint. Keys live as env-var <em>names</em>; no secret value is ever shown here.
-        </p>
-        {catalog === null ? (
-          <p className="empty-note">Probing provider catalog…</p>
-        ) : catalog.length === 0 ? (
-          <p className="empty-note">No providers registered.</p>
-        ) : (
-          groupCatalog(catalog).map((g) => (
-            <div key={g.group} className="hub-catalog-group">
-              <h3 className="hub-catalog-title">{g.title}</h3>
-              {g.entries.map((entry) => {
-                const hint = catalogStateHint(entry);
-                return (
-                  <div key={entry.id} className="hub-runtime">
-                    <div className="hub-role-head">
-                      <strong>{entry.title}</strong>
-                      <span className={`doc-badge ${catalogBadgeClass(entry.state)}`}>
-                        {CATALOG_STATE_LABEL[entry.state]}
-                      </span>
-                    </div>
-                    <small>
-                      default model {entry.defaultModel}
-                      {entry.envName ? ` · key env ${entry.envName}` : ''}
-                    </small>
-                    <p className="hub-detail">{entry.detail}</p>
-                    {hint ? <code className="hub-cmd">{hint}</code> : null}
+                    {projectId ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy || !draft.provider}
+                          onClick={() => void apply(role, 'project')}
+                        >
+                          Set for {projectName ?? 'project'}
+                        </button>
+                        {r.projectBinding ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void clear(role, 'project')}
+                          >
+                            Clear project override
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
                   </div>
-                );
-              })}
-            </div>
-          ))
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Coding runtimes</h2>
-        <p className="hub-note">
-          Execution hands, independent of the brain — Amrita supervises them whichever model is
-          thinking.
-        </p>
-        {status.codingRuntimes.map((rt) => (
-          <div key={rt.id} className="hub-runtime">
-            <div className="hub-role-head">
-              <strong>{rt.title}</strong>
-              <span
-                className={`doc-badge runtime-${rt.state === 'ready' ? 'ok' : rt.state === 'not_installed' || rt.state === 'status_unknown' ? 'off' : 'warn'}`}
-              >
-                {RUNTIME_STATE_LABEL[rt.state]}
-              </span>
-            </div>
-            <small>
-              {rt.version ? `${rt.version} · ` : ''}
-              real execution {rt.realExecution ? 'enabled' : 'disabled (safe default)'}
-            </small>
-            <p className="hub-detail">{rt.detail}</p>
-            {rt.nextCommand ? <code className="hub-cmd">{rt.nextCommand}</code> : null}
-          </div>
-        ))}
-        <div className="hub-runtime hub-future">
-          <div className="hub-role-head">
-            <strong>Codex CLI · OpenCode · local agents</strong>
-            <span className="doc-badge runtime-off">future</span>
-          </div>
-          <p className="hub-detail">
-            Planned behind the same typed bridge contract — never an ad-hoc button.
-          </p>
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Setup Hub — connectors</h2>
-        <p className="hub-note">
-          External sources and tools, each from a typed manifest. "Connected" only ever follows a
-          live probe — never a presence check, never a fake green badge.
-        </p>
-        {connectors === null ? (
-          <p className="empty-note">Probing connector status…</p>
-        ) : (
-          connectors.map((c) => (
-            <div key={c.manifest.slug} className="hub-runtime">
-              <div className="hub-role-head">
-                <strong>{c.manifest.title}</strong>
-                <span className={`doc-badge ${connectorBadgeClass(c.state)}`}>
-                  {CONNECTOR_STATE_LABEL[c.state]}
-                </span>
+                </div>
+              );
+            })}
+          </section>
+        ) : null}
+        {section === 'providers' ? (
+          <section className="card">
+            <h2>Brain providers — catalog</h2>
+            <p className="hub-note">
+              Every provider Amrita knows, with its honest state. "ready" only ever follows real
+              evidence — a key present in the environment, a live CLI login probe, or a configured
+              local endpoint. Keys live as env-var <em>names</em>; no secret value is ever shown
+              here.
+            </p>
+            {catalog === null ? (
+              <p className="empty-note">Probing provider catalog…</p>
+            ) : catalog.length === 0 ? (
+              <p className="empty-note">No providers registered.</p>
+            ) : (
+              groupCatalog(catalog).map((g) => (
+                <div key={g.group} className="hub-catalog-group">
+                  <h3 className="hub-catalog-title">{g.title}</h3>
+                  {g.entries.map((entry) => {
+                    const hint = catalogStateHint(entry);
+                    return (
+                      <div key={entry.id} className="hub-runtime">
+                        <div className="hub-role-head">
+                          <strong>{entry.title}</strong>
+                          <span className={`doc-badge ${catalogBadgeClass(entry.state)}`}>
+                            {CATALOG_STATE_LABEL[entry.state]}
+                          </span>
+                        </div>
+                        <small>
+                          default model {entry.defaultModel}
+                          {entry.envName ? ` · key env ${entry.envName}` : ''}
+                        </small>
+                        <p className="hub-detail">{entry.detail}</p>
+                        {hint ? <code className="hub-cmd">{hint}</code> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </section>
+        ) : null}
+        {section === 'runtimes' ? (
+          <section className="card">
+            <h2>Coding runtimes</h2>
+            <p className="hub-note">
+              Execution hands, independent of the brain — Amrita supervises them whichever model is
+              thinking.
+            </p>
+            {status.codingRuntimes.map((rt) => (
+              <div key={rt.id} className="hub-runtime">
+                <div className="hub-role-head">
+                  <strong>{rt.title}</strong>
+                  <span
+                    className={`doc-badge runtime-${rt.state === 'ready' ? 'ok' : rt.state === 'not_installed' || rt.state === 'status_unknown' ? 'off' : 'warn'}`}
+                  >
+                    {RUNTIME_STATE_LABEL[rt.state]}
+                  </span>
+                </div>
+                <small>
+                  {rt.version ? `${rt.version} · ` : ''}
+                  real execution {rt.realExecution ? 'enabled' : 'disabled (safe default)'}
+                </small>
+                <p className="hub-detail">{rt.detail}</p>
+                {rt.nextCommand ? <code className="hub-cmd">{rt.nextCommand}</code> : null}
               </div>
-              <small>
-                {c.manifest.kind} · {c.manifest.capabilities.join(', ') || 'no capabilities yet'}
-              </small>
-              <p className="hub-detail">{c.detail}</p>
-              {c.state === 'needs_setup' && c.nextCommand ? (
-                <code className="hub-cmd">{c.nextCommand}</code>
-              ) : null}
-              {c.manifest.slug === 'github' && c.state !== 'needs_setup' ? (
-                <div className="hub-import">
-                  <div className="hub-role-controls">
-                    <input
-                      value={repoDraft}
-                      onChange={(e) => setRepoDraft(e.target.value)}
-                      placeholder="owner/repo"
-                      aria-label="GitHub repository to import issues from"
-                    />
-                    <button
-                      type="button"
-                      disabled={busy || !writeCtx || !repoDraft.trim()}
-                      onClick={() => void importGithub()}
-                    >
-                      Import open issues{projectName ? ` into ${projectName}` : ''}
-                    </button>
+            ))}
+            <div className="hub-runtime hub-future">
+              <div className="hub-role-head">
+                <strong>Codex CLI · OpenCode · local agents</strong>
+                <span className="doc-badge runtime-off">future</span>
+              </div>
+              <p className="hub-detail">
+                Planned behind the same typed bridge contract — never an ad-hoc button.
+              </p>
+            </div>
+          </section>
+        ) : null}
+        {section === 'connectors' ? (
+          <section className="card">
+            <h2>Setup Hub — connectors</h2>
+            <p className="hub-note">
+              External sources and tools, each from a typed manifest. "Connected" only ever follows
+              a live probe — never a presence check, never a fake green badge.
+            </p>
+            {connectors === null ? (
+              <p className="empty-note">Probing connector status…</p>
+            ) : (
+              connectors.map((c) => (
+                <div key={c.manifest.slug} className="hub-runtime">
+                  <div className="hub-role-head">
+                    <strong>{c.manifest.title}</strong>
+                    <span className={`doc-badge ${connectorBadgeClass(c.state)}`}>
+                      {CONNECTOR_STATE_LABEL[c.state]}
+                    </span>
                   </div>
                   <small>
-                    One-way and idempotent: each issue becomes a task tagged github:owner/repo#N;
-                    already-imported issues are skipped. Amrita never writes to GitHub.
+                    {c.manifest.kind} ·{' '}
+                    {c.manifest.capabilities.join(', ') || 'no capabilities yet'}
                   </small>
-                  {importNote ? <p className="hub-detail">{importNote}</p> : null}
+                  <p className="hub-detail">{c.detail}</p>
+                  {c.state === 'needs_setup' && c.nextCommand ? (
+                    <code className="hub-cmd">{c.nextCommand}</code>
+                  ) : null}
+                  {c.manifest.slug === 'github' && c.state !== 'needs_setup' ? (
+                    <div className="hub-import">
+                      <div className="hub-role-controls">
+                        <input
+                          value={repoDraft}
+                          onChange={(e) => setRepoDraft(e.target.value)}
+                          placeholder="owner/repo"
+                          aria-label="GitHub repository to import issues from"
+                        />
+                        <button
+                          type="button"
+                          disabled={busy || !writeCtx || !repoDraft.trim()}
+                          onClick={() => void importGithub()}
+                        >
+                          Import open issues{projectName ? ` into ${projectName}` : ''}
+                        </button>
+                      </div>
+                      <small>
+                        One-way and idempotent: each issue becomes a task tagged
+                        github:owner/repo#N; already-imported issues are skipped. Amrita never
+                        writes to GitHub.
+                      </small>
+                      {importNote ? <p className="hub-detail">{importNote}</p> : null}
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
+              ))
+            )}
+            <div className="hub-connectors">
+              <div className="hub-connector">
+                <strong>API providers &amp; subscriptions</strong>
+                <small>
+                  See the “Brain providers — catalog” card above for live, per-provider states and
+                  the exact setup command for each. Keys live as env-var names only.
+                </small>
+              </div>
+              <div className="hub-connector hub-future">
+                <strong>Hermes bridge · MCP/tool connectors</strong>
+                <small>future — discovery-based, each behind its own ADR</small>
+              </div>
             </div>
-          ))
-        )}
-        <div className="hub-connectors">
-          <div className="hub-connector">
-            <strong>API providers &amp; subscriptions</strong>
-            <small>
-              See the “Brain providers — catalog” card above for live, per-provider states and the
-              exact setup command for each. Keys live as env-var names only.
-            </small>
-          </div>
-          <div className="hub-connector hub-future">
-            <strong>Hermes bridge · MCP/tool connectors</strong>
-            <small>future — discovery-based, each behind its own ADR</small>
-          </div>
-        </div>
-      </section>
-    </>
+          </section>
+        ) : null}
+      </div>
+    </div>
   );
 }

@@ -1757,3 +1757,90 @@ code {
     border: none;
   }
 }
+
+/* ── settings as a full page (claude.ai pattern: left sub-nav + content) ─── */
+.settings-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 26px 20px calc(30px + env(safe-area-inset-bottom));
+  width: 100%;
+}
+.settings-title {
+  max-width: 52rem;
+  margin: 0 auto 16px;
+  font-size: 26px;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 18px;
+  max-width: 52rem;
+  margin: 0 auto;
+  align-items: start;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+}
+.settings-nav button {
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  text-align: start;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  color: var(--slate);
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+.settings-nav button:hover {
+  background: var(--cloud);
+  color: var(--ink);
+}
+.settings-nav button.active {
+  background: var(--cloud);
+  color: var(--ink);
+  font-weight: 500;
+}
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+@media (max-width: 960px) {
+  /* settings lives in the chat column now — keep it visible on its tab */
+  .app-shell.mobile-settings .chat-panel .settings-page {
+    display: block;
+  }
+  .app-shell.mobile-settings .inspector {
+    display: none;
+  }
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 6px;
+    padding-bottom: 4px;
+  }
+  .settings-nav button {
+    white-space: nowrap;
+    border: 1px solid var(--border-mid);
+    border-radius: var(--r-pill);
+  }
+  .settings-nav button.active {
+    border-color: var(--ink);
+  }
+}
+
+@media (min-width: 961px) {
+  .app-shell.settings-open:not(.canvas-open) {
+    grid-template-columns: 264px minmax(0, 1fr);
+  }
+}
