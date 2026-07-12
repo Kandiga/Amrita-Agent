@@ -770,6 +770,25 @@ One ledger, updated per phase — no scattered notes.
   Telegram runner should go live; the dedicated-GitHub-repo question from the master
   plan's open items.
 
+## Setup on the deployed host — brain connected (subscription, zero keys)
+
+- **Date:** 2026-07-12 · non-interactive equivalents of `amrita setup` (the wizard's own
+  guidance for non-TTY), run against the deployed home.
+- **What happened:** `amrita provider catalog` showed `claude-code` **ready** via a real
+  probe (logged in, 2.1.207); connected a `subscription_cli` account (no secret exists
+  anywhere); bound `fast/main/deep → claude-code`.
+- **Root cause found live:** the first real turn through the systemd daemon failed with
+  an honest `provider_unavailable` — the service unit's default PATH cannot see the
+  user-local `claude` binary. Fixed at both authorities: a PATH drop-in on this host's
+  unit, AND the repo's `deploy/amritad.service` template + installer now substitute
+  `__PATH__` (also added `--scheduler` to the template ExecStart). Future installs
+  won't hit it.
+- **E4 proof:** a REAL chat turn through the deployed daemon over RPC returned
+  `provider: claude-code · model: sonnet` with a live subscription reply. Doctor:
+  providers ✓ (account + role policy), runtimes ✓ (Claude Code authenticated) —
+  overall `ok with warnings` (remaining warnings are honest optional-setup states:
+  telegram token, cinema bridge token).
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

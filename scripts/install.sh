@@ -106,7 +106,9 @@ if [ -t 0 ] && [ "${AMRITA_NO_SERVICE:-0}" != "1" ] && \
   case "$reply" in
     y|Y|yes)
       mkdir -p "$HOME/.config/systemd/user"
+      SERVICE_PATH="$(dirname "$NODE_BIN"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
       sed -e "s|__NODE__|$NODE_BIN|g" -e "s|__DIR__|$INSTALL_DIR|g" \
+        -e "s|__PATH__|$SERVICE_PATH|g" \
         "$INSTALL_DIR/deploy/amritad.service" > "$HOME/.config/systemd/user/amritad.service"
       systemctl --user daemon-reload
       systemctl --user enable --now amritad

@@ -6,7 +6,10 @@ Description=Amrita agent daemon (HTTP + Telegram)
 After=network-online.target
 
 [Service]
-ExecStart=__NODE__ __DIR__/packages/daemon/src/bin/amritad.ts --http --telegram
+ExecStart=__NODE__ __DIR__/packages/daemon/src/bin/amritad.ts --http --telegram --scheduler
+# Subscription-CLI providers (claude-code) spawn `claude` from PATH — systemd's
+# default PATH misses user bins, so the installer substitutes a full one here.
+Environment=PATH=__PATH__
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
