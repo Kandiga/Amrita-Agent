@@ -1,4 +1,4 @@
-import { fixPermissions } from '@amrita/daemon';
+import { PROVIDER_ROLES, fixPermissions } from '@amrita/daemon';
 import { CliError, type InProcessClient } from './client.ts';
 import { configCheck, configPath, configSet, configShow } from './config-cli.ts';
 import { ensureDefaultConversation, resolveProjectId, resolveWriteContext } from './context.ts';
@@ -968,7 +968,7 @@ export const COMMANDS: Record<string, Command> = {
     async run(client, { positionals, flags }) {
       const role = positionals[0];
       const provider = positionals[1];
-      if (!role || !provider || !['fast', 'main', 'deep'].includes(role)) {
+      if (!role || !provider || !(PROVIDER_ROLES as readonly string[]).includes(role)) {
         throw new CliError(
           'usage: amrita role set <fast|main|deep> <provider> [--model MODEL] [--project ID_OR_SLUG]',
         );
@@ -1004,7 +1004,7 @@ export const COMMANDS: Record<string, Command> = {
     describe: 'remove a role binding (global, or one project with --project)',
     async run(client, { positionals, flags }) {
       const role = positionals[0];
-      if (!role || !['fast', 'main', 'deep'].includes(role)) {
+      if (!role || !(PROVIDER_ROLES as readonly string[]).includes(role)) {
         throw new CliError('usage: amrita role clear <fast|main|deep> [--project ID_OR_SLUG]');
       }
       const project = strFlag(flags, 'project');

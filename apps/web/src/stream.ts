@@ -4,12 +4,13 @@
  * pass a fake socket factory and fake timers, so no real network or clock is
  * touched.
  *
- * Frame contract (authoritative: `packages/daemon/src/http.ts`):
+ * Frame contract (authoritative: `wsServerFrameSchema` in `@amrita/protocol`,
+ * ADR-0032): every incoming frame is parsed against the protocol union —
  *   { t: 'event',    event }                          // one per replayed + live event
  *   { t: 'replayed', conversationId, sinceSeq }       // marker once replay is done
  *
  * Behaviour:
- * - parses both frame kinds; a malformed frame is dropped, never thrown;
+ * - a frame that fails the protocol parse is dropped, never thrown;
  * - tracks the highest `seq` seen, so a reconnect resumes via `?sinceSeq=` and
  *   never re-requests history it already has (the transcript reducer de-dupes
  *   any overlap by event id anyway);
@@ -17,12 +18,11 @@
  * - never logs a frame payload.
  */
 
+import { type WsServerFrame, wsServerFrameSchema } from '@amrita/protocol';
 import type { AmritaEventLite } from './api.ts';
 
-/** One frame on the `/events/ws` stream. */
-export type StreamFrame =
-  | { t: 'event'; event: AmritaEventLite }
-  | { t: 'replayed'; conversationId: string; sinceSeq: number };
+/** One frame on the `/events/ws` stream (protocol-owned union). */
+export type StreamFrame = WsServerFrame;
 
 /** The subset of the browser `WebSocket` API the client touches — injectable for tests. */
 export interface WebSocketLike {
@@ -150,18 +150,20 @@ export function openEventStream(
       setState('open');
     };
     socket.onmessage = (m) => {
-      let frame: StreamFrame;
+      let raw: unknown;
       try {
-        frame = JSON.parse(String(m.data)) as StreamFrame;
+        raw = JSON.parse(String(m.data));
       } catch {
         return; // malformed frame: drop, never throw
       }
-      if (frame && frame.t === 'event' && frame.event) {
-        if (typeof frame.event.seq === 'number' && frame.event.seq > lastSeq) {
-          lastSeq = frame.event.seq;
-        }
+      // ADR-0032: the protocol union is the frame authority; parse or drop.
+      const parsed = wsServerFrameSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const frame = parsed.data;
+      if (frame.t === 'event') {
+        if (frame.event.seq > lastSeq) lastSeq = frame.event.seq;
         handlers.onEvent(frame.event);
-      } else if (frame && frame.t === 'replayed') {
+      } else {
         handlers.onReplayed?.(frame.sinceSeq);
       }
     };

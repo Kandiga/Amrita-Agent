@@ -1,3 +1,4 @@
+import { PROVIDER_ROLES, type ProviderRole } from '@amrita/protocol';
 import { useCallback, useEffect, useState } from 'react';
 import type {
   CodingRuntimeLite,
@@ -15,8 +16,8 @@ import {
   groupCatalog,
 } from '../providers-view.ts';
 
-const ROLES = ['fast', 'main', 'deep'] as const;
-type Role = (typeof ROLES)[number];
+const ROLES = PROVIDER_ROLES;
+type Role = ProviderRole;
 
 const ROLE_HINT: Record<Role, string> = {
   fast: 'quick, cheap turns (summaries, background work)',

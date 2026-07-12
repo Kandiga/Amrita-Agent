@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { CodingRuntimeState, CodingRuntimeStatusWire } from '@amrita/protocol';
 
 /**
  * Coding-runtime status probes (docs/strategy/native-interactive-surface.md §2.9,
@@ -9,27 +10,11 @@ import { spawn } from 'node:child_process';
  * Honesty rules: states come ONLY from real probes with bounded timeouts; an
  * inconclusive probe is `status_unknown`, never a green badge. No probe output
  * containing secrets is ever returned — only classified state + version string.
+ *
+ * Status shapes are protocol-owned wire contracts since ADR-0032.
  */
-
-export type CodingRuntimeState =
-  | 'ready' // installed AND the auth probe succeeded
-  | 'installed_unauthenticated' // installed, auth probe explicitly failed
-  | 'installed_auth_unknown' // installed, auth probe inconclusive
-  | 'not_installed'
-  | 'status_unknown'; // probes timed out / errored inconclusively
-
-export interface CodingRuntimeStatus {
-  /** Runtime id: `claude-code` (wired) or a detection-only id (`codex`, `opencode`). */
-  id: string;
-  title: string;
-  state: CodingRuntimeState;
-  version?: string;
-  /** Whether THIS daemon allows real lane execution (ADR-0015 posture). */
-  realExecution: boolean;
-  detail: string;
-  /** Exact next command for the operator, when one is known. Never a secret. */
-  nextCommand?: string;
-}
+export type { CodingRuntimeState };
+export type CodingRuntimeStatus = CodingRuntimeStatusWire;
 
 export type ProbeResult =
   | { kind: 'ok'; stdout: string }

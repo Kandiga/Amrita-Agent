@@ -736,7 +736,7 @@ export class AmritaKernel {
   resolveRole(
     role: ProviderRole,
     projectId?: string,
-  ): { provider: string; model?: string; via: 'project' | 'binding' | 'auto' } {
+  ): RoleBinding & { via: 'project' | 'binding' | 'auto' } {
     if (projectId) {
       const project = this.getRoleBinding(role, projectId);
       if (project) return { ...project, via: 'project' };

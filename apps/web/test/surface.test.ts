@@ -9,11 +9,21 @@ const brief: BriefLite = {
   successCriteria: ['login works'],
   scope: ['web'],
   noScope: ['mobile'],
+  sourceMessageId: null,
+  createdAt: '2026-06-11T09:00:00.000Z',
   updatedAt: '2026-06-11T10:00:00.000Z',
 };
 
 function milestone(over: Partial<MilestoneLite> & { id: string; title: string }): MilestoneLite {
-  return { description: null, status: 'planned', targetDate: null, ...over };
+  return {
+    projectId: 'P1',
+    description: null,
+    status: 'planned',
+    targetDate: null,
+    createdAt: '2026-06-11T09:00:00.000Z',
+    updatedAt: '2026-06-11T09:00:00.000Z',
+    ...over,
+  };
 }
 
 function base(over: Partial<SurfaceInputs> = {}): SurfaceInputs {
@@ -105,6 +115,8 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
       palette: ['#0EA5E9 cyan accents'],
       typography: null,
       doNotUse: [],
+      sourceMessageId: null,
+      createdAt: '2026-06-11T09:00:00.000Z',
       updatedAt: '2026-06-11T10:00:00.000Z',
     };
     const artifacts = buildSurfaceArtifacts(base({ brief, brand }));
@@ -127,8 +139,10 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
         brand,
         previewApprovals: [
           {
+            projectId: 'P1',
             previewId: preview.id,
             contentHash: preview.contentHash,
+            sourceMessageId: null,
             approvedAt: '2026-06-11T11:00:00.000Z',
           },
         ],
@@ -143,8 +157,10 @@ describe('surface builders (Stage A — deterministic, no sample data)', () => {
         brand,
         previewApprovals: [
           {
+            projectId: 'P1',
             previewId: preview.id,
             contentHash: preview.contentHash,
+            sourceMessageId: null,
             approvedAt: '2026-06-11T11:00:00.000Z',
           },
         ],

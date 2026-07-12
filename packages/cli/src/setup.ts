@@ -1,4 +1,5 @@
 import {
+  PROVIDER_ROLES,
   backupBeforeReconfigure,
   secretsEnvPath,
   writeConfig,
@@ -418,7 +419,7 @@ async function sectionRoles(client: InProcessClient, deps: SetupDeps): Promise<v
   const known = await client.call<{ id: string }[]>('providers.list');
   const ids = known.map((p) => p.id);
   const status = await client.call<RoleStatusLite>('runtime.status');
-  for (const role of ['fast', 'main', 'deep'] as const) {
+  for (const role of PROVIDER_ROLES) {
     const cur = status.roles.find((r) => r.role === role);
     const shown = cur ? `${cur.resolvesTo} (via ${cur.via})` : 'auto';
     const answer = (

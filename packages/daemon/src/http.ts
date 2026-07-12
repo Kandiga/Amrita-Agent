@@ -1,8 +1,19 @@
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
+import type { AmritaEvent, WsServerFrame } from '@amrita/protocol';
 import { WebSocketServer } from 'ws';
 import { requestToken, tokensMatch } from './auth.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
+
+/** Seal one WS frame to the protocol union (ADR-0032) before serializing. */
+function wsFrame(frame: WsServerFrame): string {
+  return JSON.stringify(frame);
+}
+
+/** Wrap a sealed event as its wire frame (every event payload is an object). */
+function eventFrame(ev: AmritaEvent): WsServerFrame {
+  return { t: 'event', event: ev };
+}
 
 /**
  * A small local HTTP + WebSocket surface over the kernel/RPC. Binds to localhost
@@ -195,23 +206,23 @@ export function startHttpServer(
       }
       let lastSeq = Number(url.searchParams.get('sinceSeq') ?? '0') || 0;
       for (const ev of kernel.listEvents(conversationId, lastSeq)) {
-        ws.send(JSON.stringify({ t: 'event', event: ev }));
+        ws.send(wsFrame(eventFrame(ev)));
         lastSeq = ev.seq;
       }
-      ws.send(JSON.stringify({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
+      ws.send(wsFrame({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
 
       // Live fan-out: forward newly appended events for this conversation.
       const unsubscribe = kernel.store.subscribe((ev) => {
         if (ev.conversationId === conversationId && ev.seq > lastSeq) {
           lastSeq = ev.seq;
-          ws.send(JSON.stringify({ t: 'event', event: ev }));
+          ws.send(wsFrame(eventFrame(ev)));
         }
       });
       // Stream-only fan-out (model.delta): ephemeral, seq 0, never replayed —
       // forwarded as-is without touching lastSeq.
       const unsubscribeStream = kernel.subscribeStream((ev) => {
         if (ev.conversationId === conversationId) {
-          ws.send(JSON.stringify({ t: 'event', event: ev }));
+          ws.send(wsFrame(eventFrame(ev)));
         }
       });
       const cleanup = () => {

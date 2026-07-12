@@ -1,30 +1,157 @@
+import { newId } from '@amrita/protocol';
 import { describe, expect, it } from 'vitest';
 import { RpcClient, RpcError } from '../src/api.ts';
+
+/**
+ * Since ADR-0032 the client parses every response through the protocol's wire
+ * contract, so these fixtures must be contract-valid — a fixture that would
+ * not parse is exactly the drift this layer now catches.
+ */
+
+const ULID = newId();
 
 function jsonResponse(body: unknown, ok = true) {
   return { ok, json: async () => body } as Response;
 }
 
+/** Minimal contract-valid results for the methods these tests exercise. */
+function resultFor(method: string): unknown {
+  switch (method) {
+    case 'health':
+      return {
+        ok: true,
+        name: 'amritad',
+        startedAt: '2026-07-11T10:00:00.000Z',
+        dbPath: ':memory:',
+        schemaVersion: 6,
+        counts: { projects: 0, conversations: 0, messages: 0, events: 0 },
+        lanes: { realExecution: false, active: 0 },
+      };
+    case 'tasks.create':
+      return { taskId: ULID };
+    case 'tasks.complete':
+    case 'projects.brand.update':
+    case 'projects.previews.approve':
+    case 'projects.brief.update':
+    case 'projects.questions.resolve':
+    case 'projects.questions.drop':
+    case 'projects.milestones.complete':
+    case 'providers.role.set':
+    case 'providers.role.clear':
+      return { ok: true };
+    case 'decisions.record':
+      return { decisionId: ULID };
+    case 'decisions.list':
+    case 'connectors.status':
+    case 'harness.sources':
+    case 'projects.timeline.list':
+      return [];
+    case 'memory.put':
+      return { entryId: ULID };
+    case 'runtime.status':
+      return { roles: [], providers: [], codingRuntimes: [] };
+    case 'providers.catalog':
+      return [
+        {
+          id: 'anthropic',
+          title: 'Anthropic',
+          group: 'api_key',
+          authMode: 'api_key',
+          defaultModel: 'claude-sonnet-4-5',
+          executable: true,
+          state: 'needs_key',
+          detail: 'no key configured',
+        },
+      ];
+    case 'harness.topology':
+      return {
+        version: 1,
+        agents: [
+          {
+            id: 'capture',
+            role: 'ingest',
+            title: 'Manual capture',
+            trigger: 'user action',
+            outputs: ['knowledge records'],
+            qualityChecks: ['provenance present'],
+            status: 'active',
+          },
+        ],
+      };
+    case 'harness.brain':
+      return {
+        projectId: ULID,
+        records: [],
+        gaps: [],
+        sources: [],
+        maintenance: [],
+        counts: { records: 0, gaps: 0, sourcesConnected: 0, sourcesManual: 0, sourcesPlanned: 0 },
+      };
+    case 'harness.capture':
+      return { entryId: ULID, kind: 'commitment' };
+    case 'github.importIssues':
+      return { repo: 'octo/repo', imported: 0, skipped: 0, total: 0, tasks: [] };
+    case 'projects.companion.get':
+      return {
+        brief: null,
+        brand: null,
+        questions: [],
+        risks: [],
+        milestones: [],
+        previewApprovals: [],
+      };
+    case 'projects.questions.open':
+      return { questionId: ULID };
+    case 'projects.risks.open':
+      return { riskId: ULID };
+    case 'projects.milestones.create':
+      return { milestoneId: ULID };
+    case 'lanes.start':
+      return { laneId: ULID, status: 'running', dryRun: false, detached: true, report: null };
+    case 'lanes.cancel':
+      return { laneId: ULID, cancelled: true, status: null };
+    default:
+      return {};
+  }
+}
+
+/** A fake fetch that records request bodies and answers contract-valid results. */
+function contractFetch(record: Array<{ method: string; params: unknown }>) {
+  return (async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: unknown };
+    record.push({ method: body.method, params: body.params });
+    return jsonResponse({ id: body.id, result: resultFor(body.method) });
+  }) as typeof fetch;
+}
+
 describe('RpcClient', () => {
-  it('posts json-rpc calls through the injected fetch', async () => {
+  it('posts json-rpc calls through the injected fetch and parses the result contract', async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     const client = new RpcClient({
       baseUrl: 'http://amrita.local',
       fetchImpl: (async (url, init) => {
         calls.push({ url: String(url), init });
-        return jsonResponse({ result: { ok: true } });
+        return jsonResponse({ id: 1, result: resultFor('health') });
       }) as typeof fetch,
     });
 
-    await expect(client.call('health')).resolves.toEqual({ ok: true });
+    await expect(client.call('health')).resolves.toMatchObject({ ok: true, name: 'amritad' });
     expect(calls[0]?.url).toBe('http://amrita.local/rpc');
     expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ method: 'health' });
+  });
+
+  it('rejects a result that violates the wire contract (ADR-0032)', async () => {
+    const client = new RpcClient({
+      fetchImpl: (async () => jsonResponse({ id: 1, result: { notHealth: true } })) as typeof fetch,
+    });
+    await expect(client.call('health')).rejects.toThrow();
   });
 
   it('throws structured value-free rpc errors', async () => {
     const client = new RpcClient({
       fetchImpl: (async () =>
         jsonResponse({
+          id: 1,
           error: { code: 'provider_unavailable', message: 'Provider unavailable' },
         })) as typeof fetch,
     });
@@ -39,15 +166,21 @@ describe('RpcClient', () => {
   });
 
   it('loads replay events by conversation id and since sequence', async () => {
+    const ev = {
+      id: newId(),
+      seq: 8,
+      ts: '2026-07-11T10:00:00.000Z',
+      projectId: newId(),
+      conversationId: newId(),
+      origin: 'user',
+      type: 'message.user',
+      payload: { text: 'hello' },
+    };
     const client = new RpcClient({
       baseUrl: '/api',
       fetchImpl: (async (url) => {
         expect(String(url)).toContain('/api/events?conversationId=c1&sinceSeq=7');
-        return jsonResponse({
-          events: [
-            { id: 'e1', seq: 8, ts: 'now', type: 'message.user', payload: { text: 'hello' } },
-          ],
-        });
+        return jsonResponse({ events: [ev] });
       }) as typeof fetch,
     });
 
@@ -59,7 +192,7 @@ describe('RpcClient', () => {
     const client = new RpcClient({
       fetchImpl: (async (_url, init) => {
         headers.push((init?.headers ?? {}) as Record<string, string>);
-        return jsonResponse({ result: {} });
+        return jsonResponse({ id: 1, result: resultFor('health') });
       }) as typeof fetch,
     });
     await client.call('health'); // no token yet
@@ -88,12 +221,7 @@ describe('RpcClient', () => {
 
   it('sends typed project-knowledge RPC payloads (tasks/decisions/memory)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: {} });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     const ctx = { projectId: 'P1', conversationId: 'C1' };
     await client.tasksCreate({ ...ctx, title: 'ship it' });
     await client.tasksComplete({ ...ctx, taskId: 'T1' });
@@ -113,12 +241,7 @@ describe('RpcClient', () => {
 
   it('sends typed brand + preview-approval RPC payloads', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: {} });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     const ctx = { projectId: 'P1', conversationId: 'C1' };
     await client.brandUpdate({ ...ctx, name: 'Nimbus', palette: ['#0EA5E9 cyan'] });
     await client.previewApprove({ ...ctx, previewId: 'html-preview:P1', contentHash: 'abc123' });
@@ -135,12 +258,7 @@ describe('RpcClient', () => {
 
   it('sends typed runtime-selection RPC payloads (status/set/clear)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: {} });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     await client.runtimeStatus('P1');
     await client.runtimeStatus();
     await client.roleSet({ role: 'main', provider: 'mock', model: 'm1', projectId: 'P1' });
@@ -161,14 +279,7 @@ describe('RpcClient', () => {
 
   it('fetches the provider catalog through providers.catalog', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({
-          result: [{ id: 'anthropic', title: 'Anthropic', group: 'api_key', state: 'needs_key' }],
-        });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     const catalog = await client.providersCatalog();
     expect(bodies[0]?.method).toBe('providers.catalog');
     expect(bodies[0]?.params).toEqual({});
@@ -177,12 +288,7 @@ describe('RpcClient', () => {
 
   it('sends typed brain-harness RPC payloads (ADR-0027)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: {} });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     await client.harnessTopology();
     await client.harnessSources();
     await client.harnessBrain('P1');
@@ -211,12 +317,7 @@ describe('RpcClient', () => {
 
   it('sends typed connector + github-import RPC payloads (ADR-0022)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: [] });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     await client.connectorsStatus();
     await client.githubImport({
       projectId: 'P1',
@@ -237,12 +338,7 @@ describe('RpcClient', () => {
 
   it('sends typed companion RPC payloads (brief/questions/risks/milestones/timeline)', async () => {
     const bodies: Array<{ method: string; params: unknown }> = [];
-    const client = new RpcClient({
-      fetchImpl: (async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return jsonResponse({ result: {} });
-      }) as typeof fetch,
-    });
+    const client = new RpcClient({ fetchImpl: contractFetch(bodies) });
     const ctx = { projectId: 'P1', conversationId: 'C1' };
     await client.companionGet('P1');
     await client.briefUpdate({ ...ctx, goal: 'ship it', successCriteria: ['works'] });
@@ -276,11 +372,12 @@ describe('RpcClient', () => {
     }> = [];
     const client = new RpcClient({
       fetchImpl: (async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { id: number; method: string };
         calls.push({
-          body: JSON.parse(String(init?.body)),
+          body: body as unknown as { method: string; params: unknown },
           headers: (init?.headers ?? {}) as Record<string, string>,
         });
-        return jsonResponse({ result: { laneId: 'L1', status: 'running' } });
+        return jsonResponse({ id: body.id, result: resultFor(body.method) });
       }) as typeof fetch,
     });
     client.setAuthToken('tok-1');

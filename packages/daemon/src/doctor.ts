@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import type { DoctorCheck, DoctorReport, DoctorSection, DoctorStatus } from '@amrita/protocol';
 import { CINEMA_BRIDGE_TOKEN_ENV, cinemaProviders } from './cinema.ts';
 import { CONNECTOR_MANIFESTS } from './connectors.ts';
 import {
@@ -25,31 +26,8 @@ import type { CodingRuntimeStatus } from './runtimes.ts';
  * bundled, even though the transport itself is implemented and tested.
  */
 
-export type DoctorStatus = 'ok' | 'warn' | 'fail';
-
-export interface DoctorCheck {
-  id: string;
-  label: string;
-  status: DoctorStatus;
-  detail?: string;
-  /** An exact command the operator can run to resolve a warn/fail. */
-  fix?: string;
-}
-
-export interface DoctorSection {
-  title: string;
-  checks: DoctorCheck[];
-}
-
-export interface DoctorReport {
-  /** False iff any check failed (warns keep ok=true). */
-  ok: boolean;
-  /** The worst status across all checks. */
-  status: DoctorStatus;
-  sections: DoctorSection[];
-  /** Deduped fix commands from every warn/fail check, in report order. */
-  fixes: string[];
-}
+// Report shapes are protocol-owned wire contracts since ADR-0032.
+export type { DoctorCheck, DoctorReport, DoctorSection, DoctorStatus };
 
 function worst(checks: DoctorCheck[]): DoctorStatus {
   if (checks.some((c) => c.status === 'fail')) return 'fail';

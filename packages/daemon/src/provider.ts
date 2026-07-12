@@ -11,6 +11,15 @@
  * tests never hit the network and never spawn processes.
  */
 import { spawnSync } from 'node:child_process';
+import { PROVIDER_ROLES } from '@amrita/protocol';
+import type {
+  AuthMode as ProviderAuthMode,
+  ProviderCatalogEntryWire,
+  ProviderGroup,
+  ProviderInfoWire,
+  ProviderRole,
+  RoleBindingWire as RoleBinding,
+} from '@amrita/protocol';
 
 export interface ChatMessage {
   role: 'user' | 'agent' | 'system';
@@ -61,9 +70,10 @@ export const MOCK_PROVIDER_ID = 'mock';
 
 // ── role policy (D5) ─────────────────────────────────────────────────────────
 
-/** The provider roles a turn can ask for instead of a concrete provider. */
-export const PROVIDER_ROLES = ['fast', 'main', 'deep'] as const;
-export type ProviderRole = (typeof PROVIDER_ROLES)[number];
+// The role list and binding shape are protocol-owned since ADR-0032;
+// re-exported here so daemon-internal imports keep one obvious source.
+export { PROVIDER_ROLES };
+export type { ProviderRole, RoleBinding };
 
 /** Settings key for a role binding: `providers.role.<role>` → RoleBinding. */
 export const ROLE_SETTING_PREFIX = 'providers.role.';
@@ -77,12 +87,6 @@ export function roleSettingKey(role: ProviderRole, projectId?: string): string {
   return projectId
     ? `project.${projectId}.${ROLE_SETTING_PREFIX}${role}`
     : `${ROLE_SETTING_PREFIX}${role}`;
-}
-
-/** A role's configured target. Stored in `settings` (non-secret by definition). */
-export interface RoleBinding {
-  provider: string;
-  model?: string;
 }
 
 /** Narrow an unknown settings value to a RoleBinding, or undefined. */
@@ -383,9 +387,8 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
 
 // ── provider catalog ─────────────────────────────────────────────────────────
 
-/** How a catalog provider authenticates (mirrors the protocol's authMode enum). */
-export type ProviderAuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
-export type ProviderGroup = 'login' | 'api_key' | 'local';
+// Auth mode and group are protocol-owned enums since ADR-0032.
+export type { ProviderAuthMode, ProviderGroup };
 
 /**
  * Wire transport / API mode (Hermes `transport`→api_mode lesson, providers.py).
@@ -681,42 +684,10 @@ export function parseLocalEndpoint(value: unknown): LocalEndpointConfig | undefi
   };
 }
 
-/** Provider availability, computed by the kernel from account config + env presence. */
-export interface ProviderInfo {
-  id: string;
-  kind: 'mock' | 'real';
-  /** Whether `chat.turn` can run this provider right now. */
-  available: boolean;
-  /** Number of bound accounts (with a secret_ref) for this provider. */
-  configuredAccounts: number;
-  /** Whether at least one bound account's env var is present (boolean only). */
-  envReady: boolean;
-  /** Whether replies stream live as `model.delta` (ADR-0016); never faked. */
-  streaming: boolean;
-  /** Catalog metadata (absent for mock) — ADR-0025. */
-  title?: string;
-  group?: ProviderGroup;
-  authMode?: ProviderAuthMode;
-  executable?: boolean;
-}
-
-/** One chooser-UI entry from `providers.catalog` (ADR-0025). Value-free. */
-export interface ProviderCatalogEntry {
-  id: string;
-  title: string;
-  group: ProviderGroup;
-  authMode: ProviderAuthMode;
-  defaultModel: string;
-  executable: boolean;
-  envName?: string;
-  keyUrl?: string;
-  installHint?: string;
-  /**
-   * `ready` only after real evidence (env presence / live CLI probe / endpoint
-   * config). `unavailable` = detected but not runnable, with the reason in
-   * `detail` — honesty over cosmetics.
-   */
-  state: 'ready' | 'needs_key' | 'needs_login' | 'missing_cli' | 'needs_endpoint' | 'unavailable';
-  detail: string;
-  fix?: string;
-}
+/**
+ * Provider availability + chooser-catalog entry shapes are protocol-owned wire
+ * contracts since ADR-0032 (`providerInfoSchema` / `providerCatalogEntrySchema`).
+ * `ready` only ever follows real evidence — honesty over cosmetics (ADR-0025).
+ */
+export type ProviderInfo = ProviderInfoWire;
+export type ProviderCatalogEntry = ProviderCatalogEntryWire;

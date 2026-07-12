@@ -2,12 +2,21 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   type AmritaEvent,
+  type AuthMode,
+  type ConnectorStatus,
   type ConversationRow,
   type EventChannel,
   type EventOrigin,
   type EventType,
+  type LaneRowStatus,
+  type MemoryScope,
   type MessageRow,
+  type MilestoneStatus,
   type ProjectRow,
+  type ProviderConfigStatus,
+  type QuestionStatus,
+  type RiskSeverity,
+  type TaskStatus,
   type UnsealedEvent,
   isSafeEnvSecretRefName,
   isStreamOnly,
@@ -58,19 +67,18 @@ export interface EntityWriteOpts {
   channel?: EventChannel;
 }
 
-export type TaskStatus = 'now' | 'later' | 'done' | 'dropped';
-export type MemoryScope = 'user' | 'project';
-export type QuestionStatus = 'open' | 'resolved' | 'dropped';
-export type RiskSeverity = 'low' | 'medium' | 'high';
-export type MilestoneStatus = 'planned' | 'active' | 'done' | 'dropped';
-export type ConnectorStatus = 'needs_setup' | 'ready' | 'error' | 'disabled';
-export type AuthMode = 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
-export type LaneStatus = 'spawned' | 'running' | 'merging' | 'completed' | 'aborted';
-export type ProviderConfigStatus =
-  | 'missing_secret_ref'
-  | 'secret_ref_bound'
-  | 'degraded'
-  | 'healthy';
+// Status enums are protocol-owned since ADR-0032; re-exported for store consumers.
+export type {
+  AuthMode,
+  ConnectorStatus,
+  MemoryScope,
+  MilestoneStatus,
+  ProviderConfigStatus,
+  QuestionStatus,
+  RiskSeverity,
+  TaskStatus,
+};
+export type LaneStatus = LaneRowStatus;
 
 export interface TaskRow {
   id: string;

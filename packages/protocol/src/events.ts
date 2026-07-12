@@ -21,6 +21,60 @@ export type EventOrigin = z.infer<typeof eventOriginSchema>;
 export const eventChannelSchema = z.enum(['web', 'telegram', 'cli', 'api']);
 export type EventChannel = z.infer<typeof eventChannelSchema>;
 
+// ── shared domain enums (ADR-0032) ───────────────────────────────────────────
+// Exported so store/daemon/cli/web import them instead of re-declaring. These
+// are the single source of truth for every enum that crosses a boundary.
+
+/** The provider roles a turn can ask for instead of a concrete provider (D5). */
+export const providerRoleSchema = z.enum(['fast', 'main', 'deep']);
+export const PROVIDER_ROLES = providerRoleSchema.options;
+export type ProviderRole = z.infer<typeof providerRoleSchema>;
+
+/** Which selection scope chose a turn's provider (ADR-0019 provenance). */
+export const runtimeViaSchema = z.enum(['explicit', 'project', 'binding', 'auto', 'default']);
+export type RuntimeVia = z.infer<typeof runtimeViaSchema>;
+
+export const taskStatusSchema = z.enum(['now', 'later', 'done', 'dropped']);
+export type TaskStatus = z.infer<typeof taskStatusSchema>;
+
+export const memoryScopeSchema = z.enum(['user', 'project']);
+export type MemoryScope = z.infer<typeof memoryScopeSchema>;
+
+export const milestoneStatusSchema = z.enum(['planned', 'active', 'done', 'dropped']);
+export type MilestoneStatus = z.infer<typeof milestoneStatusSchema>;
+
+export const questionStatusSchema = z.enum(['open', 'resolved', 'dropped']);
+export type QuestionStatus = z.infer<typeof questionStatusSchema>;
+
+export const riskSeveritySchema = z.enum(['low', 'medium', 'high']);
+export type RiskSeverity = z.infer<typeof riskSeveritySchema>;
+
+export const laneRowStatusSchema = z.enum([
+  'spawned',
+  'running',
+  'merging',
+  'completed',
+  'aborted',
+]);
+export type LaneRowStatus = z.infer<typeof laneRowStatusSchema>;
+
+export const connectorStatusSchema = z.enum(['needs_setup', 'ready', 'error', 'disabled']);
+export type ConnectorStatus = z.infer<typeof connectorStatusSchema>;
+
+export const authModeSchema = z.enum(['api_key', 'subscription_cli', 'local_endpoint', 'oauth']);
+export type AuthMode = z.infer<typeof authModeSchema>;
+
+export const providerConfigStatusSchema = z.enum([
+  'missing_secret_ref',
+  'secret_ref_bound',
+  'degraded',
+  'healthy',
+]);
+export type ProviderConfigStatus = z.infer<typeof providerConfigStatusSchema>;
+
+export const approvalDecisionSchema = z.enum(['allow', 'deny']);
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
 /** The sealed envelope — carries `seq`, assigned by the store on append. */
 export const eventEnvelopeBaseSchema = z
   .object({
@@ -62,11 +116,6 @@ const toolResultSchema = z
   })
   .strict();
 
-// Entity sub-schemas (mirror the store enums added in WO#1.1 / ADR-0003).
-const taskStatusSchema = z.enum(['now', 'later', 'done', 'dropped']);
-const memoryScopeSchema = z.enum(['user', 'project']);
-const connectorStatusSchema = z.enum(['needs_setup', 'ready', 'error', 'disabled']);
-const authModeSchema = z.enum(['api_key', 'subscription_cli', 'local_endpoint', 'oauth']);
 /** Keys that must never appear in `settings` (mirrors the store CHECK, ADR-0003). */
 const SECRET_KEY_RE = /secret|api[_-]?key|apikey|token|password/i;
 
@@ -98,10 +147,10 @@ export const eventPayloads = {
     .object({
       provider: z.string(),
       model: z.string(),
-      role: z.enum(['fast', 'main', 'deep']),
+      role: providerRoleSchema,
       // Runtime-selection provenance (ADR-0019): which scope chose this
       // provider. Optional so pre-0019 events still parse.
-      via: z.enum(['explicit', 'project', 'binding', 'auto', 'default']).optional(),
+      via: runtimeViaSchema.optional(),
     })
     .strict(),
   // STREAM ONLY — never persisted (see STREAM_ONLY_TYPES).
@@ -144,7 +193,7 @@ export const eventPayloads = {
     .object({ approvalId: idSchema, action: z.string(), detail: z.string().optional() })
     .strict(),
   'approval.resolved': z
-    .object({ approvalId: idSchema, decision: z.enum(['allow', 'deny']) })
+    .object({ approvalId: idSchema, decision: approvalDecisionSchema })
     .strict(),
 
   // memory & artifacts
@@ -257,7 +306,7 @@ export const eventPayloads = {
       conversationId: idSchema.optional(),
       sourceMessageId: idSchema.optional(),
       text: z.string().min(1).max(2000),
-      severity: z.enum(['low', 'medium', 'high']).optional(),
+      severity: riskSeveritySchema.optional(),
     })
     .strict(),
   'risk.resolved': z
@@ -281,7 +330,7 @@ export const eventPayloads = {
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/, 'targetDate must be YYYY-MM-DD')
         .optional(),
-      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      status: milestoneStatusSchema.optional(),
     })
     .strict(),
   'milestone.updated': z
@@ -289,7 +338,7 @@ export const eventPayloads = {
       milestoneId: idSchema,
       title: z.string().min(1).max(300).optional(),
       description: z.string().min(1).max(2000).optional(),
-      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      status: milestoneStatusSchema.optional(),
       targetDate: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/, 'targetDate must be YYYY-MM-DD')
@@ -423,6 +472,17 @@ const sealedShellSchema = eventEnvelopeBaseSchema.extend({
   type: eventTypeSchema,
   payload: z.unknown(),
 });
+
+/**
+ * The wire shape of one sealed event (ADR-0032): envelope fully validated, the
+ * payload kept as an opaque object — `parseEvent` is the payload authority.
+ * Every payload in `eventPayloads` is an object, so `record` is always valid.
+ */
+export const sealedEventShellSchema = eventEnvelopeBaseSchema.extend({
+  type: eventTypeSchema,
+  payload: z.record(z.string(), z.unknown()),
+});
+export type SealedEventShell = z.infer<typeof sealedEventShellSchema>;
 
 const unsealedShellSchema = eventEnvelopeBaseSchema
   .omit({ seq: true })

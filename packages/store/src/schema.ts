@@ -1,3 +1,16 @@
+import {
+  authModeSchema,
+  connectorStatusSchema,
+  eventChannelSchema,
+  eventOriginSchema,
+  laneRowStatusSchema,
+  memoryScopeSchema,
+  messageRoleSchema,
+  milestoneStatusSchema,
+  questionStatusSchema,
+  riskSeveritySchema,
+  taskStatusSchema,
+} from '@amrita/protocol';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -9,6 +22,10 @@ import {
   text,
   unique,
 } from 'drizzle-orm/sqlite-core';
+
+/** zod `.options` is a plain array; Drizzle wants a non-empty tuple — one cast, here only. */
+const columnEnum = <T extends string>(schema: { options: T[] }): [T, ...T[]] =>
+  schema.options as [T, ...T[]];
 
 /**
  * The canonical Drizzle table definitions. These mirror migrations/0000_init.sql
@@ -57,7 +74,7 @@ export const messages = sqliteTable(
     id: text('id').primaryKey(),
     conversationId: text('conversation_id').notNull(),
     turnId: text('turn_id'),
-    role: text('role', { enum: ['user', 'agent', 'system'] }).notNull(),
+    role: text('role', { enum: columnEnum(messageRoleSchema) }).notNull(),
     contentJson: text('content_json').notNull(),
     createdAt: text('created_at').notNull(),
   },
@@ -74,8 +91,8 @@ export const events = sqliteTable(
     conversationId: text('conversation_id').notNull(),
     turnId: text('turn_id'),
     laneId: text('lane_id'),
-    origin: text('origin', { enum: ['user', 'agent', 'lane', 'system'] }).notNull(),
-    channel: text('channel', { enum: ['web', 'telegram', 'cli', 'api'] }),
+    origin: text('origin', { enum: columnEnum(eventOriginSchema) }).notNull(),
+    channel: text('channel', { enum: columnEnum(eventChannelSchema) }),
     type: text('type').notNull(),
     payloadJson: text('payload_json').notNull(),
   },
@@ -116,7 +133,7 @@ export const tasks = sqliteTable(
       onDelete: 'set null',
     }),
     laneId: text('lane_id'),
-    status: text('status', { enum: ['now', 'later', 'done', 'dropped'] })
+    status: text('status', { enum: columnEnum(taskStatusSchema) })
       .notNull()
       .default('now'),
     title: text('title').notNull(),
@@ -166,7 +183,7 @@ export const memoryEntries = sqliteTable(
   'memory_entries',
   {
     id: text('id').primaryKey(),
-    scope: text('scope', { enum: ['user', 'project'] }).notNull(),
+    scope: text('scope', { enum: columnEnum(memoryScopeSchema) }).notNull(),
     projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
     content: text('content').notNull(),
     charCount: integer('char_count').generatedAlwaysAs(sql`length(content)`, { mode: 'virtual' }),
@@ -198,9 +215,7 @@ export const lanes = sqliteTable(
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
-    status: text('status', {
-      enum: ['spawned', 'running', 'merging', 'completed', 'aborted'],
-    })
+    status: text('status', { enum: columnEnum(laneRowStatusSchema) })
       .notNull()
       .default('spawned'),
     mandateJson: text('mandate_json').notNull(),
@@ -222,9 +237,7 @@ export const accounts = sqliteTable(
     id: text('id').primaryKey(),
     provider: text('provider').notNull(),
     label: text('label'),
-    authMode: text('auth_mode', {
-      enum: ['api_key', 'subscription_cli', 'local_endpoint', 'oauth'],
-    }).notNull(),
+    authMode: text('auth_mode', { enum: columnEnum(authModeSchema) }).notNull(),
     secretRef: text('secret_ref'),
     metadataJson: text('metadata_json'),
     createdAt: text('created_at').notNull(),
@@ -243,7 +256,7 @@ export const connectors = sqliteTable('connectors', {
   id: text('id').primaryKey(),
   slug: text('slug').notNull().unique(),
   kind: text('kind').notNull(),
-  status: text('status', { enum: ['needs_setup', 'ready', 'error', 'disabled'] })
+  status: text('status', { enum: columnEnum(connectorStatusSchema) })
     .notNull()
     .default('needs_setup'),
   manifestJson: text('manifest_json'),
@@ -300,7 +313,7 @@ export const openQuestions = sqliteTable(
     conversationId: text('conversation_id'),
     sourceMessageId: text('source_message_id'),
     text: text('text').notNull(),
-    status: text('status', { enum: ['open', 'resolved', 'dropped'] })
+    status: text('status', { enum: columnEnum(questionStatusSchema) })
       .notNull()
       .default('open'),
     resolution: text('resolution'),
@@ -322,8 +335,8 @@ export const risks = sqliteTable(
     conversationId: text('conversation_id'),
     sourceMessageId: text('source_message_id'),
     text: text('text').notNull(),
-    severity: text('severity', { enum: ['low', 'medium', 'high'] }),
-    status: text('status', { enum: ['open', 'resolved', 'dropped'] })
+    severity: text('severity', { enum: columnEnum(riskSeveritySchema) }),
+    status: text('status', { enum: columnEnum(questionStatusSchema) })
       .notNull()
       .default('open'),
     resolution: text('resolution'),
@@ -344,7 +357,7 @@ export const milestones = sqliteTable(
       .references(() => projects.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     description: text('description'),
-    status: text('status', { enum: ['planned', 'active', 'done', 'dropped'] })
+    status: text('status', { enum: columnEnum(milestoneStatusSchema) })
       .notNull()
       .default('planned'),
     targetDate: text('target_date'),

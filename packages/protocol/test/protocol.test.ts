@@ -12,9 +12,12 @@ import {
   laneMandateSchema,
   mergeReportSchema,
   newId,
-  parseClientMessage,
   parseEvent,
+  parseRpcResponse,
+  parseRpcResult,
   parseUnsealedEvent,
+  parseWsServerFrame,
+  rpcResultSchemas,
 } from '../src/index.ts';
 
 /** Object-shape keys of a payload schema. Under zod 4, `.refine()` no longer
@@ -162,14 +165,46 @@ describe('lane contract', () => {
   });
 });
 
-describe('rpc', () => {
-  it('parses a valid client message', () => {
-    const msg = parseClientMessage({ t: 'message.send', conversationId: newId(), text: 'hi' });
-    expect(msg.t).toBe('message.send');
+describe('rpc wire contract (ADR-0032)', () => {
+  it('parses success and error response envelopes', () => {
+    const okFrame = parseRpcResponse({ id: 1, result: { pong: true } });
+    expect('error' in okFrame).toBe(false);
+    const errFrame = parseRpcResponse({
+      id: null,
+      error: { code: 'invalid_params', message: 'bad' },
+    });
+    expect('error' in errFrame).toBe(true);
+    expect(() => parseRpcResponse({ id: 1, error: { code: 'nope', message: 'x' } })).toThrow();
   });
 
-  it('rejects an unknown client message kind', () => {
-    expect(() => parseClientMessage({ t: 'nope' })).toThrow();
+  it('parses the real WS frames including `replayed`', () => {
+    const ev = parseEvent(sealed('message.user', { text: 'hi' }));
+    const frame = parseWsServerFrame({ t: 'event', event: ev });
+    expect(frame.t).toBe('event');
+    const replayed = parseWsServerFrame({
+      t: 'replayed',
+      conversationId: ev.conversationId,
+      sinceSeq: 1,
+    });
+    expect(replayed.t).toBe('replayed');
+    expect(() => parseWsServerFrame({ t: 'ack', conversationId: newId(), seq: 1 })).toThrow();
+  });
+
+  it('parseRpcResult strips undeclared keys and rejects uncovered methods', () => {
+    const parsed = parseRpcResult('ping', { pong: true, undeclaredKey: 'dropped' }) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed).toEqual({ pong: true });
+    expect(() => parseRpcResult('no.such.method', {})).toThrow(/no result contract/);
+  });
+
+  it('declares a result contract for every wire method', () => {
+    expect(Object.keys(rpcResultSchemas).length).toBeGreaterThanOrEqual(60);
+    for (const [method, schema] of Object.entries(rpcResultSchemas)) {
+      expect(method.length, method).toBeGreaterThan(0);
+      expect(schema).toBeDefined();
+    }
   });
 });
 

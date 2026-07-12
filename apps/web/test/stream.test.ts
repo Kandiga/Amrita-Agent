@@ -1,3 +1,4 @@
+import { newId } from '@amrita/protocol';
 import { describe, expect, it } from 'vitest';
 import type { AmritaEventLite } from '../src/api.ts';
 import {
@@ -7,6 +8,20 @@ import {
   openEventStream,
   toWsBase,
 } from '../src/stream.ts';
+
+/** A contract-valid sealed event (ADR-0032: invalid frames are dropped). */
+function sealedEvent(seq: number, text: string) {
+  return {
+    id: newId(),
+    seq,
+    ts: '2026-07-11T10:00:00.000Z',
+    projectId: newId(),
+    conversationId: newId(),
+    origin: 'user',
+    type: 'message.user',
+    payload: { text },
+  };
+}
 
 /** A controllable fake socket: tests drive open/message/close by hand. */
 class FakeSocket implements WebSocketLike {
@@ -102,27 +117,27 @@ describe('event stream client', () => {
     expect(h.handle.state()).toBe('open');
   });
 
-  it('delivers event frames and ignores malformed frames', () => {
+  it('delivers event frames and drops malformed or contract-violating frames', () => {
     const h = harness();
     h.sockets[0]?.open();
     h.sockets[0]?.emit('}{ not json');
+    // a frame that fails the protocol parse is dropped (ADR-0032)
     h.sockets[0]?.emit({
       t: 'event',
-      event: { id: 'e1', seq: 3, ts: 't', type: 'message.user', payload: { text: 'hi' } },
+      event: { id: 'e1', seq: 3, ts: 't', type: 'message.user', payload: { text: 'nope' } },
     });
-    h.sockets[0]?.emit({ t: 'replayed', conversationId: 'c1', sinceSeq: 3 });
+    const ev = sealedEvent(3, 'hi');
+    h.sockets[0]?.emit({ t: 'event', event: ev });
+    h.sockets[0]?.emit({ t: 'replayed', conversationId: ev.conversationId, sinceSeq: 3 });
     expect(h.events).toHaveLength(1);
-    expect(h.events[0]?.id).toBe('e1');
+    expect(h.events[0]?.id).toBe(ev.id);
     expect(h.replays).toEqual([3]);
   });
 
   it('reconnects with backoff after a drop and resumes from the last seq', () => {
     const h = harness();
     h.sockets[0]?.open();
-    h.sockets[0]?.emit({
-      t: 'event',
-      event: { id: 'e1', seq: 7, ts: 't', type: 'message.user', payload: { text: 'a' } },
-    });
+    h.sockets[0]?.emit({ t: 'event', event: sealedEvent(7, 'a') });
     h.sockets[0]?.fail(); // connection dropped
     expect(h.handle.state()).toBe('reconnecting');
     h.runPending(); // backoff timer fires

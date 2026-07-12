@@ -1,8 +1,45 @@
 /**
  * The web app's only network layer: a typed JSON-RPC client over the amritad
- * HTTP surface (`POST /rpc`, `GET /events`). No secret ever appears in a request
- * or a rendered response (the daemon guarantees secret-free results).
+ * HTTP surface (`POST /rpc`, `GET /events`). Since ADR-0032 every response is
+ * parsed through `@amrita/protocol` — the RPC envelope, each method's result
+ * contract, and replayed events — so nothing crosses the daemon→browser
+ * boundary unvalidated. No secret ever appears in a request or a rendered
+ * response (the daemon guarantees secret-free results).
  */
+
+import {
+  type ChatTurnResultWire,
+  type CodingRuntimeStatusWire,
+  type CompanionStateWire,
+  type ConnectorStatusReport,
+  type DecisionRowWire,
+  type DoctorCheck,
+  type DoctorReport,
+  type HarnessTopology,
+  type KnowledgeGap,
+  type KnowledgeRecord,
+  type KnowledgeSource,
+  type LaneCancelResultWire,
+  type LaneRowWire,
+  type LaneStartResultWire,
+  type MaintenanceEvent,
+  type MemoryEntryRowWire,
+  type MilestoneRowWire,
+  type OpenQuestionRowWire,
+  type PendingApprovalWire,
+  type ProjectBrain,
+  type ProjectBrandRowWire,
+  type ProjectBriefRowWire,
+  type ProviderCatalogEntryWire,
+  type ProviderRole,
+  type RiskRowWire,
+  type RoleResolution,
+  type RuntimeStatusWire,
+  parseRpcResult,
+  rpcResponseSchema,
+  sealedEventShellSchema,
+} from '@amrita/protocol';
+import { z } from 'zod';
 
 export type FetchLike = typeof fetch;
 
@@ -17,27 +54,70 @@ export class RpcError extends Error {
   }
 }
 
+/**
+ * The UI's event view — a structural projection of the protocol's
+ * `SealedEventShell` (which is what actually arrives and is what the wire
+ * parse validates). Kept loose (`type: string`) so panels can switch on event
+ * kinds without importing the full event taxonomy.
+ */
 export interface AmritaEventLite {
   id: string;
   seq: number;
   ts: string;
   type: string;
   /** Envelope lane id (present on lane.* events; payload may omit it for progress). */
-  laneId?: string;
+  laneId?: string | undefined;
   payload: Record<string, unknown>;
 }
 
-export interface LaneRowLite {
+// ── wire types (protocol-owned since ADR-0032; aliased for existing panels) ──
+
+export type LaneRowLite = LaneRowWire;
+export type LaneStartResultLite = LaneStartResultWire;
+export type LaneCancelResultLite = LaneCancelResultWire;
+export type TaskRowLite = {
   id: string;
-  projectId: string;
-  conversationId: string;
-  kind: string;
+  title: string;
   status: string;
-  mandateJson: string;
-  budgetJson?: string | null;
-  mergeJson?: string | null;
-  createdAt: string;
-  updatedAt: string;
+  milestoneId?: string | null;
+  createdAt?: string;
+};
+export type BriefLite = ProjectBriefRowWire;
+export type QuestionLite = OpenQuestionRowWire;
+export type RiskLite = RiskRowWire;
+export type MilestoneLite = MilestoneRowWire;
+export type BrandLite = ProjectBrandRowWire;
+export type OperatorApprovalLite = PendingApprovalWire;
+export type CompanionState = CompanionStateWire;
+export type PreviewApprovalLite = CompanionStateWire['previewApprovals'][number];
+export type DoctorCheckLite = DoctorCheck;
+export type DoctorReportLite = DoctorReport;
+export type RoleResolutionLite = RoleResolution;
+export type CodingRuntimeLite = CodingRuntimeStatusWire;
+export type ProviderCatalogEntryLite = ProviderCatalogEntryWire;
+export type RuntimeStatusLite = RuntimeStatusWire;
+export type DecisionRowLite = DecisionRowWire;
+export type MemoryEntryLite = MemoryEntryRowWire;
+export type ChatResult = ChatTurnResultWire;
+
+// Harness views (ADR-0027) — protocol-owned schemas, aliased for the panels.
+export type KnowledgeRecordLite = KnowledgeRecord;
+export type KnowledgeSourceLite = KnowledgeSource;
+export type KnowledgeGapLite = KnowledgeGap;
+export type MaintenanceEventLite = MaintenanceEvent;
+export type HarnessTopologyLite = HarnessTopology;
+export type HarnessAgentLite = HarnessTopology['agents'][number];
+export type ProjectBrainLite = ProjectBrain;
+
+/** Live connector status (ADR-0022). `connected` only ever follows a real probe. */
+export type ConnectorStatusLite = ConnectorStatusReport;
+
+export interface GithubImportLite {
+  repo: string;
+  imported: number;
+  skipped: number;
+  total: number;
+  tasks: { taskId: string; externalRef: string; title: string }[];
 }
 
 export interface LaneBudgetInput {
@@ -57,103 +137,6 @@ export interface LaneStartParams {
   budget?: LaneBudgetInput;
 }
 
-export interface LaneStartResultLite {
-  laneId: string;
-  status: string;
-  dryRun: boolean;
-  detached: boolean;
-  report: { exit: string; summary?: string } | null;
-  error?: string;
-}
-
-export interface LaneCancelResultLite {
-  laneId: string;
-  cancelled: boolean;
-  status: string | null;
-}
-
-export interface TaskRowLite {
-  id: string;
-  title: string;
-  status: string;
-  milestoneId?: string | null;
-  createdAt?: string;
-}
-
-// ── project companion (ADR-0018) ─────────────────────────────────────────────
-
-export interface BriefLite {
-  projectId: string;
-  goal: string;
-  audience: string | null;
-  successCriteria: string[];
-  scope: string[];
-  noScope: string[];
-  updatedAt: string;
-}
-
-export interface QuestionLite {
-  id: string;
-  text: string;
-  status: 'open' | 'resolved' | 'dropped';
-  resolution: string | null;
-  resolvedByDecisionId: string | null;
-  dropReason: string | null;
-  createdAt: string;
-}
-
-export interface RiskLite extends QuestionLite {
-  severity: 'low' | 'medium' | 'high' | null;
-}
-
-export interface MilestoneLite {
-  id: string;
-  title: string;
-  description: string | null;
-  status: 'planned' | 'active' | 'done' | 'dropped';
-  targetDate: string | null;
-}
-
-/** Per-project brand memory (ADR-0020). Null = honest empty, never invented. */
-export interface BrandLite {
-  projectId: string;
-  name: string | null;
-  audience: string | null;
-  tone: string | null;
-  styleNotes: string[];
-  palette: string[];
-  typography: string | null;
-  doNotUse: string[];
-  updatedAt: string;
-}
-
-/** A pending operator approval (ADR-0021). Runtime state; events are the audit. */
-export interface OperatorApprovalLite {
-  approvalId: string;
-  action: string;
-  detail?: string;
-  projectId: string;
-  conversationId: string;
-  laneId?: string;
-  requestedAt: string;
-}
-
-/** A durable approval of a deterministic preview's content hash (ADR-0020). */
-export interface PreviewApprovalLite {
-  previewId: string;
-  contentHash: string;
-  approvedAt: string;
-}
-
-export interface CompanionState {
-  brief: BriefLite | null;
-  brand: BrandLite | null;
-  questions: QuestionLite[];
-  risks: RiskLite[];
-  milestones: MilestoneLite[];
-  previewApprovals: PreviewApprovalLite[];
-}
-
 export interface BrandUpdateParams {
   projectId: string;
   conversationId: string;
@@ -166,207 +149,6 @@ export interface BrandUpdateParams {
   doNotUse?: string[];
 }
 
-// ── doctor (RPC result shapes; see docs/specs/runtime.md) ───────────────────
-
-export interface DoctorCheckLite {
-  id: string;
-  label: string;
-  status: 'ok' | 'warn' | 'fail';
-  detail?: string;
-}
-
-export interface DoctorReportLite {
-  ok: boolean;
-  status: 'ok' | 'warn' | 'fail';
-  sections: { title: string; checks: DoctorCheckLite[] }[];
-  fixes: string[];
-}
-
-/** One role's resolution: project binding > global binding > auto (ADR-0017, §2.8). */
-export interface RoleResolutionLite {
-  role: 'fast' | 'main' | 'deep';
-  binding: { provider: string; model?: string } | null;
-  projectBinding: { provider: string; model?: string } | null;
-  resolvesTo: string;
-  model?: string;
-  via: 'project' | 'binding' | 'auto';
-}
-
-/** Honest coding-runtime probe result (ADR-0019 §6). */
-export interface CodingRuntimeLite {
-  id: string;
-  title: string;
-  state:
-    | 'ready'
-    | 'installed_unauthenticated'
-    | 'installed_auth_unknown'
-    | 'not_installed'
-    | 'status_unknown';
-  version?: string;
-  realExecution: boolean;
-  detail: string;
-  nextCommand?: string;
-}
-
-/** Live connector status (ADR-0022). `connected` only ever follows a real probe. */
-export interface ConnectorStatusLite {
-  manifest: {
-    slug: string;
-    kind: 'source' | 'tool';
-    title: string;
-    description: string;
-    capabilities: string[];
-    requiredEnv: string[];
-    setupCommands: string[];
-    docsUrl?: string;
-    experimental?: boolean;
-  };
-  state:
-    | 'connected'
-    | 'configured_but_failing'
-    | 'needs_setup'
-    | 'needs_install'
-    | 'status_unknown'
-    | 'experimental';
-  detail: string;
-  missingEnv: string[];
-  nextCommand?: string;
-}
-
-/** Result of a one-way GitHub issues → tasks import (ADR-0022). */
-export interface GithubImportLite {
-  repo: string;
-  imported: number;
-  skipped: number;
-  total: number;
-  tasks: { taskId: string; externalRef: string; title: string }[];
-}
-
-/**
- * One provider as the chooser catalog sees it (ADR-0025/0026, `providers.catalog`).
- * `state` is honest: `ready` only after real evidence (env presence / live CLI
- * probe / endpoint config); everything else says exactly why it cannot run.
- * Carries env-var NAMES only — never a secret value.
- */
-export interface ProviderCatalogEntryLite {
-  id: string;
-  title: string;
-  group: 'login' | 'api_key' | 'local';
-  authMode: 'api_key' | 'subscription_cli' | 'local_endpoint' | 'oauth';
-  defaultModel: string;
-  executable: boolean;
-  envName?: string;
-  keyUrl?: string;
-  installHint?: string;
-  state: 'ready' | 'needs_key' | 'needs_login' | 'missing_cli' | 'needs_endpoint' | 'unavailable';
-  detail: string;
-  fix?: string;
-}
-
-// ── organizational brain harness (ADR-0027) ─────────────────────────────────
-
-/** A normalized knowledge record with provenance + links. No secret values. */
-export interface KnowledgeRecordLite {
-  slug: string;
-  kind:
-    | 'decision'
-    | 'commitment'
-    | 'meeting-note'
-    | 'project-context'
-    | 'open-question'
-    | 'entity'
-    | 'source-excerpt';
-  title: string;
-  body: string;
-  projectId: string;
-  owner: string | null;
-  date: string | null;
-  confidence: 'low' | 'medium' | 'high';
-  tags: string[];
-  links: string[];
-  status: 'active' | 'resolved' | 'superseded' | 'stale' | 'contradicted';
-  provenance: { sourceId: string; ref?: string; channel?: string; capturedAt?: string };
-}
-
-/** An ingestion source with an honest status. `connected` ⇒ real ingestion today. */
-export interface KnowledgeSourceLite {
-  id: string;
-  kind: 'manual' | 'chat' | 'email' | 'calendar' | 'docs' | 'repo';
-  title: string;
-  status: 'connected' | 'manual' | 'planned';
-  detail: string;
-  extracts: string[];
-  nextStep?: string;
-}
-
-export interface KnowledgeGapLite {
-  kind:
-    | 'missing-owner'
-    | 'missing-date'
-    | 'missing-source'
-    | 'orphan'
-    | 'unresolved-question'
-    | 'stale'
-    | 'contradiction';
-  severity: 'low' | 'medium' | 'high';
-  recordSlug?: string;
-  detail: string;
-}
-
-export interface MaintenanceEventLite {
-  ts: string;
-  agent: 'ingest' | 'link' | 'maintain' | 'answer';
-  action: string;
-  detail: string;
-  recordSlug?: string;
-}
-
-export interface HarnessAgentLite {
-  id: string;
-  role: 'ingest' | 'link' | 'maintain' | 'answer';
-  title: string;
-  ingests?: string[];
-  maintains?: string[];
-  trigger: string;
-  outputs: string[];
-  qualityChecks: string[];
-  status: 'active' | 'planned';
-}
-
-export interface HarnessTopologyLite {
-  version: number;
-  agents: HarnessAgentLite[];
-}
-
-export interface ProjectBrainLite {
-  projectId: string;
-  records: KnowledgeRecordLite[];
-  gaps: KnowledgeGapLite[];
-  sources: KnowledgeSourceLite[];
-  maintenance: MaintenanceEventLite[];
-  counts: {
-    records: number;
-    gaps: number;
-    sourcesConnected: number;
-    sourcesManual: number;
-    sourcesPlanned: number;
-  };
-}
-
-/** The Settings & Runtime Hub aggregate (runtime.status). */
-export interface RuntimeStatusLite {
-  roles: RoleResolutionLite[];
-  providers: {
-    id: string;
-    kind: string;
-    available: boolean;
-    configuredAccounts: number;
-    envReady: boolean;
-    streaming: boolean;
-  }[];
-  codingRuntimes: CodingRuntimeLite[];
-}
-
 export interface BriefUpdateParams {
   projectId: string;
   conversationId: string;
@@ -377,17 +159,7 @@ export interface BriefUpdateParams {
   noScope?: string[];
 }
 
-export interface DecisionRowLite {
-  id: string;
-  text: string;
-  supersedesId?: string | null;
-  createdAt?: string;
-}
-
-interface RpcEnvelope {
-  result?: unknown;
-  error?: { code: string; message: string; details?: unknown };
-}
+const eventsReplySchema = z.object({ events: z.array(sealedEventShellSchema).default([]) });
 
 export interface RpcClientOptions {
   baseUrl?: string;
@@ -430,9 +202,12 @@ export class RpcClient {
     if (res.status === 401 || res.status === 403) {
       throw new RpcError('unauthorized', 'authentication required');
     }
-    const body = (await res.json()) as RpcEnvelope;
-    if (body.error) throw new RpcError(body.error.code, body.error.message, body.error.details);
-    return body.result as T;
+    // ADR-0032: parse the envelope, then the method's result contract. The
+    // remaining cast is validated — `T` mirrors the protocol type per wrapper.
+    const body = rpcResponseSchema.parse(await res.json());
+    if ('error' in body)
+      throw new RpcError(body.error.code, body.error.message, body.error.details);
+    return parseRpcResult(method, body.result) as T;
   }
 
   async events(conversationId: string, sinceSeq = 0): Promise<AmritaEventLite[]> {
@@ -441,8 +216,7 @@ export class RpcClient {
     if (res.status === 401 || res.status === 403) {
       throw new RpcError('unauthorized', 'authentication required');
     }
-    const body = (await res.json()) as { events?: AmritaEventLite[] };
-    return body.events ?? [];
+    return eventsReplySchema.parse(await res.json()).events;
   }
 
   // ── lanes (typed wrappers; auth header is applied by call()) ────────────────
@@ -681,7 +455,7 @@ export class RpcClient {
   }
 
   roleSet(params: {
-    role: 'fast' | 'main' | 'deep';
+    role: ProviderRole;
     provider: string;
     model?: string;
     projectId?: string;
@@ -689,10 +463,7 @@ export class RpcClient {
     return this.call<{ ok: boolean }>('providers.role.set', params);
   }
 
-  roleClear(params: {
-    role: 'fast' | 'main' | 'deep';
-    projectId?: string;
-  }): Promise<{ ok: boolean }> {
+  roleClear(params: { role: ProviderRole; projectId?: string }): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('providers.role.clear', params);
   }
 

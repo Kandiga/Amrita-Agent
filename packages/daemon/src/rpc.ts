@@ -1,3 +1,24 @@
+import {
+  PROVIDER_ROLES,
+  RPC_ERROR_CODES,
+  type RoleResolution,
+  type RpcErrorCode,
+  type RpcId,
+  approvalDecisionSchema,
+  approvalPolicySchema,
+  authModeSchema,
+  cinemaPlanRiskSchema,
+  eventChannelSchema,
+  eventOriginSchema,
+  laneRowStatusSchema,
+  memoryScopeSchema,
+  milestoneStatusSchema,
+  networkPolicySchema,
+  parseRpcResult,
+  providerRoleSchema,
+  riskSeveritySchema,
+  taskStatusSchema,
+} from '@amrita/protocol';
 import { z } from 'zod';
 import { cinemaProviders, runCinemaVerb } from './cinema.ts';
 import { runDoctor } from './doctor.ts';
@@ -8,26 +29,15 @@ import { clean } from './util.ts';
 
 /**
  * A small, typed, JSON-RPC-ish control layer for `amritad`. Requests and params
- * are validated with zod; errors are structured `{ code, message, details? }` and
- * never carry a stack trace or a secret value. Method names are stable (see
- * docs/specs/runtime.md). No method here calls a model provider or runs a tool.
+ * are validated with zod; RESULTS are parsed through the protocol's
+ * `rpcResultSchemas` on the way out (ADR-0032), so nothing undeclared leaves
+ * the daemon. Errors are structured `{ code, message, details? }` and never
+ * carry a stack trace or a secret value. No method here calls a model provider
+ * or runs a tool.
  */
 
-export type RpcId = string | number | null;
-
-export const RPC_ERROR_CODES = [
-  'invalid_request',
-  'unknown_method',
-  'invalid_params',
-  'not_found',
-  'conflict',
-  'provider_unavailable',
-  'provider_error',
-  'missing_secret_ref',
-  'missing_env_value',
-  'internal',
-] as const;
-export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
+export type { RpcErrorCode, RpcId };
+export { RPC_ERROR_CODES };
 
 export interface RpcSuccess {
   id: RpcId;
@@ -75,9 +85,26 @@ function def<S extends z.ZodTypeAny>(
   return { params, run: (kernel, raw) => handler(kernel, raw as z.infer<S>) };
 }
 
-// Shared param fragments.
-const writeOpts = { origin: z.enum(['user', 'agent', 'lane', 'system']).optional() };
+// Shared param fragments — enums come from the protocol (ADR-0032, no inline copies).
+const writeOpts = { origin: eventOriginSchema.optional() };
 const convCtx = { projectId: z.string(), conversationId: z.string() };
+
+/** The role-resolution projection shared by `runtime.status` + `providers.roles`. */
+function buildRoleResolutions(k: AmritaKernel, projectId?: string): RoleResolution[] {
+  return PROVIDER_ROLES.map((role) => {
+    const globalBinding = k.getRoleBinding(role) ?? null;
+    const projectBinding = projectId ? (k.getRoleBinding(role, projectId) ?? null) : null;
+    const resolved = k.resolveRole(role, projectId);
+    return {
+      role,
+      binding: globalBinding,
+      projectBinding,
+      resolvesTo: resolved.provider,
+      ...(resolved.model ? { model: resolved.model } : {}),
+      via: resolved.via,
+    };
+  });
+}
 
 export const METHODS: Record<string, RpcMethod> = {
   ping: def(z.object({}).optional(), () => ({ pong: true })),
@@ -119,7 +146,7 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({
       ...convCtx,
       text: z.string().min(1),
-      channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
+      channel: eventChannelSchema.optional(),
     }),
     (k, p) => k.recordUserMessage(clean(p)),
   ),
@@ -134,7 +161,7 @@ export const METHODS: Record<string, RpcMethod> = {
       ...convCtx,
       ...writeOpts,
       title: z.string().min(1),
-      status: z.enum(['now', 'later', 'done', 'dropped']).optional(),
+      status: taskStatusSchema.optional(),
       milestoneId: z.string().optional(),
     }),
     (k, p) => k.createTask(clean(p)),
@@ -143,7 +170,7 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({
       projectId: z.string().optional(),
       conversationId: z.string().optional(),
-      status: z.enum(['now', 'later', 'done', 'dropped']).optional(),
+      status: taskStatusSchema.optional(),
     }),
     (k, p) => k.listTasks(clean(p)),
   ),
@@ -227,7 +254,7 @@ export const METHODS: Record<string, RpcMethod> = {
       ...convCtx,
       ...writeOpts,
       text: z.string().min(1).max(2000),
-      severity: z.enum(['low', 'medium', 'high']).optional(),
+      severity: riskSeveritySchema.optional(),
       sourceMessageId: z.string().optional(),
     }),
     (k, p) => k.openRisk(clean(p)),
@@ -256,7 +283,7 @@ export const METHODS: Record<string, RpcMethod> = {
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)
         .optional(),
-      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      status: milestoneStatusSchema.optional(),
     }),
     (k, p) => k.createMilestone(clean(p)),
   ),
@@ -267,7 +294,7 @@ export const METHODS: Record<string, RpcMethod> = {
       milestoneId: z.string(),
       title: z.string().min(1).max(300).optional(),
       description: z.string().min(1).max(2000).optional(),
-      status: z.enum(['planned', 'active', 'done', 'dropped']).optional(),
+      status: milestoneStatusSchema.optional(),
       targetDate: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -301,7 +328,7 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({
       ...convCtx,
       ...writeOpts,
-      scope: z.enum(['user', 'project']),
+      scope: memoryScopeSchema,
       content: z.string().min(1).max(4000),
       entryId: z.string().optional(),
       source: z.string().optional(),
@@ -311,7 +338,7 @@ export const METHODS: Record<string, RpcMethod> = {
   'memory.search': def(
     z.object({
       query: z.string(),
-      scope: z.enum(['user', 'project']).optional(),
+      scope: memoryScopeSchema.optional(),
       projectId: z.string().optional(),
       limit: z.number().int().positive().max(100).optional(),
     }),
@@ -331,7 +358,7 @@ export const METHODS: Record<string, RpcMethod> = {
       ...convCtx,
       ...writeOpts,
       provider: z.string().min(1),
-      authMode: z.enum(['api_key', 'subscription_cli', 'local_endpoint', 'oauth']),
+      authMode: authModeSchema,
       label: z.string().min(1).max(200).optional(),
     }),
     (k, p) => k.connectProviderAccount(clean(p)),
@@ -353,7 +380,7 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({
       ...convCtx,
       ...writeOpts,
-      channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
+      channel: eventChannelSchema.optional(),
       repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'expected owner/repo'),
       state: z.enum(['open', 'all']).optional(),
       limit: z.number().int().min(1).max(100).optional(),
@@ -365,7 +392,7 @@ export const METHODS: Record<string, RpcMethod> = {
     z.object({
       projectId: z.string().optional(),
       conversationId: z.string().optional(),
-      status: z.enum(['spawned', 'running', 'merging', 'completed', 'aborted']).optional(),
+      status: laneRowStatusSchema.optional(),
     }),
     (k, p) => k.listLanes(clean(p)),
   ),
@@ -381,7 +408,7 @@ export const METHODS: Record<string, RpcMethod> = {
         .object({
           paths: z.array(z.string()).optional(),
           repos: z.array(z.string()).optional(),
-          network: z.enum(['none', 'allowlist', 'open']).optional(),
+          network: networkPolicySchema.optional(),
         })
         .optional(),
       budget: z
@@ -399,7 +426,7 @@ export const METHODS: Record<string, RpcMethod> = {
           decisions: z.array(z.string()).optional(),
         })
         .optional(),
-      approvals: z.enum(['forward', 'auto-safe', 'sandboxed']).optional(),
+      approvals: approvalPolicySchema.optional(),
       deliverables: z.array(z.string()).optional(),
     }),
     (k, p) => k.startLane(clean(p)),
@@ -409,7 +436,7 @@ export const METHODS: Record<string, RpcMethod> = {
   // ── operator approvals (ADR-0021) ─────────────────────────────────────────
   'approvals.list': def(z.object({}).optional(), (k) => k.listPendingApprovals()),
   'approvals.resolve': def(
-    z.object({ approvalId: z.string(), decision: z.enum(['allow', 'deny']) }),
+    z.object({ approvalId: z.string(), decision: approvalDecisionSchema }),
     (k, p) => k.resolveApproval(p.approvalId, p.decision),
   ),
   'lanes.cancel': def(z.object({ laneId: z.string() }), (k, p) => k.cancelLane(p.laneId)),
@@ -420,39 +447,27 @@ export const METHODS: Record<string, RpcMethod> = {
       text: z.string().min(1),
       provider: z.string().optional(),
       model: z.string().optional(),
-      role: z.enum(['fast', 'main', 'deep']).optional(),
+      role: providerRoleSchema.optional(),
       accountId: z.string().optional(),
       dryRun: z.boolean().optional(),
-      channel: z.enum(['web', 'telegram', 'cli', 'api']).optional(),
+      channel: eventChannelSchema.optional(),
     }),
     (k, p) => k.runChatTurn(clean(p)),
   ),
   // ── runtime selection (ADR-0019) ──────────────────────────────────────────
 
   /** One aggregate for the Settings & Runtime Hub: roles + providers + coding runtimes. */
-  'runtime.status': def(z.object({ projectId: z.string().optional() }).optional(), async (k, p) => {
-    const projectId = p?.projectId;
-    return {
-      roles: (['fast', 'main', 'deep'] as const).map((role) => {
-        const globalBinding = k.getRoleBinding(role) ?? null;
-        const projectBinding = projectId ? (k.getRoleBinding(role, projectId) ?? null) : null;
-        const resolved = k.resolveRole(role, projectId);
-        return {
-          role,
-          binding: globalBinding,
-          projectBinding,
-          resolvesTo: resolved.provider,
-          ...(resolved.model ? { model: resolved.model } : {}),
-          via: resolved.via,
-        };
-      }),
+  'runtime.status': def(
+    z.object({ projectId: z.string().optional() }).optional(),
+    async (k, p) => ({
+      roles: buildRoleResolutions(k, p?.projectId),
       providers: k.listProviders(),
       codingRuntimes: await k.getCodingRuntimes(),
-    };
-  }),
+    }),
+  ),
   'providers.role.set': def(
     z.object({
-      role: z.enum(['fast', 'main', 'deep']),
+      role: providerRoleSchema,
       provider: z.string().min(1),
       model: z.string().min(1).optional(),
       projectId: z.string().optional(),
@@ -461,27 +476,14 @@ export const METHODS: Record<string, RpcMethod> = {
   ),
   'providers.role.clear': def(
     z.object({
-      role: z.enum(['fast', 'main', 'deep']),
+      role: providerRoleSchema,
       projectId: z.string().optional(),
     }),
     (k, p) => k.clearRoleBinding(clean(p)),
   ),
 
   'providers.roles': def(z.object({ projectId: z.string().optional() }).optional(), (k, p) => ({
-    roles: (['fast', 'main', 'deep'] as const).map((role) => {
-      const projectId = p?.projectId;
-      const globalBinding = k.getRoleBinding(role) ?? null;
-      const projectBinding = projectId ? (k.getRoleBinding(role, projectId) ?? null) : null;
-      const resolved = k.resolveRole(role, projectId);
-      return {
-        role,
-        binding: globalBinding,
-        projectBinding,
-        resolvesTo: resolved.provider,
-        ...(resolved.model ? { model: resolved.model } : {}),
-        via: resolved.via,
-      };
-    }),
+    roles: buildRoleResolutions(k, p?.projectId),
   })),
   'providers.list': def(z.object({}).optional(), (k) => k.listProviders()),
   // The chooser-UI catalog (ADR-0025): live bounded CLI probes, honest states.
@@ -596,7 +598,7 @@ export const METHODS: Record<string, RpcMethod> = {
       conversationId: z.string(),
       goal: z.string().min(1).max(2000),
       allowedVerbs: z.array(z.string().min(1)).max(32).optional(),
-      maxRisk: z.enum(['local', 'credit', 'destructive', 'ambiguous']).optional(),
+      maxRisk: cinemaPlanRiskSchema.optional(),
       note: z.string().max(500).optional(),
     }),
     (k, p) => k.issueCinemaMandate(clean(p)),
@@ -644,7 +646,19 @@ export async function dispatch(kernel: AmritaKernel, raw: unknown): Promise<RpcR
   }
 
   try {
-    return ok(id, await m.run(kernel, params.data));
+    const raw = await m.run(kernel, params.data);
+    // ADR-0032: parse (and STRIP) the result against the protocol's wire
+    // contract before it leaves the daemon. A mismatch here is a daemon bug —
+    // reported value-free as `internal`, never as the caller's fault.
+    let result: unknown;
+    try {
+      result = parseRpcResult(req.data.method, raw);
+    } catch (contractErr) {
+      const details =
+        contractErr instanceof z.ZodError ? safeIssues(contractErr.issues) : undefined;
+      return err(id, 'internal', `result contract violation for ${req.data.method}`, details);
+    }
+    return ok(id, result);
   } catch (e) {
     // Never leak a stack trace; map the message to a structured code.
     // A ZodError from a deeper boundary (e.g. the store's event parse, like the
