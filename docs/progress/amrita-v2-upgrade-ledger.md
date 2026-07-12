@@ -812,6 +812,32 @@ One ledger, updated per phase — no scattered notes.
 - **Deployed:** pushed, deployed checkout ff'd + rebuilt, `amrita-web` restarted; public
   link re-verified desktop + mobile (screenshots).
 
+## Session-OS + live canvas + first real build (directive round 3)
+
+- **Date:** 2026-07-12 · commit `90f209b`
+- **Mobbin:** login-walled (2 attempts, stated honestly) — grounding stayed the official
+  claude.com token dump + firsthand claude.ai structure.
+- **Sidebar bug root-caused:** clicks technically worked (measured 103–121ms to active)
+  but gave ZERO immediate feedback and the IA hid the project↔chat relation — fixed at
+  the source with optimistic selection + shimmer skeleton + the new IA, not a patch.
+- **Project-owned sessions (claude.ai IA):** the sidebar is now a project tree — the
+  active project expands its live sessions, `+ New session`, and an honest
+  "N compressed into project memory" line. The global Conversations list is gone.
+- **Session → memory layers (ADR-0033 amendment):** ending a session (⤓) compresses it;
+  the digest now ALSO lands in `memory_entries` (source `session:compress:<id>`) and the
+  Brain surfaces it with chat provenance. Verified live: memory.search finds the digest;
+  the continuation session opens automatically.
+- **Live canvas (Claude-Design style):** preview/design artifacts open beside the chat
+  (desktop 2-pane; mobile full-screen overlay) with kind/status/Approve/close — same
+  zero-network sandbox, re-derived live from typed state. Verified live on the public
+  link, both viewports.
+- **First real build receipt:** the pizzeria lane (approved by Natanel) produced
+  `/root/amrita-workspaces/pizzeria/index.html` via real Claude Code execution with
+  Write tools granted through the new `AMRITA_LANES_ALLOWED_TOOLS`; served at :7463.
+- **Verification:** root 425/425 · web 74/74 · typecheck/lint clean · build ok · live
+  browser QA on the public link (sessions tree, compress round-trip, canvas open/close,
+  mobile overlay).
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
