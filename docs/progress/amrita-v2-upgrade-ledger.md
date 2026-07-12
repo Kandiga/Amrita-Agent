@@ -740,6 +740,36 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** root 425/425 (6 new whatsapp/one-brain tests; migration up/down/up
   suite extended to 0007) · typecheck/lint clean.
 
+## Release + deployment — v2.0.0-alpha.1 (E4 receipts)
+
+- **Date:** 2026-07-12 · the closing loop of the reorganization directive
+- **Verification loop (all fresh, this session):** root typecheck ✓ · lint ✓ · test
+  **425/425** · web typecheck ✓ · test **70/70** · build ✓ · precise secret scan over the
+  whole pushed range (only clearly-labeled test fixtures) · live smoke on a real daemon
+  (temp DB): health/401/ping, mock chat turn, conversation.compress, projects.context
+  (real git probe answered `v2-main · ahead 22`), skills.list, operator.command,
+  system.audit --record, system.health with a live scheduler heartbeat.
+- **Pushed:** `origin/v2-main` `3516f16` → `62accbc` (22 commits — everything from
+  Phase 16 through R6). Tag **`v2.0.0-alpha.1`** created and pushed (first release
+  anchor of the v2 line). `CHANGELOG.md` added (release receipts + rollback recipe).
+- **Deployed (this host):** `scripts/install.sh` (fresh clone of the pushed remote →
+  `~/.local/share/amrita-v2`, launchers verified) + system systemd unit `amritad`
+  (`--http --telegram --scheduler`), enabled + active. `AMRITA_AUTH_TOKEN` written to
+  `~/.amrita/secrets.env` (0600; value never printed). The real home DB migrated
+  6 → 7 live on first open.
+- **Live QA on the deployed daemon:** journal shows honest startup (telegram runner
+  refused without its token — value-free; scheduler enabled; auth via env; lanes real
+  exec disabled) · public /health ok (schema 7) · 401 without token · tokened ping ·
+  system.health: doctor `warn` (honest fresh-setup state), scheduler running ·
+  **two-signal heartbeat observed after the first tick: alive == productive, job
+  outcome `ok`, and silent-on-success held (nothing posted)** · installed CLI answers
+  (`amrita health`, `amrita skills`) · channels.list states are honest (web ready;
+  telegram + whatsapp needs_setup with exact env names).
+- **Still needing Natanel (not blockers):** provider key/login via `amrita setup` on the
+  deployed home (doctor is `warn` until then); TELEGRAM_BOT_TOKEN + allowlist if the
+  Telegram runner should go live; the dedicated-GitHub-repo question from the master
+  plan's open items.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.
