@@ -624,6 +624,31 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** root 408/408 (8 new R1 tests + wire round-trip extended) · web 65/65 ·
   typecheck/lint clean · web build ok.
 
+## R2 — Channel & kernel hygiene (operator service, session-key, boundary parse)
+
+- **Date:** 2026-07-12 · roadmap stage R2
+- **What landed:**
+  - **Operator-command service** (audit C-1/R-9): `/status /lanes /approvals /approve
+    /deny /stop /help` moved from the Telegram adapter into `daemon/operator.ts` — ONE
+    interpreter, channels only render; WhatsApp/terminal get identical answers for free.
+    Also removes the adapter's `mandateJson` display parse (C-2).
+  - **Session-key resolver** (Hermes lesson): `kernel.resolveChannelSession(channel,
+    externalUserId)` — deterministic channel-identity → same store-backed conversation;
+    a pairing without a conversation now gets the project `(default)` conversation
+    instead of a dead end. One brain, formalized.
+  - **External-boundary parse** (audit B-3): the Telegram runner parses Bot-API JSON
+    with zod (`.loose()` per-update; a malformed update drops alone, the batch survives)
+    — no more unchecked casts at the external boundary.
+  - **Kernel split (partial, honest):** cinema mandates extracted to
+    `daemon/cinema-mandates.ts` (named seam); kernel 2,290 → 2,047 lines. Config
+    authority (audit E-1) verified already unified — `config-cli` consumes the home.ts
+    read/write path; its secret-guard remains as intentional defense-in-depth (A-7).
+    **Deferred with rationale:** approvals broker stays in-kernel (coupled to the
+    pending-approvals runtime map); companion methods stay as the kernel facade (thin
+    delegations); further decomposition rides with R3's system module.
+- **Verification:** root 412/412 (4 new operator-service tests) · typecheck/lint clean ·
+  channels suite green (telegram command parity unchanged).
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

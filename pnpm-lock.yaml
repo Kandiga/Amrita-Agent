@@ -63,6 +63,9 @@ importers:
       '@amrita/store':
         specifier: workspace:*
         version: link:../store
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/cli:
     dependencies:

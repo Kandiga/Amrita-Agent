@@ -3,6 +3,7 @@ export * from './doctor.ts';
 export * from './harness.ts';
 export * from './home.ts';
 export * from './kernel.ts';
+export * from './operator.ts';
 export * from './runtimes.ts';
 export * from './provider.ts';
 export * from './rpc.ts';

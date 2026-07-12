@@ -1,4 +1,5 @@
 import type { AmritaKernel } from '@amrita/daemon';
+import { z } from 'zod';
 import { TelegramChannel } from './telegram.ts';
 
 /**
@@ -34,11 +35,37 @@ export interface RunningTelegramRunner {
   stop(): Promise<void>;
 }
 
-interface TgUpdate {
-  update_id: number;
-  message?: { text?: string; chat?: { id: number }; from?: { id: number } };
-  callback_query?: { data?: string; from?: { id: number }; message?: { chat?: { id: number } } };
-}
+// External-boundary schema (audit B-3): Telegram's JSON is parsed, never cast.
+// `.loose()` keeps unknown Bot-API fields from failing the batch.
+const tgUpdateSchema = z
+  .object({
+    update_id: z.number().int(),
+    message: z
+      .object({
+        text: z.string().optional(),
+        chat: z.object({ id: z.number() }).loose().optional(),
+        from: z.object({ id: z.number() }).loose().optional(),
+      })
+      .loose()
+      .optional(),
+    callback_query: z
+      .object({
+        data: z.string().optional(),
+        from: z.object({ id: z.number() }).loose().optional(),
+        message: z
+          .object({ chat: z.object({ id: z.number() }).loose().optional() })
+          .loose()
+          .optional(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+type TgUpdate = z.infer<typeof tgUpdateSchema>;
+
+const tgUpdatesResponseSchema = z
+  .object({ ok: z.boolean().optional(), result: z.array(z.unknown()).optional() })
+  .loose();
 
 /**
  * Start the runner. Throws (with the env NAME only) when the token is absent —
@@ -95,8 +122,14 @@ export function startTelegramRunner(
           await delay(2000);
           continue;
         }
-        const body = (await res.json()) as { ok?: boolean; result?: TgUpdate[] };
-        const updates = body.result ?? [];
+        const parsedBody = tgUpdatesResponseSchema.safeParse(await res.json());
+        const rawUpdates = parsedBody.success ? (parsedBody.data.result ?? []) : [];
+        const updates: TgUpdate[] = [];
+        for (const raw of rawUpdates) {
+          // A malformed update is dropped alone; the batch survives.
+          const u = tgUpdateSchema.safeParse(raw);
+          if (u.success) updates.push(u.data);
+        }
         for (const u of updates) {
           offset = Math.max(offset, u.update_id + 1);
           const normalized = normalize(u);

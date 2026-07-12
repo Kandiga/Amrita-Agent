@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@amrita/daemon": "workspace:*",
-    "@amrita/store": "workspace:*"
+    "@amrita/store": "workspace:*",
+    "zod": "^4.4.3"
   }
 }

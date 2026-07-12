@@ -48,6 +48,11 @@ import {
   type TaskStatus,
   openStore,
 } from '@amrita/store';
+import {
+  completeCinemaMandate,
+  issueCinemaMandate,
+  listCinemaMandates,
+} from './cinema-mandates.ts';
 import { connectorStatuses } from './connectors.ts';
 import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
 import { fetchGithubIssues } from './github.ts';
@@ -1508,10 +1513,7 @@ export class AmritaKernel {
 
   // ── memory ──────────────────────────────────────────────────────────────────
 
-  // ── cinema mandates (ADR-0029) ─────────────────────────────────────────────
-  // Derived open/resolved projection over the conversation's event log — no
-  // new table (ADR-0027 discipline). amritad records intent + outcome; the
-  // module executes under its own trust ladder and reports back.
+  // ── cinema mandates (ADR-0029; module: cinema-mandates.ts since R2) ───────
 
   issueCinemaMandate(input: {
     projectId: string;
@@ -1521,48 +1523,14 @@ export class AmritaKernel {
     maxRisk?: 'local' | 'credit' | 'destructive' | 'ambiguous';
     note?: string;
   }): { mandateId: string } {
-    const mandate: CinemaMandate = cinemaMandateSchema.parse({
-      mandateId: newId(),
-      goal: input.goal,
-      ...(input.allowedVerbs?.length ? { allowedVerbs: input.allowedVerbs } : {}),
-      maxRisk: input.maxRisk ?? 'credit',
-      ...(input.note ? { note: input.note } : {}),
-      issuedAt: new Date().toISOString(),
-    });
-    this.store.appendEvent({
-      id: newId(),
-      ts: new Date().toISOString(),
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      origin: 'agent',
-      type: 'module.mandate.issued',
-      payload: { moduleId: 'cinema', mandate },
-    });
-    return { mandateId: mandate.mandateId };
+    return issueCinemaMandate(this.store, input);
   }
 
   listCinemaMandates(
     conversationId: string,
     openOnly = false,
   ): { mandate: CinemaMandate; status: 'open' | 'resolved'; report?: CinemaMandateReport }[] {
-    const issued = new Map<string, CinemaMandate>();
-    const reports = new Map<string, CinemaMandateReport>();
-    for (const ev of this.store.getEvents(conversationId, 0)) {
-      if (ev.type === 'module.mandate.issued') {
-        const p = ev.payload as { moduleId: string; mandate: CinemaMandate };
-        if (p.moduleId === 'cinema') issued.set(p.mandate.mandateId, p.mandate);
-      } else if (ev.type === 'module.mandate.resolved') {
-        const p = ev.payload as { moduleId: string; report: CinemaMandateReport };
-        if (p.moduleId === 'cinema') reports.set(p.report.mandateId, p.report);
-      }
-    }
-    const rows = [...issued.values()].map((mandate) => {
-      const report = reports.get(mandate.mandateId);
-      return report
-        ? { mandate, status: 'resolved' as const, report }
-        : { mandate, status: 'open' as const };
-    });
-    return openOnly ? rows.filter((r) => r.status === 'open') : rows;
+    return listCinemaMandates(this.store, conversationId, openOnly);
   }
 
   completeCinemaMandate(input: {
@@ -1570,21 +1538,7 @@ export class AmritaKernel {
     conversationId: string;
     report: unknown;
   }): { ok: true } | { ok: false; reason: 'not-found' | 'already-resolved' } {
-    const report = cinemaMandateReportSchema.parse(input.report);
-    const rows = this.listCinemaMandates(input.conversationId);
-    const row = rows.find((r) => r.mandate.mandateId === report.mandateId);
-    if (!row) return { ok: false, reason: 'not-found' };
-    if (row.status === 'resolved') return { ok: false, reason: 'already-resolved' };
-    this.store.appendEvent({
-      id: newId(),
-      ts: new Date().toISOString(),
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      origin: 'agent',
-      type: 'module.mandate.resolved',
-      payload: { moduleId: 'cinema', report },
-    });
-    return { ok: true };
+    return completeCinemaMandate(this.store, input);
   }
 
   putMemoryEntry(
@@ -2060,6 +2014,30 @@ export class AmritaKernel {
 
   getChannelLink(channel: string, externalUserId: string): ChannelLink | undefined {
     return this.store.getChannelLink(channel, externalUserId);
+  }
+
+  /**
+   * Deterministic channel-session resolution (R2 / Hermes session-key lesson):
+   * every channel identity maps into the SAME store-backed conversation — one
+   * brain, no per-channel memory. A pairing without a conversation gets the
+   * project's `(default)` conversation, created once.
+   */
+  resolveChannelSession(
+    channel: string,
+    externalUserId: string,
+  ): { projectId: string; conversationId: string } | undefined {
+    const link = this.store.getChannelLink(channel, externalUserId);
+    if (!link) return undefined;
+    if (link.conversationId) {
+      return { projectId: link.projectId, conversationId: link.conversationId };
+    }
+    const existing = this.store
+      .listConversations(link.projectId)
+      .find((c) => c.title === '(default)');
+    const conversationId =
+      existing?.id ??
+      this.store.createConversation({ projectId: link.projectId, title: '(default)' }).id;
+    return { projectId: link.projectId, conversationId };
   }
 
   listPairings(channel?: string): PairingRow[] {
