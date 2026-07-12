@@ -162,6 +162,9 @@ export interface KernelOptions {
   allowRealLaneExecution?: boolean;
   /** Workspace roots a real lane's cwd must resolve within (also `AMRITA_LANES_ALLOWED_ROOTS`, `:`-sep). */
   laneAllowedRoots?: string[];
+  /** Claude Code tools a REAL lane may use (also `AMRITA_LANES_ALLOWED_TOOLS`,
+   * comma-sep). Unset = the runner's safe read-only default. */
+  laneAllowedTools?: string[];
   /** Injectable coding-runtime prober (tests pass a fake; defaults to bounded spawn). */
   codingRuntimeProber?: CommandProber;
   /** Injectable CLI exec for subscription providers (tests pass a fake; defaults to bounded spawnSync). */
@@ -329,10 +332,20 @@ export class AmritaKernel {
       configuredRoots.length > 0 ? configuredRoots : realLaneExecution ? [process.cwd()] : [];
     // Injected runner wins (tests); else a real-capable runner iff opted in, else the
     // safe default that refuses real execution (ADR-0014/0015).
+    const allowedTools =
+      opts.laneAllowedTools ??
+      (process.env.AMRITA_LANES_ALLOWED_TOOLS ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
     const laneRunner =
       opts.laneRunner ??
       (realLaneExecution
-        ? new ClaudeCodeLaneRunner({ allowRealExecution: true, allowedRoots })
+        ? new ClaudeCodeLaneRunner({
+            allowRealExecution: true,
+            allowedRoots,
+            ...(allowedTools.length > 0 ? { allowedTools } : {}),
+          })
         : new ClaudeCodeLaneRunner());
     // Kind-dispatched runners (ADR-0023): research ships unwired (honest
     // needs-setup abort); injected extras override by kind (tests wire a provider).
