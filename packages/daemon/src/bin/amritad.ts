@@ -22,9 +22,10 @@ interface Args {
   http: boolean;
   port: number;
   telegram: boolean;
+  scheduler: boolean;
 }
 function parseArgs(argv: string[]): Args {
-  const args: Args = { dbPath: null, http: false, port: 7460, telegram: false };
+  const args: Args = { dbPath: null, http: false, port: 7460, telegram: false, scheduler: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((a === '--db' || a === '-d') && argv[i + 1]) {
@@ -35,6 +36,8 @@ function parseArgs(argv: string[]): Args {
       args.http = true;
     } else if (a === '--telegram') {
       args.telegram = true;
+    } else if (a === '--scheduler') {
+      args.scheduler = true;
     } else if (a === '--port' && argv[i + 1]) {
       args.port = Number(argv[++i]);
     } else if (a?.startsWith('--port=')) {
@@ -55,7 +58,7 @@ async function main(): Promise<void> {
     ensureHome();
     dbPath = defaultDbPath();
   }
-  const { http, port, telegram } = args;
+  const { http, port, telegram, scheduler } = args;
   let kernel: AmritaKernel;
   try {
     kernel = AmritaKernel.open({ dbPath });
@@ -84,6 +87,17 @@ async function main(): Promise<void> {
     }
   }
 
+  // Minimal typed scheduler (ADR-0036): opt-in; silent-on-success watchdog.
+  let runningScheduler: { stop(): Promise<void> } | null = null;
+  if (scheduler) {
+    const { Scheduler } = await import('../scheduler.ts');
+    const s = new Scheduler(kernel);
+    kernel.attachScheduler(s);
+    s.start();
+    runningScheduler = s;
+    process.stderr.write('amritad: scheduler enabled (system-health watchdog, hourly)\n');
+  }
+
   // Make lane execution posture visible at startup (never silently real). On
   // stdio it goes to stderr so it cannot corrupt the JSON-lines protocol.
   const laneStatus = `amritad: lanes real-execution ${
@@ -104,7 +118,10 @@ async function main(): Promise<void> {
     }
     process.stdout.write(laneStatus);
     const shutdown = (): void => {
-      void (telegramRunner?.stop() ?? Promise.resolve()).then(() =>
+      void Promise.all([
+        telegramRunner?.stop() ?? Promise.resolve(),
+        runningScheduler?.stop() ?? Promise.resolve(),
+      ]).then(() =>
         running.close().then(() => {
           kernel.close();
           process.exit(0);

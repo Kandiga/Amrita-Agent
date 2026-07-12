@@ -219,6 +219,12 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     });
     await run('conversation.compress', { conversationId: c2.id });
 
+    // R3 verbs (ADR-0036)
+    await run('system.health');
+    await run('system.audit', { record: true });
+    await run('system.plan', { projectId: p.id, title: 'wire the plan' });
+    await run('system.manage', { projectId: p.id, goal: 'dry goal', dryRun: true });
+
     await run('doctor');
 
     const missed = Object.keys(METHODS).filter((m2) => !exercised.has(m2));

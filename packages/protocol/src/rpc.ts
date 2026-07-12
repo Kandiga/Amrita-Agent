@@ -24,6 +24,7 @@ import {
   laneRowStatusSchema,
   providerConfigStatusSchema,
   providerRoleSchema,
+  riskSeveritySchema,
   sealedEventShellSchema,
 } from './events.ts';
 import { harnessTopologySchema, knowledgeSourceSchema, projectBrainSchema } from './harness.ts';
@@ -341,6 +342,56 @@ export const cinemaMandateRowSchema = z.object({
   report: cinemaMandateReportSchema.optional(),
 });
 
+/** Scheduler two-signal heartbeat + typed jobs (ADR-0036). */
+export const schedulerStatusSchema = z.object({
+  running: z.boolean(),
+  lastTickAt: isoTimestampSchema.nullable(),
+  lastSuccessAt: isoTimestampSchema.nullable(),
+  jobs: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        intervalMinutes: z.number().int().positive(),
+        enabled: z.boolean(),
+        lastRunAt: isoTimestampSchema.nullable(),
+        lastOutcome: z.enum(['ok', 'problem', 'error']).nullable(),
+      }),
+    )
+    .max(20),
+});
+export type SchedulerStatusWire = z.infer<typeof schedulerStatusSchema>;
+
+/** System Brain verbs (ADR-0036): health / audit / plan / manage. */
+export const systemHealthResultSchema = z.object({
+  ok: z.boolean(),
+  doctor: doctorReportSchema,
+  scheduler: schedulerStatusSchema.nullable(),
+  projects: z.array(
+    z.object({
+      id: idSchema,
+      slug: z.string(),
+      name: z.string(),
+      records: z.number().int().nonnegative(),
+      gaps: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
+export const systemAuditFindingSchema = z.object({
+  projectId: idSchema,
+  slug: z.string(),
+  kind: z.enum(['missing-brief', 'unresolved-questions', 'open-risks', 'brain-gaps']),
+  severity: riskSeveritySchema,
+  detail: z.string(),
+});
+
+export const systemAuditResultSchema = z.object({
+  findings: z.array(systemAuditFindingSchema),
+  recorded: z.number().int().nonnegative(),
+});
+
 /** Compression result (ADR-0033): the child continues; the parent is archived. */
 export const compressResultSchema = z.object({
   childConversationId: idSchema,
@@ -472,6 +523,11 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
 
   'projects.context': projectContextSchema,
   'skills.list': z.array(skillStatusSchema),
+
+  'system.health': systemHealthResultSchema,
+  'system.audit': systemAuditResultSchema,
+  'system.plan': z.object({ entryId: idSchema, kind: z.string() }),
+  'system.manage': laneStartResultSchema,
 
   'channels.list': z.array(channelStatusEntrySchema),
   'channels.pairing.create': pairingRowSchema,

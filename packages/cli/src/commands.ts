@@ -414,6 +414,40 @@ export const COMMANDS: Record<string, Command> = {
     },
   },
 
+  'system health': {
+    describe: 'Global Amrita health: doctor + per-project brain counts + scheduler heartbeat',
+    async run(client) {
+      const h = await client.call<{
+        ok: boolean;
+        doctor: { status: string; fixes: string[] };
+        scheduler: { running: boolean; lastTickAt: string | null } | null;
+        projects: { slug: string; records: number; gaps: number }[];
+      }>('system.health');
+      const lines = [
+        `doctor: ${h.doctor.status}${h.doctor.fixes.length ? ` (${h.doctor.fixes.length} fixes)` : ''}`,
+        h.scheduler
+          ? `scheduler: ${h.scheduler.running ? 'running' : 'stopped'} · last tick ${h.scheduler.lastTickAt ?? 'never'}`
+          : 'scheduler: not running (start amritad with --scheduler)',
+        ...h.projects.map((p2) => `  ${p2.slug}: ${p2.records} records · ${p2.gaps} gaps`),
+      ];
+      return { result: h, summary: lines.join('\n') };
+    },
+  },
+
+  'system audit': {
+    describe: 'cross-project findings sweep; --record captures into the system brain',
+    async run(client, { flags }) {
+      const record = flags.record === true || flags.record === 'true';
+      const r = await client.call<{
+        findings: { slug: string; kind: string; severity: string; detail: string }[];
+        recorded: number;
+      }>('system.audit', { record });
+      const lines = r.findings.map((f) => `[${f.severity}] ${f.slug} · ${f.kind}: ${f.detail}`);
+      if (record) lines.push(`recorded ${r.recorded} finding(s) into the system brain`);
+      return { result: r, summary: lines.join('\n') || 'no findings — all projects clean' };
+    },
+  },
+
   'message user': {
     describe: 'record a user message in a conversation',
     async run(client, { positionals }) {

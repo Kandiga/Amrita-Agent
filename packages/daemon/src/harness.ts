@@ -222,6 +222,8 @@ function parseDueDate(text: string): string | null {
 function sourceIdForMemory(source: string | null): string {
   const s = (source ?? '').toLowerCase();
   if (s.startsWith('module:')) return s.split(/\s/)[0] ?? 'module:cinema';
+  // System Brain writes (ADR-0036) keep their exact provenance, e.g. system:audit.
+  if (s.startsWith('system:')) return s.split(/\s/)[0] ?? 'system';
   if (
     s.startsWith('telegram') ||
     s.startsWith('chat') ||

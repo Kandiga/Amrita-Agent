@@ -25,6 +25,7 @@ import { runDoctor } from './doctor.ts';
 import { GithubError } from './github.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { ProviderError } from './provider.ts';
+import { systemAudit, systemHealth, systemManage, systemPlan } from './system.ts';
 import { clean } from './util.ts';
 
 /**
@@ -547,6 +548,29 @@ export const METHODS: Record<string, RpcMethod> = {
   // The skill registry (ADR-0035): register + gate, never execute.
   'skills.list': def(z.object({ projectId: z.string().optional() }).optional(), (k, p) =>
     k.listSkills(p?.projectId),
+  ),
+
+  // ── Global Amrita / System Brain (ADR-0036) ────────────────────────────────
+  'system.health': def(z.object({}).optional(), (k) => systemHealth(k)),
+  'system.audit': def(z.object({ record: z.boolean().optional() }).optional(), (k, p) =>
+    systemAudit(k, clean(p ?? {})),
+  ),
+  'system.plan': def(
+    z.object({
+      projectId: z.string(),
+      title: z.string().min(1).max(200),
+      body: z.string().max(4000).optional(),
+    }),
+    (k, p) => systemPlan(k, clean(p)),
+  ),
+  'system.manage': def(
+    z.object({
+      projectId: z.string(),
+      goal: z.string().min(1).max(4000),
+      kind: z.string().optional(),
+      dryRun: z.boolean().optional(),
+    }),
+    (k, p) => systemManage(k, clean(p)),
   ),
 
   // Honest readiness: `ready` only when the surface actually works end-to-end

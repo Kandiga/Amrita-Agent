@@ -649,6 +649,30 @@ One ledger, updated per phase — no scattered notes.
 - **Verification:** root 412/412 (4 new operator-service tests) · typecheck/lint clean ·
   channels suite green (telegram command parity unchanged).
 
+## R3 — Global Amrita: system project, System Brain verbs, minimal scheduler (ADR-0036)
+
+- **Date:** 2026-07-12 · roadmap stage R3
+- **What landed:**
+  - **Reserved system project** as the global scope (zero protocol break); global chat =
+    the `(global)` conversation in it.
+  - **System Brain verbs** (`daemon/system.ts` + RPC + wire schemas): `system.health`
+    (doctor + per-project brain counts + scheduler heartbeat), `system.audit`
+    (cross-project findings — missing brief / unresolved questions / open risks / brain
+    gaps; `--record` captures the top findings into the system brain with
+    `system:audit` provenance), `system.plan` (drafts into a target brain,
+    `system:plan` provenance, never executes), `system.manage` (delegates a goal as a
+    lane through the unchanged ADR-0015/0021 gates). CLI: `amrita system health/audit`.
+  - **Minimal scheduler** (`daemon/scheduler.ts`, `amritad --scheduler`): typed jobs in
+    settings (`scheduler.jobs`, zod-parsed, ≥5-min intervals), one shipped kind —
+    `system-health` — silent on success, posts a `message.system` into the system
+    conversation only on doctor FAIL (Hermes watchdog convention). Two-signal heartbeat
+    (`lastTickAt` alive vs `lastSuccessAt` productive) surfaced in `system.health`.
+    OS supervision stays systemd's job; the daemon never self-restarts.
+  - Harness provenance passes `system:*` sources through exactly (records show honest
+    `system:audit` / `system:plan` origins).
+- **Verification:** root 419/419 (7 new system/scheduler tests; wire round-trip extended
+  to the 4 new verbs) · typecheck/lint clean.
+
 ## Reorganization session — root-cause audit + Hermes research + master plan (docs only)
 
 - **Date:** 2026-07-11 · **Mode:** AUDIT + planning — zero code changes; three documents added.

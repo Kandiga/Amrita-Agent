@@ -95,6 +95,7 @@ import {
   getClaudeCodeStatus,
   getRuntimesStatus,
 } from './runtimes.ts';
+import type { SchedulerStatus } from './scheduler.ts';
 import { loadSkillStatuses } from './skills.ts';
 import { clean } from './util.ts';
 
@@ -1795,6 +1796,18 @@ export class AmritaKernel {
     } catch {
       // auditing must never break the waiter
     }
+  }
+
+  /** The composition root attaches the (opt-in) scheduler — ADR-0036. */
+  private scheduler: { status(): SchedulerStatus } | null = null;
+
+  attachScheduler(s: { status(): SchedulerStatus }): void {
+    this.scheduler = s;
+  }
+
+  /** Two-signal heartbeat + job list; null = no scheduler running (honest). */
+  getSchedulerStatus(): SchedulerStatus | null {
+    return this.scheduler ? this.scheduler.status() : null;
   }
 
   /** The composition root (amritad bin) marks a channel runner as live. */
