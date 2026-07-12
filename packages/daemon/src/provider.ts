@@ -10,7 +10,7 @@
  * injectable `fetchImpl` (and the CLI adapter an injectable `execImpl`), so
  * tests never hit the network and never spawn processes.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { PROVIDER_ROLES } from '@amrita/protocol';
 import type {
   AuthMode as ProviderAuthMode,
@@ -304,21 +304,81 @@ export function createOpenaiProvider(opts: AdapterOptions & { id?: string }): Ch
 
 // ── claude-code subscription adapter (cli_session) ──────────────────────────
 
-/** Bounded synchronous CLI execution — injectable so tests never spawn. */
+export interface CliExecResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set when the process never produced a status — classified, never guessed. */
+  failure?: 'not_found' | 'timeout' | 'spawn_error';
+}
+
+/**
+ * Bounded CLI execution — injectable so tests never spawn. May return the
+ * result synchronously (test fakes) or as a promise (the real async impl).
+ */
 export type CliExec = (
   cmd: string,
   args: string[],
   input: string,
   timeoutMs: number,
-) => { status: number | null; stdout: string; stderr: string };
+) => CliExecResult | Promise<CliExecResult>;
 
-export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs) => {
-  const r = spawnSync(cmd, args, { input, encoding: 'utf8', timeout: timeoutMs });
-  if (r.error) return { status: null, stdout: '', stderr: r.error.message };
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-};
+/**
+ * ASYNC by design: a chat turn can take minutes, and a synchronous spawn would
+ * freeze the entire daemon (RPC, WS stream, scheduler, approvals) for its
+ * whole duration — the exact "Amrita stopped responding" failure mode.
+ */
+export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs) =>
+  new Promise<CliExecResult>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    } catch {
+      resolve({ status: null, stdout: '', stderr: '', failure: 'spawn_error' });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (r: CliExecResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      settle({ status: null, stdout, stderr, failure: 'timeout' });
+    }, timeoutMs);
+    child.stdout?.on('data', (c: Buffer) => {
+      stdout += c.toString('utf8');
+    });
+    child.stderr?.on('data', (c: Buffer) => {
+      if (stderr.length < 16_384) stderr += c.toString('utf8');
+    });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      settle({
+        status: null,
+        stdout: '',
+        stderr: '',
+        failure: e.code === 'ENOENT' ? 'not_found' : 'spawn_error',
+      });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      settle({ status: code, stdout, stderr });
+    });
+    child.stdin?.on('error', () => {
+      // EPIPE from a dead child: the 'error'/'close' handlers own the outcome.
+    });
+    child.stdin?.end(input);
+  });
 
-const CLAUDE_CLI_TIMEOUT_MS = 180_000;
+/** Chat-turn budget; a long real turn beats a fast false timeout (env-tunable). */
+const CLAUDE_CLI_TIMEOUT_MS =
+  Number(process.env.AMRITA_CHAT_CLI_TIMEOUT_MS ?? '') > 0
+    ? Number(process.env.AMRITA_CHAT_CLI_TIMEOUT_MS)
+    : 300_000;
 
 /** Flatten a transcript into one prompt for the single-shot `claude -p` call. */
 export function flattenTranscript(messages: ChatMessage[]): string {
@@ -352,11 +412,18 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
     id: 'claude-code',
     async generate(req: ChatRequest): Promise<ChatResponse> {
       const args = ['-p', '--output-format', 'json', '--model', req.model];
-      const r = exec('claude', args, flattenTranscript(req.messages), CLAUDE_CLI_TIMEOUT_MS);
+      const r = await exec('claude', args, flattenTranscript(req.messages), CLAUDE_CLI_TIMEOUT_MS);
       if (r.status === null) {
+        // Honest classification (never conflated): a timeout is not a missing CLI.
+        if (r.failure === 'timeout') {
+          throw new ProviderError(
+            'provider_error',
+            `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+          );
+        }
         throw new ProviderError(
           'provider_unavailable',
-          'the `claude` CLI was not found or timed out — install with `npm install -g @anthropic-ai/claude-code`',
+          'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
         );
       }
       let parsed: ClaudeCliResult | null = null;
