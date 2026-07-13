@@ -26,6 +26,20 @@
    lane activity, so the page/game/tool grows on screen while the lane works.
    `deploy/serve-web.mjs` proxies `/lanes/*` like `/rpc`.
 
+## Amendment: view tickets, not the bearer (commit-review finding)
+
+Lane-built content is hostile-until-proven: a page can read its own URL, so the
+global bearer never enters a frame URL. The canvas mints a **lane-scoped,
+expiring (6h), read-only view ticket** (`lanes.workspace.ticket` RPC) and loads
+`/lanes/<id>/workspace/t/<ticket>/…` — the ticket rides the PATH so the page's
+relative subresources inherit it, and it is refused on every other route
+(RPC/events). Every workspace response also carries
+`Content-Security-Policy: sandbox allow-scripts; default-src 'self'; connect-src 'none'; …`
+(no external fetch/beacon/subresources/forms), `Referrer-Policy: no-referrer`,
+and `X-Content-Type-Options: nosniff`; the listing escaper is attribute-safe
+(quotes included). Residual exposure of a leaked ticket: read-only access to
+that one lane's files for ≤6h — the same files the page itself already contains.
+
 ## Invariants & guards
 
 - Path confinement is proved by a traversal test (`..`, absolute, symlink-out

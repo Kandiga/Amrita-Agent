@@ -453,6 +453,11 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.resolveApproval(p.approvalId, p.decision),
   ),
   'lanes.cancel': def(z.object({ laneId: z.string() }), (k, p) => k.cancelLane(p.laneId)),
+  // ADR-0039 amendment: lane-scoped read-only ticket for the canvas iframe —
+  // the global bearer never enters a frame URL.
+  'lanes.workspace.ticket': def(z.object({ laneId: z.string() }), (k, p) =>
+    k.issueWorkspaceTicket(p.laneId),
+  ),
 
   'chat.turn': def(
     z.object({

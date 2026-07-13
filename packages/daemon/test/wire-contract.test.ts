@@ -222,6 +222,14 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     // R6 (ADR-0037)
     await run('operator.command', { projectId: p.id, text: '/help' });
 
+    // ADR-0039 amendment: workspace view ticket for a (dry) lane
+    const ticketLane = (await call('lanes.start', {
+      conversationId: c.id,
+      goal: 'ticket target',
+      dryRun: true,
+    })) as { laneId: string };
+    await run('lanes.workspace.ticket', { laneId: ticketLane.laneId });
+
     // ADR-0038: archive a session, delete a throwaway project
     await run('conversation.archive', { conversationId: c2.id });
     const doomed = (await call('project.ensure', { slug: 'doomed', name: 'Doomed' })) as {

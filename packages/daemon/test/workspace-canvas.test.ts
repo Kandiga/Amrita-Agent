@@ -147,6 +147,37 @@ describe('GET /lanes/:id/workspace (ADR-0039)', () => {
     expect((await get(`/lanes/${laneId}/workspace/`, 'wrong')).status).toBe(401);
   });
 
+  it('a lane-scoped ticket serves the workspace WITHOUT the global token — and nothing else', async () => {
+    const { ticket } = kernel.issueWorkspaceTicket(laneId);
+    // ticket in the PATH: subresources inherit it; no ?token anywhere
+    const ok = await fetch(`${base}/lanes/${laneId}/workspace/t/${ticket}/`);
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toContain('the built page');
+    // server-side hardening on every workspace response
+    expect(ok.headers.get('content-security-policy')).toContain("connect-src 'none'");
+    expect(ok.headers.get('referrer-policy')).toBe('no-referrer');
+
+    // a wrong ticket, and a ticket for ANOTHER lane, are both refused
+    expect((await fetch(`${base}/lanes/${laneId}/workspace/t/WRONG0000/`)).status).toBe(401);
+    // the ticket is worthless on RPC and events (only the bearer gate counts there)
+    expect((await fetch(`${base}/events?conversationId=x&token=${ticket}`)).status).toBe(401);
+    const rpc = await fetch(`${base}/rpc?token=${ticket}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"id":1,"method":"ping"}',
+    });
+    expect(rpc.status).toBe(401);
+  });
+
+  it('listing filenames are attribute-safe (quotes cannot break out)', async () => {
+    rmSync(join(workspace, 'index.html'));
+    writeFileSync(join(workspace, 'a"onmouseover="x.html'), 'evil-name file');
+    const r = await get(`/lanes/${laneId}/workspace/`);
+    const html = await r.text();
+    expect(html).toContain('&quot;'); // the quote is escaped in the attribute
+    expect(html).not.toContain('"onmouseover="');
+  });
+
   it('a workspace without index.html gets an honest listing', async () => {
     rmSync(join(workspace, 'index.html'));
     const r = await get(`/lanes/${laneId}/workspace/`);

@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -282,6 +283,9 @@ export class AmritaKernel {
   private readonly defaultLaneRunner: LaneRunner;
   /** ADR-0039: real lanes without explicit paths get `<root>/<laneId>`. */
   private readonly laneWorkspacesRoot: string | null;
+  /** Lane-scoped, expiring, read-only workspace view tickets (ADR-0039 amendment).
+   *  Worthless outside `GET /lanes/<id>/workspace` — never accepted by RPC/events. */
+  private readonly workspaceTickets = new Map<string, { ticket: string; expiresAt: number }>();
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
@@ -1772,6 +1776,24 @@ export class AmritaKernel {
     status?: LaneStatus;
   }): LaneRow[] {
     return this.store.listLanes(filters);
+  }
+
+  /** Mint (or renew) the workspace view ticket for one lane (6h TTL). */
+  issueWorkspaceTicket(laneId: string): { ticket: string; expiresAt: string } {
+    if (!this.store.getLane(laneId)) throw new Error(`no such lane: ${laneId}`);
+    const ticket = randomBytes(24).toString('base64url');
+    const expiresAt = Date.now() + 6 * 60 * 60 * 1000;
+    this.workspaceTickets.set(laneId, { ticket, expiresAt });
+    return { ticket, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  /** Constant-time check of a workspace ticket for THIS lane only. */
+  checkWorkspaceTicket(laneId: string, provided: string): boolean {
+    const entry = this.workspaceTickets.get(laneId);
+    if (!entry || Date.now() > entry.expiresAt) return false;
+    const a = Buffer.from(entry.ticket);
+    const b = Buffer.from(provided);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   getLane(laneId: string): LaneRow | undefined {

@@ -128,6 +128,24 @@ async function handleHttp(
     return;
   }
 
+  // ADR-0039 amendment: the canvas iframe reads workspaces with a lane-scoped
+  // ticket IN THE PATH (so the document's relative subresources inherit it).
+  // The ticket is read-only, expiring, and worthless on every other route.
+  const ticketMatch = /^\/lanes\/([A-Za-z0-9]+)\/workspace\/t\/([A-Za-z0-9_-]+)(?:\/(.*))?$/.exec(
+    url.pathname,
+  );
+  if (method === 'GET' && ticketMatch) {
+    const laneId = ticketMatch[1] ?? '';
+    if (!kernel.checkWorkspaceTicket(laneId, ticketMatch[2] ?? '')) {
+      sendJson(res, 401, {
+        error: { code: 'unauthorized', message: 'missing or invalid workspace ticket' },
+      });
+      return;
+    }
+    serveLaneWorkspace(kernel, res, laneId, decodeURIComponent(ticketMatch[3] ?? ''));
+    return;
+  }
+
   // Everything else is gated when a token is configured. Gate before route
   // matching so an unauthenticated caller cannot probe which routes exist.
   if (authToken) {
@@ -200,8 +218,28 @@ const WORKSPACE_TYPES: Record<string, string> = {
 };
 
 function escapeHtml(v: string): string {
-  return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return v
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
+
+/**
+ * Workspace responses are hostile-until-proven: lane-built content executes in
+ * the canvas sandbox, so the server ALSO forbids every external channel — no
+ * fetch/beacon, no external subresources, no forms — and never sends a
+ * Referer. Self-contained pages and games (inline CSS/JS, same-origin assets)
+ * work; exfiltration does not.
+ */
+const WORKSPACE_SECURITY_HEADERS: Record<string, string> = {
+  'content-security-policy':
+    "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+  'cache-control': 'no-store',
+};
 
 /**
  * Serve one file from a lane's workspace (ADR-0039). Read-only; every resolved
@@ -267,7 +305,7 @@ function serveLaneWorkspace(
         .join('');
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'no-store',
+        ...WORKSPACE_SECURITY_HEADERS,
       });
       res.end(
         `<!doctype html><meta charset="utf-8"><title>lane workspace</title><body style="font-family:system-ui;padding:24px;color:#3d3d3a;background:#faf9f5"><h3 style="margin:0 0 4px">Lane workspace</h3><p style="margin:0 0 14px;font-size:13px;color:#87867f">${
@@ -284,7 +322,7 @@ function serveLaneWorkspace(
     return;
   }
   const type = WORKSPACE_TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+  res.writeHead(200, { 'content-type': type, ...WORKSPACE_SECURITY_HEADERS });
   res.end(readFileSync(target));
 }
 

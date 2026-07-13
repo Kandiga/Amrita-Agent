@@ -100,29 +100,33 @@ function extractArray<T>(value: unknown, keys: string[]): T[] {
 
 /**
  * ADR-0039: the workspace canvas — loads the lane's real files from the daemon
- * by URL (token as query, same pattern as the WS). Sandboxed: scripts may run,
- * but never with our origin's storage/cookies (`allow-same-origin` is banned).
- * `refreshKey` remounts the frame as the lane writes, so the build grows live.
+ * by URL. Auth is a lane-scoped, expiring, READ-ONLY ticket in the path (never
+ * the global bearer: frame content is lane-built and could read its own URL);
+ * the ticket also flows to the page's relative subresources. Sandboxed:
+ * scripts run, but with an opaque origin and a server CSP that forbids every
+ * external channel. `refreshKey` remounts the frame as the lane writes.
  */
 function WorkspaceFrame({
-  src,
+  laneId,
   title,
-  token,
+  ticket,
   refreshKey,
 }: {
-  src: string;
+  laneId: string;
   title: string;
-  token: string | undefined;
+  ticket: string | null;
   refreshKey: number;
 }) {
-  const url = token ? `${src}?token=${encodeURIComponent(token)}` : src;
+  if (!ticket) {
+    return <div className="canvas-wait">Opening a read-only view of the workspace…</div>;
+  }
   return (
     <iframe
       key={refreshKey}
       className="canvas-frame"
       title={title}
       sandbox="allow-scripts"
-      src={url}
+      src={`/lanes/${laneId}/workspace/t/${ticket}/`}
     />
   );
 }
@@ -187,6 +191,8 @@ export function App() {
   const [projectLoading, setProjectLoading] = useState(false);
   /** The open live-canvas artifact id, or null (gallery). */
   const [canvasId, setCanvasId] = useState<string | null>(null);
+  /** Lane-scoped workspace view tickets (ADR-0039 amendment), by laneId. */
+  const [workspaceTickets, setWorkspaceTickets] = useState<Record<string, string>>({});
   /** ADR-0038 delete flow: which project is arming, and the typed slug. */
   const [deleteArm, setDeleteArm] = useState<string | null>(null);
   const [deleteDraft, setDeleteDraft] = useState('');
@@ -522,6 +528,17 @@ export function App() {
       ? a
       : null;
   }, [surfaceArtifacts, canvasId]);
+
+  // Mint the read-only view ticket when a workspace canvas opens (once per lane).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reportError is a stable module-level pattern here; tickets key on the lane.
+  useEffect(() => {
+    const a = canvasArtifact;
+    if (!a || a.kind !== 'workspace-preview' || workspaceTickets[a.laneId]) return;
+    client
+      .call<{ ticket: string }>('lanes.workspace.ticket', { laneId: a.laneId })
+      .then((r) => setWorkspaceTickets((old) => ({ ...old, [a.laneId]: r.ticket })))
+      .catch((e) => reportError(e));
+  }, [canvasArtifact, workspaceTickets]);
 
   /** The write envelope shared by every knowledge panel. */
   const writeCtx =
@@ -996,9 +1013,9 @@ export function App() {
               </header>
               {canvasArtifact.kind === 'workspace-preview' ? (
                 <WorkspaceFrame
-                  src={canvasArtifact.src}
+                  laneId={canvasArtifact.laneId}
                   title={canvasArtifact.title}
-                  token={authToken}
+                  ticket={workspaceTickets[canvasArtifact.laneId] ?? null}
                   refreshKey={Math.floor(canvasArtifact.rev / 4)}
                 />
               ) : (
