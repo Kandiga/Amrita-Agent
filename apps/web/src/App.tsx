@@ -1178,6 +1178,13 @@ export function App() {
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // claude.ai behavior: Enter sends, Shift+Enter breaks the line
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
             dir={textDir(draft)}
             placeholder="Message Amrita…"
             rows={2}

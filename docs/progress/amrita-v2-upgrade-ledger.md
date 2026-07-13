@@ -938,3 +938,17 @@ One ledger, updated per phase — no scattered notes.
   project grid, Settings→Access, delete flow end-to-end (Scratch removed, fallback to
   System), session archive (auto-creates next session); mobile 390×844: 4 tabs, drawer
   Settings, settings pill nav; **0 console errors**.
+- **Security hardening (commit-review findings, fixed at the root):** the canvas frame
+  never carries the global bearer — `lanes.workspace.ticket` mints a lane-scoped,
+  read-only, 6h ticket carried in the PATH (subresources inherit it; refused on
+  RPC/events; constant-time compare); workspace responses ship a strict CSP
+  (`connect-src 'none'`, no external subresources/forms), `Referrer-Policy:
+  no-referrer`, nosniff; the listing escaper is attribute-safe. Plus a proxy-prefix
+  bug found in live QA (`/lanes/` + matcher-appended `/` → SPA fallback) — fixed.
+- **Live E4 proof (deployed, public link):** catalog shows BOTH brains ready
+  (claude-code 2.1.207 · codex ChatGPT session); two REAL lanes ran IN PARALLEL
+  through the approval gate — claude-code built a landing page, codex built a
+  playable retro Snake game — both `exit done`, each in its auto-assigned
+  workspace; the canvas rendered both via tickets (LIVE BUILD · done), the Snake
+  game runs sandboxed on the canvas; a live chat turn answered "אני Claude Opus
+  4.8" via `claude-code · opus`. Enter now sends (Shift+Enter breaks the line).
