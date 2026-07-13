@@ -254,7 +254,6 @@ describe('ClaudeCodeLaneRunner', () => {
     const args = calls[0]?.args ?? [];
     expect(args).toEqual([
       '--print',
-      evil, // the whole goal is ONE argv entry — never a shell string
       '--output-format',
       'stream-json',
       '--verbose',
@@ -262,6 +261,8 @@ describe('ClaudeCodeLaneRunner', () => {
       '5',
       '--allowedTools',
       'Read,Grep',
+      '--', // end-of-options: nothing in the goal can ever parse as a flag
+      evil, // the whole goal is ONE argv entry — never a shell string
     ]);
   });
 
@@ -531,6 +532,18 @@ describe('CodexLaneRunner (ChatGPT-subscription twin)', () => {
     expect(report.summary).not.toContain('xyz@secret'); // value-free
   });
 
+  it('a flag-shaped goal is refused before any spawn (argv-injection guard)', async () => {
+    const { runner, calls } = captureRunner();
+    for (const Lane of [CodexLaneRunner, ClaudeCodeLaneRunner]) {
+      const report = await new Lane({ processRunner: runner }).run(
+        mandate({ goal: '--dangerously-bypass-approvals-and-sandbox do things' }),
+      );
+      expect(report.exit).toBe('aborted');
+      expect(report.summary).toContain('must not begin with "-"');
+    }
+    expect(calls).toHaveLength(0); // nothing was ever executed
+  });
+
   it('sandbox + no-shell invocation shape', async () => {
     const { runner, calls } = captureRunner();
     await new CodexLaneRunner({ processRunner: runner }).run(mandate());
@@ -541,6 +554,7 @@ describe('CodexLaneRunner (ChatGPT-subscription twin)', () => {
       '--skip-git-repo-check',
       '--sandbox',
       'workspace-write',
+      '--', // end-of-options sentinel (verified honored by codex-cli 0.144.1)
       'build the page',
     ]);
     expect(calls[0]?.cwd).toBe('/tmp/ws');

@@ -10,6 +10,7 @@ import {
   type ProcessRunner,
   buildReport,
   emptyUsage,
+  goalLooksLikeFlag,
 } from './runner.ts';
 import { parseStreamJsonLine } from './stream-json.ts';
 
@@ -115,18 +116,27 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
     return mandate.budget.maxTurns ?? this.defaultMaxTurns;
   }
 
-  /** The CLI invocation. No shell — args are passed to `spawn(file, args)`. */
+  /**
+   * The CLI invocation. No shell — args go to `spawn(file, args)`; every flag
+   * comes BEFORE the `--` end-of-options sentinel, and the untrusted goal is
+   * the only thing after it, so it can never be parsed as a flag.
+   */
   private buildArgs(mandate: LaneMandate, maxTurns: number): string[] {
-    const args = ['--print', mandate.goal];
+    const args = ['--print'];
     if (this.outputFormat === 'stream-json') {
       args.push('--output-format', 'stream-json', '--verbose', '--max-turns', String(maxTurns));
       if (this.allowedTools.length > 0) args.push('--allowedTools', this.allowedTools.join(','));
     }
+    args.push('--', mandate.goal);
     return args;
   }
 
   async run(mandate: LaneMandate, ctx?: LaneRunContext): Promise<MergeReport> {
     const runner = this.resolveRunner(); // throws (safely) if real exec is not enabled
+
+    if (goalLooksLikeFlag(mandate.goal)) {
+      return buildReport(mandate, 'aborted', 'refused: the goal must not begin with "-"');
+    }
 
     // Workspace confinement: the mandate path must resolve within an allowed root.
     const cwd = mandate.scope.paths?.[0];

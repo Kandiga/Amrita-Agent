@@ -10,6 +10,7 @@ import {
   type ProcessRunner,
   buildReport,
   emptyUsage,
+  goalLooksLikeFlag,
 } from './runner.ts';
 
 /**
@@ -105,16 +106,23 @@ export class CodexLaneRunner implements LaneRunner {
       }
     }
 
+    if (goalLooksLikeFlag(mandate.goal)) {
+      return buildReport(mandate, 'aborted', 'refused: the goal must not begin with "-"');
+    }
+
     const env = scrubEnv(this.baseEnv, this.envAllowlist);
     const maxTurns = mandate.budget.maxTurns ?? this.defaultMaxTurns;
-    // No shell: the goal is one positional argv entry. The sandbox confines
-    // writes to the cwd; --skip-git-repo-check because workspaces are fresh dirs.
+    // No shell: the goal is ONE positional argv entry after the `--` sentinel,
+    // so it can never smuggle a flag (e.g. a sandbox bypass). The sandbox
+    // confines writes to the cwd; --skip-git-repo-check because workspaces are
+    // fresh dirs. `--` honored by codex-cli 0.144.1 (verified live).
     const args = [
       'exec',
       '--json',
       '--skip-git-repo-check',
       '--sandbox',
       'workspace-write',
+      '--',
       mandate.goal,
     ];
     ctx?.onProgress?.('preparing codex lane', 0);

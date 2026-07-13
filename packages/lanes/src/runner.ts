@@ -71,6 +71,15 @@ export class LaneSafetyError extends Error {
 
 // ── shared report helpers ────────────────────────────────────────────────────
 
+/**
+ * Argv hygiene (security): the goal is untrusted input placed in argv. Even
+ * with an end-of-options `--` sentinel, a flag-shaped goal is refused outright
+ * — belt and suspenders, since `--` semantics belong to each CLI's parser.
+ */
+export function goalLooksLikeFlag(goal: string): boolean {
+  return goal.trimStart().startsWith('-');
+}
+
 export function emptyUsage(): Usage {
   return { inputTokens: 0, outputTokens: 0 };
 }
