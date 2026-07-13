@@ -156,6 +156,49 @@ export function readEnvSecret(name: string): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+/**
+ * SSRF guard for provider base URLs (security). A base URL can come from an
+ * operator env var OR the auth-gated `providers.endpoint.local` setting, then
+ * reaches `fetch()` with the user's key attached — so it is the one place an
+ * authenticated caller could aim the daemon at an internal target. We refuse
+ * exactly the two vectors with NO legitimate LLM use:
+ *
+ *   1. non-`http(s)` schemes (`file:`, `gopher:`, …);
+ *   2. the cloud-metadata link-local range (`169.254.0.0/16`, `fe80::/10`,
+ *      `fd00:ec2::254`) and the well-known metadata hostnames.
+ *
+ * Loopback / RFC-1918 stay ALLOWED on purpose: pointing at a local Ollama /
+ * vLLM / LM Studio is the documented local-endpoint feature (its default is
+ * `http://localhost:11434`), and the caller already holds a token that grants
+ * strictly more power (real lane code execution). DNS rebinding is out of
+ * scope for the same reason — this is a proportionate block on the specific
+ * metadata-SSRF escalation, not a general egress firewall.
+ */
+export function assertSafeProviderUrl(rawUrl: string): void {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    throw new ProviderError('provider_error', 'invalid provider base URL');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new ProviderError('provider_error', 'provider base URL must be http(s)');
+  }
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const BLOCKED_METADATA_HOSTS = new Set(['metadata.google.internal', 'metadata.goog', 'metadata']);
+  if (
+    BLOCKED_METADATA_HOSTS.has(host) ||
+    /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host) || // IPv4 link-local (metadata)
+    host.startsWith('fe80:') || // IPv6 link-local
+    host === 'fd00:ec2::254' // AWS IMDS IPv6
+  ) {
+    throw new ProviderError(
+      'provider_error',
+      'provider base URL points at a link-local / cloud-metadata address (blocked)',
+    );
+  }
+}
+
 // ── fetch injection ──────────────────────────────────────────────────────────
 
 export interface FetchResponseLike {
@@ -195,6 +238,7 @@ interface AnthropicResponse {
 export function createAnthropicProvider(opts: AdapterOptions): ChatProvider {
   const fetchImpl = opts.fetchImpl ?? defaultFetch;
   const baseUrl = opts.baseUrl ?? 'https://api.anthropic.com';
+  assertSafeProviderUrl(baseUrl); // SSRF guard at the choke point (once, not per-turn)
   return {
     id: 'anthropic',
     async generate(req: ChatRequest): Promise<ChatResponse> {
@@ -266,6 +310,7 @@ interface OpenaiResponse {
 export function createOpenaiProvider(opts: AdapterOptions & { id?: string }): ChatProvider {
   const fetchImpl = opts.fetchImpl ?? defaultFetch;
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+  assertSafeProviderUrl(baseUrl); // SSRF guard at the choke point (once, not per-turn)
   const id = opts.id ?? 'openai';
   return {
     id,
@@ -883,9 +928,11 @@ export async function probeOpenAiModels(opts: {
   if (opts.apiKey) headers.authorization = `Bearer ${opts.apiKey}`;
   let res: FetchResponseLike;
   try {
+    assertSafeProviderUrl(probedUrl); // SSRF guard — blocked URL → safe fallback below
     res = await fetchImpl(probedUrl, { method: 'GET', headers });
-  } catch {
-    return { ok: false, models: [], probedUrl, detail: 'endpoint unreachable (network error)' };
+  } catch (e) {
+    const detail = e instanceof ProviderError ? e.message : 'endpoint unreachable (network error)';
+    return { ok: false, models: [], probedUrl, detail };
   }
   if (!res.ok) {
     return { ok: false, models: [], probedUrl, detail: `endpoint returned status ${res.status}` };

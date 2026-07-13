@@ -10,6 +10,7 @@ import {
   probeOpenAiModels,
   suggestV1BaseUrl,
 } from '../src/index.ts';
+import { assertSafeProviderUrl, createOpenaiProvider } from '../src/provider.ts';
 
 let kernel: AmritaKernel;
 afterEach(() => {
@@ -92,6 +93,62 @@ describe('probeOpenAiModels', () => {
     });
     expect(probe.ok).toBe(false);
     expect(probe.models).toEqual([]);
+  });
+});
+
+describe('SSRF guard on provider base URLs (security)', () => {
+  it('allows public HTTPS and local (loopback/RFC1918) endpoints — the local-model feature', () => {
+    for (const url of [
+      'https://api.openai.com/v1',
+      'https://openrouter.ai/api/v1',
+      'http://localhost:11434/v1',
+      'http://127.0.0.1:1234/v1',
+      'http://192.168.1.50:8000/v1',
+    ]) {
+      expect(() => assertSafeProviderUrl(url)).not.toThrow();
+    }
+  });
+
+  it('blocks cloud-metadata + non-http schemes', () => {
+    for (const url of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://metadata.google.internal/computeMetadata/v1/',
+      'http://[fe80::1]/v1',
+      'file:///etc/passwd',
+      'gopher://169.254.169.254/',
+    ]) {
+      expect(() => assertSafeProviderUrl(url), url).toThrow();
+    }
+  });
+
+  it('a provider aimed at a metadata URL fails closed at construction, never fetches', () => {
+    let fetched = false;
+    const spyFetch: FetchLike = () => {
+      fetched = true;
+      return Promise.reject(new Error('should never run'));
+    };
+    // The guard is at the choke point (adapter construction), so a hostile
+    // base URL is rejected before any turn — the fetch is never even reachable.
+    expect(() =>
+      createOpenaiProvider({
+        apiKey: 'k',
+        model: 'm',
+        baseUrl: 'http://169.254.169.254/v1',
+        fetchImpl: spyFetch,
+      }),
+    ).toThrow(/metadata/);
+    expect(fetched).toBe(false);
+  });
+
+  it('the /models probe returns a safe fallback (never throws) for a blocked URL', async () => {
+    const probe = await probeOpenAiModels({
+      baseUrl: 'http://169.254.169.254/v1',
+      fetchImpl: (() => {
+        throw new Error('should never run');
+      }) as unknown as FetchLike,
+    });
+    expect(probe.ok).toBe(false);
+    expect(probe.detail).toContain('metadata');
   });
 });
 
