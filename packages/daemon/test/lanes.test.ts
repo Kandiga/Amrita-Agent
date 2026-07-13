@@ -279,9 +279,9 @@ describe('lane kind routing (ADR-0023)', () => {
       laneRunner: new FakeLaneRunner({ summary: 'must never run' }),
     });
     const { conversationId } = seedConversation(kernel);
-    const res = await kernel.startLane({ conversationId, goal: 'x', kind: 'codex' });
+    const res = await kernel.startLane({ conversationId, goal: 'x', kind: 'gemini-cli' });
     expect(res.status).toBe('aborted');
-    expect(res.error).toContain('no runner registered for lane kind: codex');
+    expect(res.error).toContain('no runner registered for lane kind: gemini-cli');
     // no merge report: nothing executed
     expect(eventTypes(kernel, conversationId)).not.toContain('lane.merge_report');
   });

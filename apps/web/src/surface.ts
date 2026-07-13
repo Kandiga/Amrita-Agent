@@ -83,12 +83,30 @@ export interface DesignPageArtifact extends ArtifactBase {
   status: 'proposed' | 'approved';
 }
 
+/**
+ * ADR-0039: a live view of what a lane is BUILDING — real files in the lane's
+ * workspace, served read-only by the daemon and rendered by URL in the canvas
+ * sandbox. `rev` bumps with lane activity so the canvas refreshes while the
+ * page/game/tool grows.
+ */
+export interface WorkspacePreviewArtifact extends ArtifactBase {
+  kind: 'workspace-preview';
+  laneId: string;
+  laneKind: string;
+  title: string;
+  /** Daemon-relative URL of the workspace root (the shell adds auth). */
+  src: string;
+  laneStatus: string;
+  rev: number;
+}
+
 export type ArtifactSpec =
   | BriefSummaryArtifact
   | MilestoneBoardArtifact
   | LaneReceiptArtifact
   | HtmlPreviewArtifact
-  | DesignPageArtifact;
+  | DesignPageArtifact
+  | WorkspacePreviewArtifact;
 
 export interface SurfaceInputs {
   projectId: string;
@@ -104,6 +122,8 @@ export interface SurfaceInputs {
     goal?: string;
     exit?: string;
     summary?: string;
+    workspace?: string;
+    rev?: number;
   }[];
   /** Durable preview approvals for this project (ADR-0020). */
   previewApprovals?: PreviewApprovalLite[];
@@ -322,6 +342,23 @@ export function buildSurfaceArtifacts(inputs: SurfaceInputs): ArtifactSpec[] {
       html,
       contentHash: hash,
       status: approved ? 'approved' : 'proposed',
+    });
+  }
+
+  // ADR-0039: every lane with a workspace is a LIVE canvas artifact — what she
+  // builds, as she builds it. Most recent first (lanesList order).
+  for (const lane of inputs.lanes ?? []) {
+    if (!lane.workspace) continue;
+    artifacts.push({
+      kind: 'workspace-preview',
+      id: `workspace:${lane.id}`,
+      projectId: inputs.projectId,
+      laneId: lane.id,
+      laneKind: lane.kind,
+      title: lane.goal ? lane.goal.slice(0, 80) : `Lane ${lane.id.slice(0, 8)} build`,
+      src: `/lanes/${lane.id}/workspace/`,
+      laneStatus: lane.exit ?? lane.status,
+      rev: lane.rev ?? 0,
     });
   }
 

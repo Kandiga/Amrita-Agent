@@ -76,7 +76,7 @@ describe('provider catalog (ADR-0025)', () => {
     const catalog = await kernel.providersCatalog();
     expect(catalog.map((e) => e.id)).toEqual([
       'claude-code',
-      'codex',
+      'codex-cli',
       'anthropic',
       'openai',
       'openrouter',
@@ -103,15 +103,23 @@ describe('provider catalog (ADR-0025)', () => {
     }
   });
 
-  it('codex is detection-only: present → honestly unavailable, never ready', async () => {
+  it('codex-cli: missing → missing_cli; logged in → ready (real chat provider)', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      codingRuntimeProber: prober({}),
+    });
+    const missing = (await kernel.providersCatalog()).find((e) => e.id === 'codex-cli');
+    expect(missing?.state).toBe('missing_cli');
+    kernel.close();
+
     kernel = AmritaKernel.open({
       dbPath: ':memory:',
       codingRuntimeProber: prober({ codex: true }),
     });
-    const entry = (await kernel.providersCatalog()).find((e) => e.id === 'codex');
-    expect(entry?.executable).toBe(false);
-    expect(entry?.state).toBe('unavailable');
-    expect(entry?.detail).toContain('cannot run chat through it yet');
+    const entry = (await kernel.providersCatalog()).find((e) => e.id === 'codex-cli');
+    expect(entry?.executable).toBe(true);
+    expect(entry?.state).toBe('ready');
+    expect(entry?.detail).toContain('ChatGPT subscription');
   });
 
   it('local goes needs_endpoint → ready once the settings config exists', async () => {
@@ -212,7 +220,16 @@ describe('chat through the new providers', () => {
     });
     expect(turn.text).toBe('subscription reply');
     expect(turn.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
-    expect(seen.args).toEqual(['-p', '--output-format', 'json', '--model', 'sonnet']);
+    // the kernel prefers the STREAMING path now (model.delta live)
+    expect(seen.args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--verbose',
+      '--model',
+      'sonnet',
+    ]);
     expect(seen.input).toContain('hello from amrita');
   });
 
@@ -232,12 +249,36 @@ describe('chat through the new providers', () => {
     ).rejects.toThrow(/not logged in/);
   });
 
-  it('codex turn refuses honestly: detection-only, with a real alternative named', async () => {
-    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+  it('codex chats through the injected CLI exec — ChatGPT subscription, zero secrets', async () => {
+    const seen: { cmd?: string; args?: string[] } = {};
+    const cliExec: CliExec = (cmd, args) => {
+      seen.cmd = cmd;
+      seen.args = args;
+      return {
+        status: 0,
+        stdout: [
+          '{"type":"thread.started","thread_id":"t1"}',
+          '{"type":"turn.started"}',
+          '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"codex reply"}}',
+          '{"type":"turn.completed","usage":{"input_tokens":9,"output_tokens":4}}',
+        ].join('\n'),
+        stderr: '',
+      };
+    };
+    kernel = AmritaKernel.open({ dbPath: ':memory:', cliExec });
     const { conversationId } = ctx(kernel);
-    await expect(
-      kernel.runChatTurn({ conversationId, text: 'hi', provider: 'codex' }),
-    ).rejects.toThrow(/detection-only.*OpenRouter/);
+    const turn = await kernel.runChatTurn({
+      conversationId,
+      text: 'hi codex',
+      provider: 'codex', // alias → codex-cli
+    });
+    expect(turn.provider).toBe('codex-cli');
+    expect(turn.text).toBe('codex reply');
+    expect(turn.usage).toEqual({ inputTokens: 9, outputTokens: 4 });
+    expect(seen.cmd).toBe('codex');
+    // chat is sandboxed read-only and uses the login's default model (no -m)
+    expect(seen.args).toContain('read-only');
+    expect(seen.args).not.toContain('-m');
   });
 
   it('REAL_PROVIDERS metadata is complete for chooser rendering', () => {

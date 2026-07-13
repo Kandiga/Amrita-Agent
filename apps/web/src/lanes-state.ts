@@ -27,6 +27,10 @@ export interface LaneView {
   summary?: string;
   reason?: string;
   usage?: { inputTokens: number; outputTokens: number; usd?: number };
+  /** ADR-0039: the lane's workspace root, from the mandate (scope.paths[0]). */
+  workspace?: string;
+  /** Bumped on every lane event — the canvas uses it to refresh live. */
+  rev: number;
 }
 
 export interface LanesState {
@@ -57,8 +61,14 @@ function upsert(
   seen: Set<string>,
 ): LanesState {
   const existed = state.byId[laneId];
-  const base: LaneView = existed ?? { id: laneId, kind: 'lane', status: 'spawned', progress: [] };
-  const next = patch(base);
+  const base: LaneView = existed ?? {
+    id: laneId,
+    kind: 'lane',
+    status: 'spawned',
+    progress: [],
+    rev: 0,
+  };
+  const next = { ...patch(base), rev: base.rev + 1 };
   return {
     seen,
     byId: { ...state.byId, [laneId]: next },
@@ -84,7 +94,18 @@ export function reduceLaneEvent(state: LanesState, ev: AmritaEventLite): LanesSt
       );
     case 'lane.mandate': {
       const goal = str(ev.payload.goal);
-      return upsert(state, laneId, (p) => (goal !== undefined ? { ...p, goal } : { ...p }), seen);
+      const scope = ev.payload.scope as { paths?: string[] } | undefined;
+      const workspace = Array.isArray(scope?.paths) ? scope.paths[0] : undefined;
+      return upsert(
+        state,
+        laneId,
+        (p) => ({
+          ...p,
+          ...(goal !== undefined ? { goal } : {}),
+          ...(workspace ? { workspace } : {}),
+        }),
+        seen,
+      );
     }
     case 'lane.progress':
       return upsert(

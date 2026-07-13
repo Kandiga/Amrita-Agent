@@ -216,3 +216,42 @@ describe('github issue import (ADR-0022)', () => {
     expect(fetchImpl.calls).toHaveLength(0);
   });
 });
+
+describe('MCP visibility (read-only, config-based)', () => {
+  const noFetch = (() => {
+    throw new Error('no network in this test');
+  }) as unknown as Parameters<typeof connectorStatuses>[0];
+
+  it('reports configured MCP servers for both CLIs without claiming health', async () => {
+    const files: Record<string, string> = {
+      '/home/u/.claude.json': JSON.stringify({
+        mcpServers: { context7: {}, playwright: {}, higgsfield: {} },
+      }),
+      '/home/u/.codex/config.toml':
+        '[mcp_servers.elevenlabs]\ncommand = "x"\n[mcp_servers.docs]\nurl = "https://d"\n',
+    };
+    const reports = await connectorStatuses(noFetch, {
+      homeDir: '/home/u',
+      readFile: (p) => files[p] ?? null,
+    });
+    const claude = reports.find((r) => r.manifest.slug === 'claude-mcp');
+    expect(claude?.state).toBe('status_unknown'); // configured ≠ connected
+    expect(claude?.detail).toContain('3 configured');
+    expect(claude?.detail).toContain('context7');
+    const codex = reports.find((r) => r.manifest.slug === 'codex-mcp');
+    expect(codex?.detail).toContain('2 configured');
+    expect(codex?.detail).toContain('elevenlabs');
+  });
+
+  it('missing config or zero servers → honest needs_setup with the exact add command', async () => {
+    const reports = await connectorStatuses(noFetch, {
+      homeDir: '/nowhere',
+      readFile: () => null,
+    });
+    for (const slug of ['claude-mcp', 'codex-mcp']) {
+      const r = reports.find((x) => x.manifest.slug === slug);
+      expect(r?.state).toBe('needs_setup');
+      expect(r?.nextCommand).toContain('mcp add');
+    }
+  });
+});

@@ -48,7 +48,7 @@ const MIME = {
 };
 
 /** Routes forwarded to the daemon — everything else is static. */
-const PROXY_PREFIXES = ['/rpc', '/events', '/health'];
+const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes/'];
 
 function proxyHttp(req, res) {
   const upstream = httpRequest(

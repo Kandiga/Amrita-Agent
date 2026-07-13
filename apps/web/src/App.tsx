@@ -98,6 +98,35 @@ function extractArray<T>(value: unknown, keys: string[]): T[] {
   return [];
 }
 
+/**
+ * ADR-0039: the workspace canvas — loads the lane's real files from the daemon
+ * by URL (token as query, same pattern as the WS). Sandboxed: scripts may run,
+ * but never with our origin's storage/cookies (`allow-same-origin` is banned).
+ * `refreshKey` remounts the frame as the lane writes, so the build grows live.
+ */
+function WorkspaceFrame({
+  src,
+  title,
+  token,
+  refreshKey,
+}: {
+  src: string;
+  title: string;
+  token: string | undefined;
+  refreshKey: number;
+}) {
+  const url = token ? `${src}?token=${encodeURIComponent(token)}` : src;
+  return (
+    <iframe
+      key={refreshKey}
+      className="canvas-frame"
+      title={title}
+      sandbox="allow-scripts"
+      src={url}
+    />
+  );
+}
+
 /** The live-canvas frame: same Stage-B sandbox as every preview (ADR-0020). */
 function CanvasFrame({ html, title }: { html: string; title: string }) {
   const sandboxed = buildSandboxedPreview({
@@ -278,7 +307,8 @@ export function App() {
   const knownArtifactIds = useRef<Set<string> | null>(null);
   useEffect(() => {
     const openable = surfaceArtifacts.filter(
-      (a) => a.kind === 'html-preview' || a.kind === 'design-page',
+      (a) =>
+        a.kind === 'html-preview' || a.kind === 'design-page' || a.kind === 'workspace-preview',
     );
     if (knownArtifactIds.current === null) {
       knownArtifactIds.current = new Set(openable.map((a) => a.id));
@@ -487,7 +517,10 @@ export function App() {
   /** The open live-canvas artifact (Claude-Design style), re-derived live. */
   const canvasArtifact = useMemo(() => {
     const a = surfaceArtifacts.find((x) => x.id === canvasId);
-    return a && (a.kind === 'html-preview' || a.kind === 'design-page') ? a : null;
+    return a &&
+      (a.kind === 'html-preview' || a.kind === 'design-page' || a.kind === 'workspace-preview')
+      ? a
+      : null;
   }, [surfaceArtifacts, canvasId]);
 
   /** The write envelope shared by every knowledge panel. */
@@ -920,14 +953,27 @@ export function App() {
             <section className="canvas-panel" aria-label="Live canvas">
               <header className="canvas-head">
                 <span className="artifact-kind">
-                  {canvasArtifact.kind === 'design-page' ? 'design' : 'preview'}
+                  {canvasArtifact.kind === 'workspace-preview'
+                    ? 'live build'
+                    : canvasArtifact.kind === 'design-page'
+                      ? 'design'
+                      : 'preview'}
                 </span>
                 <strong dir="auto">{canvasArtifact.title}</strong>
-                <span className={`doc-badge preview-${canvasArtifact.status}`}>
-                  {canvasArtifact.status}
+                <span
+                  className={`doc-badge preview-${
+                    canvasArtifact.kind === 'workspace-preview'
+                      ? canvasArtifact.laneStatus
+                      : canvasArtifact.status
+                  }`}
+                >
+                  {canvasArtifact.kind === 'workspace-preview'
+                    ? canvasArtifact.laneStatus
+                    : canvasArtifact.status}
                 </span>
                 <div className="canvas-actions">
-                  {canvasArtifact.status === 'proposed' ? (
+                  {canvasArtifact.kind !== 'workspace-preview' &&
+                  canvasArtifact.status === 'proposed' ? (
                     <button
                       type="button"
                       className="canvas-approve"
@@ -948,10 +994,20 @@ export function App() {
                   </button>
                 </div>
               </header>
-              <CanvasFrame html={canvasArtifact.html} title={canvasArtifact.title} />
+              {canvasArtifact.kind === 'workspace-preview' ? (
+                <WorkspaceFrame
+                  src={canvasArtifact.src}
+                  title={canvasArtifact.title}
+                  token={authToken}
+                  refreshKey={Math.floor(canvasArtifact.rev / 4)}
+                />
+              ) : (
+                <CanvasFrame html={canvasArtifact.html} title={canvasArtifact.title} />
+              )}
               <p className="canvas-live-note">
-                Live canvas — re-renders from this project's typed state (brief · brand ·
-                milestones); confined to the zero-network sandbox.
+                {canvasArtifact.kind === 'workspace-preview'
+                  ? 'Live build — real files the lane is writing in its workspace, refreshed as it works; scripts run inside the sandbox only.'
+                  : "Live canvas — re-renders from this project's typed state (brief · brand · milestones); confined to the zero-network sandbox."}
               </p>
             </section>
           ) : (

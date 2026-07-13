@@ -18,7 +18,7 @@ function base(over: Partial<CompanionInputs> = {}): CompanionInputs {
 }
 
 function lane(over: Partial<LaneView> & { id: string; status: LaneView['status'] }): LaneView {
-  return { kind: 'claude-code', progress: [], ...over };
+  return { kind: 'claude-code', progress: [], rev: 0, ...over };
 }
 
 describe('companion nextActions v2 (pure, rule-based)', () => {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BudgetGuard,
   ClaudeCodeLaneRunner,
+  CodexLaneRunner,
   DEFAULT_ENV_ALLOWLIST,
   FakeLaneRunner,
   LaneSafetyError,
@@ -472,5 +473,76 @@ describe('ResearchLaneRunner (ADR-0023)', () => {
     });
     const report = await runner.run(mandate, { signal: controller.signal });
     expect(report.exit).toBe('cancelled');
+  });
+});
+
+describe('CodexLaneRunner (ChatGPT-subscription twin)', () => {
+  const mandate = (over: Record<string, unknown> = {}) =>
+    laneMandateSchema.parse({
+      laneId: newId(),
+      goal: 'build the page',
+      contextPack: {},
+      scope: { paths: ['/tmp/ws'] },
+      budget: {},
+      deliverables: [],
+      ...over,
+    });
+
+  it('refuses real execution unless explicitly enabled', async () => {
+    await expect(new CodexLaneRunner().run(mandate())).rejects.toThrow(LaneSafetyError);
+  });
+
+  it('parses the verified codex JSONL: progress, summary, usage → done', async () => {
+    const runner = new CodexLaneRunner({
+      processRunner: streamingRunner([
+        '{"type":"thread.started","thread_id":"t1"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"ls -la"}}',
+        '{"type":"item.completed","item":{"id":"i2","type":"file_change"}}',
+        '{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"built the landing page"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":40}}',
+      ]),
+    });
+    const notes: string[] = [];
+    const report = await runner.run(mandate(), { onProgress: (n) => notes.push(n) });
+    expect(report.exit).toBe('done');
+    expect(report.summary).toBe('built the landing page');
+    expect(report.usage).toEqual({ inputTokens: 100, outputTokens: 40 });
+    expect(notes.some((n) => n.startsWith('$ ls'))).toBe(true);
+    expect(notes).toContain('writing files in the workspace');
+  });
+
+  it('confines the workspace and never echoes provider errors', async () => {
+    const confined = new CodexLaneRunner({
+      processRunner: streamingRunner([]),
+      allowedRoots: ['/srv/allowed'],
+    });
+    const refused = await confined.run(mandate({ scope: { paths: ['/etc'] } }));
+    expect(refused.exit).toBe('aborted');
+    expect(refused.summary).toContain('outside allowed roots');
+
+    const failing = new CodexLaneRunner({
+      processRunner: streamingRunner([
+        '{"type":"turn.failed","error":{"message":"account xyz@secret rate limited"}}',
+      ]),
+    });
+    const report = await failing.run(mandate());
+    expect(report.exit).toBe('partial');
+    expect(report.summary).not.toContain('xyz@secret'); // value-free
+  });
+
+  it('sandbox + no-shell invocation shape', async () => {
+    const { runner, calls } = captureRunner();
+    await new CodexLaneRunner({ processRunner: runner }).run(mandate());
+    expect(calls[0]?.command).toBe('codex');
+    expect(calls[0]?.args).toEqual([
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '--sandbox',
+      'workspace-write',
+      'build the page',
+    ]);
+    expect(calls[0]?.cwd).toBe('/tmp/ws');
   });
 });

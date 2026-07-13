@@ -17,6 +17,8 @@ interface LanesPanelProps {
  */
 export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }: LanesPanelProps) {
   const [goal, setGoal] = useState('');
+  /** Which coding agent runs this lane — Claude Code and Codex work in parallel. */
+  const [kind, setKind] = useState<'claude-code' | 'codex'>('claude-code');
   const [dryRun, setDryRun] = useState(true);
   const [real, setReal] = useState(false);
   const [mode, setMode] = useState<LaneMode>('ask');
@@ -37,6 +39,7 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
       await client.lanesStart({
         conversationId,
         goal: goal.trim(),
+        kind,
         dryRun,
         real,
         detach: true, // observe via the live event stream (the lane console)
@@ -92,6 +95,20 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
             placeholder="max min"
           />
         </div>
+        <label
+          className="lane-check"
+          title="Which coding agent runs this lane — start one of each to work in parallel"
+        >
+          agent{' '}
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as 'claude-code' | 'codex')}
+            aria-label="Lane agent"
+          >
+            <option value="claude-code">Claude Code (Claude sub)</option>
+            <option value="codex">Codex (ChatGPT sub)</option>
+          </select>
+        </label>
         <label className="lane-check" title={LANE_MODES.find((m) => m.id === mode)?.hint}>
           mode{' '}
           <select

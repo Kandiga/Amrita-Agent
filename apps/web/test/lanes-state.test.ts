@@ -113,8 +113,8 @@ describe('lanes-state reducer', () => {
     );
     expect(lanesList(s).map((l) => l.id)).toEqual(['B', 'A']);
 
-    const running: LaneView = { id: 'r', kind: 'x', status: 'running', progress: [] };
-    const done: LaneView = { id: 'd', kind: 'x', status: 'completed', progress: [] };
+    const running: LaneView = { id: 'r', kind: 'x', status: 'running', progress: [], rev: 1 };
+    const done: LaneView = { id: 'd', kind: 'x', status: 'completed', progress: [], rev: 1 };
     expect(isActive(running)).toBe(true);
     expect(isActive(done)).toBe(false);
   });

@@ -197,7 +197,7 @@ describe('amrita setup wizard (ADR-0024)', () => {
     expect(text).toContain('Local / self-hosted');
     for (const title of [
       'Claude subscription (via Claude Code login)',
-      'OpenAI account (via Codex CLI login)',
+      'ChatGPT subscription (via Codex login)',
       'Anthropic API key (Claude)',
       'OpenAI API key',
       'OpenRouter (one key, hundreds of models)',
@@ -209,6 +209,8 @@ describe('amrita setup wizard (ADR-0024)', () => {
     // no CLI on this box → login entries are honest, never silently hidden
     expect(text).toContain('the `claude` CLI was not found on PATH');
     expect(text).toContain('the `codex` CLI was not found on PATH');
+    // and neither login provider is pretended ready
+    expect(text).not.toContain('ChatGPT subscription session');
   });
 
   it('claude subscription: detected + logged in → bound as main with NO key anywhere', async () => {
@@ -240,16 +242,23 @@ describe('amrita setup wizard (ADR-0024)', () => {
     expect(await client.call<AccountLite[]>('accounts.list')).toEqual([]);
   });
 
-  it('codex detected: honestly unavailable (no fake subscription), user picks another path', async () => {
+  it('codex detected + logged in: ChatGPT subscription binds as main with NO key anywhere', async () => {
     kernel.close();
     openKernel({ codex: true });
-    const { deps, output } = scripted(['2', '5', '', 'n'], ['sk-or-key'], telegramOk);
+    // codex is the only ready login → recommended; Enter accepts it
+    const { deps, output } = scripted(['', 'n'], [], telegramOk);
     await runSetupWizard(client, deps);
-    expect(output()).toContain('cannot run chat through it yet');
-    // user landed on OpenRouter instead
+    expect(output()).toContain('ChatGPT subscription session');
+    expect(output()).toContain('no key is stored or forwarded');
+
     const accounts = await client.call<AccountLite[]>('accounts.list');
-    expect(accounts[0]?.provider).toBe('openrouter');
-    expect(accounts[0]?.secretRef).toBe('OPENROUTER_API_KEY');
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.provider).toBe('codex-cli');
+    expect(accounts[0]?.secretRef).toBeNull();
+    const roles = await client.call<{ roles: { role: string; resolvesTo: string }[] }>(
+      'providers.roles',
+    );
+    expect(roles.roles.find((r) => r.role === 'main')?.resolvesTo).toBe('codex-cli');
   });
 
   it('local endpoint: persists settings config + account + role, key optional', async () => {

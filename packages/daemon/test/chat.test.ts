@@ -7,6 +7,7 @@ import {
   dispatch,
   isErrorResponse,
 } from '../src/index.ts';
+import { type CliExec, createClaudeCliProvider } from '../src/provider.ts';
 
 // A harmless placeholder env value — NOT a real key and not secret-shaped.
 const DUMMY_ENV_VALUE = 'placeholder-value-for-tests';
@@ -264,5 +265,41 @@ describe('chat turn (rpc, async)', () => {
     const list = (await call('providers.list', {})) as unknown[];
     expect(list.length).toBeGreaterThanOrEqual(1);
     expect(JSON.stringify(list)).not.toMatch(/sk-|password/i);
+  });
+});
+
+describe('claude-code streaming (stream-json → model.delta)', () => {
+  it('surfaces text deltas only (never thinking), then the final result', async () => {
+    const lines = [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"pondering"}}}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}',
+      '{"type":"result","subtype":"success","is_error":false,"result":"Hello","stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}',
+    ];
+    const exec: CliExec = (_c, args, _i, _t, onLine) => {
+      expect(args).toContain('stream-json');
+      expect(args).toContain('--include-partial-messages');
+      for (const l of lines) onLine?.(l);
+      return { status: 0, stdout: lines.join('\n'), stderr: '' };
+    };
+    const provider = createClaudeCliProvider({ execImpl: exec });
+    const deltas: string[] = [];
+    const r = await provider.generateStream?.(
+      { messages: [{ role: 'user', text: 'hi' }], model: 'opus' },
+      (t) => deltas.push(t),
+    );
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(r?.text).toBe('Hello');
+    expect(r?.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+  });
+
+  it('a buffering exec (no onLine) still resolves via the stdout scan', async () => {
+    const blob =
+      '{"type":"result","subtype":"success","is_error":false,"result":"whole","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}';
+    const exec: CliExec = () => ({ status: 0, stdout: blob, stderr: '' });
+    const provider = createClaudeCliProvider({ execImpl: exec });
+    const r = await provider.generateStream?.({ messages: [], model: 'sonnet' }, () => {});
+    expect(r?.text).toBe('whole');
   });
 });

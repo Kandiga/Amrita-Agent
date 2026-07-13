@@ -1,4 +1,6 @@
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
+import { extname, join, resolve, sep } from 'node:path';
 import type { AmritaEvent, WsServerFrame } from '@amrita/protocol';
 import { WebSocketServer } from 'ws';
 import { requestToken, tokensMatch } from './auth.ts';
@@ -23,6 +25,7 @@ function eventFrame(ev: AmritaEvent): WsServerFrame {
  *   GET  /health                                  → kernel health (always public)
  *   POST /rpc                                      → async JSON-RPC dispatch        [auth]
  *   GET  /events?conversationId=&sinceSeq=         → replay persisted events        [auth]
+ *   GET  /lanes/<id>/workspace[/<path>]            → lane workspace files (ADR-0039) [auth]
  *   WS   /events/ws?conversationId=&sinceSeq=      → replay + live fan-out          [auth]
  *
  * When `authToken` is set, every route except `GET /health` requires a matching
@@ -162,9 +165,127 @@ async function handleHttp(
     return;
   }
 
+  // ADR-0039: read-only lane workspace files, realpath-confined. This is how
+  // the canvas shows what a lane actually built (page, game, tool) — live.
+  const wsMatch = /^\/lanes\/([A-Za-z0-9]+)\/workspace(?:\/(.*))?$/.exec(url.pathname);
+  if (method === 'GET' && wsMatch) {
+    serveLaneWorkspace(kernel, res, wsMatch[1] ?? '', decodeURIComponent(wsMatch[2] ?? ''));
+    return;
+  }
+
   sendJson(res, 404, {
     error: { code: 'not_found', message: `no route: ${method} ${url.pathname}` },
   });
+}
+
+const WORKSPACE_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+};
+
+function escapeHtml(v: string): string {
+  return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Serve one file from a lane's workspace (ADR-0039). Read-only; every resolved
+ * path must stay inside the workspace realpath (symlinks out are refused). `/`
+ * serves index.html when present, otherwise an honest generated file listing —
+ * so a lane that has not written an entry page yet still shows its progress.
+ */
+function serveLaneWorkspace(
+  kernel: AmritaKernel,
+  res: ServerResponse,
+  laneId: string,
+  rel: string,
+): void {
+  const lane = kernel.getLane(laneId);
+  const paths = lane
+    ? (JSON.parse(lane.mandateJson) as { scope?: { paths?: string[] } }).scope?.paths
+    : undefined;
+  const root = paths?.[0];
+  if (!lane || !root) {
+    sendJson(res, 404, { error: { code: 'not_found', message: 'no such lane workspace' } });
+    return;
+  }
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(root);
+  } catch {
+    sendJson(res, 404, { error: { code: 'not_found', message: 'workspace does not exist yet' } });
+    return;
+  }
+
+  const resolveConfined = (relPath: string): string | null => {
+    const abs = resolve(rootReal, relPath);
+    if (abs !== rootReal && !abs.startsWith(rootReal + sep)) return null;
+    try {
+      const real = realpathSync(abs); // refuses symlinks escaping the root
+      if (real !== rootReal && !real.startsWith(rootReal + sep)) return null;
+      return real;
+    } catch {
+      return null;
+    }
+  };
+
+  let target = resolveConfined(rel);
+  if (rel && target === null) {
+    // distinguish escape attempts (403) from plain missing files (404)
+    const abs = resolve(rootReal, rel);
+    if (abs !== rootReal && !abs.startsWith(rootReal + sep)) {
+      sendJson(res, 403, { error: { code: 'forbidden', message: 'path escapes the workspace' } });
+      return;
+    }
+  }
+  if (target && statSync(target).isDirectory()) {
+    target = resolveConfined(join(rel, 'index.html'));
+    if (target === null) {
+      // honest listing: what the lane has written so far
+      const dir = resolveConfined(rel);
+      const entries = dir ? readdirSync(dir, { withFileTypes: true }) : [];
+      const items = entries
+        .map((e) => {
+          const href = `${e.name}${e.isDirectory() ? '/' : ''}`;
+          return `<li><a href="${escapeHtml(href)}">${escapeHtml(href)}</a></li>`;
+        })
+        .join('');
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      res.end(
+        `<!doctype html><meta charset="utf-8"><title>lane workspace</title><body style="font-family:system-ui;padding:24px;color:#3d3d3a;background:#faf9f5"><h3 style="margin:0 0 4px">Lane workspace</h3><p style="margin:0 0 14px;font-size:13px;color:#87867f">${
+          entries.length === 0
+            ? 'Nothing written yet — the lane is still working.'
+            : 'No index.html yet — files so far:'
+        }</p><ul>${items}</ul></body>`,
+      );
+      return;
+    }
+  }
+  if (target === null) {
+    sendJson(res, 404, { error: { code: 'not_found', message: 'no such file in workspace' } });
+    return;
+  }
+  const type = WORKSPACE_TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream';
+  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+  res.end(readFileSync(target));
 }
 
 /** Start the HTTP/WS server. Resolves once listening; `port` is the bound port. */

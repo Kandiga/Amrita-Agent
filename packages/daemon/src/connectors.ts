@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   type ConnectorManifest,
   type ConnectorStatusReport,
@@ -25,6 +28,26 @@ const RAW_MANIFESTS: ConnectorManifest[] = [
       'export GITHUB_TOKEN=<fine-grained token with repo issues read>  # Amrita stores the NAME only, never the value',
     ],
     docsUrl: 'https://docs.github.com/en/rest/issues/issues',
+  },
+  {
+    slug: 'claude-mcp',
+    kind: 'tool',
+    title: 'MCP servers (Claude Code CLI)',
+    description:
+      "MCP servers configured for the local `claude` CLI. Read-only visibility: Amrita reads the CLI's config and reports what is configured — it never claims a server is healthy without a live probe.",
+    capabilities: ['mcp.visibility'],
+    requiredEnv: [],
+    setupCommands: ['claude mcp add <name> <command-or-url>', 'claude mcp list  # live health'],
+  },
+  {
+    slug: 'codex-mcp',
+    kind: 'tool',
+    title: 'MCP servers (Codex CLI)',
+    description:
+      'MCP servers configured for the local `codex` CLI (config.toml). Read-only visibility — configuration state only, health via `codex mcp list`.',
+    capabilities: ['mcp.visibility'],
+    requiredEnv: [],
+    setupCommands: ['codex mcp add <name> -- <command>', 'codex mcp list  # live health'],
   },
 ];
 
@@ -67,11 +90,82 @@ async function probeGithub(fetchImpl: FetchLike): Promise<'ok' | 'rejected' | 'u
   }
 }
 
+/** Injectable config reader so MCP visibility is testable without a real home dir. */
+export interface McpConfigIo {
+  readFile?: (path: string) => string | null;
+  homeDir?: string;
+}
+
+function defaultReadFile(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Count MCP servers in the claude CLI config (`~/.claude.json` mcpServers). */
+export function claudeMcpServerNames(io: McpConfigIo = {}): string[] | null {
+  const read = io.readFile ?? defaultReadFile;
+  const raw = read(join(io.homeDir ?? homedir(), '.claude.json'));
+  if (raw === null) return null;
+  try {
+    const cfg = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    return Object.keys(cfg.mcpServers ?? {});
+  } catch {
+    return null;
+  }
+}
+
+/** Count MCP servers in the codex CLI config (`~/.codex/config.toml` [mcp_servers.*]). */
+export function codexMcpServerNames(io: McpConfigIo = {}): string[] | null {
+  const read = io.readFile ?? defaultReadFile;
+  const raw = read(join(io.homeDir ?? homedir(), '.codex', 'config.toml'));
+  if (raw === null) return null;
+  const names: string[] = [];
+  for (const m of raw.matchAll(/^\s*\[mcp_servers\.([^\]"]+)\]/gm)) {
+    if (m[1]) names.push(m[1]);
+  }
+  return names;
+}
+
+function mcpReport(manifest: ConnectorManifest, names: string[] | null): ConnectorStatusReport {
+  if (names === null) {
+    return {
+      manifest,
+      state: 'needs_setup',
+      detail: 'no CLI config found — is the CLI installed and initialized?',
+      missingEnv: [],
+      nextCommand: manifest.setupCommands[0] ?? '',
+    };
+  }
+  if (names.length === 0) {
+    return {
+      manifest,
+      state: 'needs_setup',
+      detail: 'no MCP servers configured yet',
+      missingEnv: [],
+      nextCommand: manifest.setupCommands[0] ?? '',
+    };
+  }
+  const shown = names.slice(0, 8).join(', ');
+  return {
+    manifest,
+    state: 'status_unknown', // configured ≠ healthy: connected needs a live probe
+    detail: `${names.length} configured: ${shown}${names.length > 8 ? ', …' : ''} (config read only — health via \`${manifest.slug === 'claude-mcp' ? 'claude' : 'codex'} mcp list\`)`,
+    missingEnv: [],
+    nextCommand: manifest.setupCommands[1] ?? '',
+  };
+}
+
 /**
  * Compute the live status of every registered connector. Reports carry env
  * NAMES only; the probe's token stays in its own scope and is never returned.
  */
-export async function connectorStatuses(fetchImpl: FetchLike): Promise<ConnectorStatusReport[]> {
+export async function connectorStatuses(
+  fetchImpl: FetchLike,
+  mcpIo: McpConfigIo = {},
+): Promise<ConnectorStatusReport[]> {
   const reports: ConnectorStatusReport[] = [];
   for (const manifest of CONNECTOR_MANIFESTS) {
     const missingEnv = manifest.requiredEnv.filter((name) => !envPresent(name));
@@ -83,6 +177,14 @@ export async function connectorStatuses(fetchImpl: FetchLike): Promise<Connector
         missingEnv,
         nextCommand: manifest.setupCommands[0] ?? '',
       });
+      continue;
+    }
+    if (manifest.slug === 'claude-mcp') {
+      reports.push(mcpReport(manifest, claudeMcpServerNames(mcpIo)));
+      continue;
+    }
+    if (manifest.slug === 'codex-mcp') {
+      reports.push(mcpReport(manifest, codexMcpServerNames(mcpIo)));
       continue;
     }
     if (manifest.slug === 'github') {

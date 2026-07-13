@@ -321,6 +321,8 @@ export type CliExec = (
   args: string[],
   input: string,
   timeoutMs: number,
+  /** Streaming taps: called once per complete stdout line (NDJSON). */
+  onLine?: (line: string) => void,
 ) => CliExecResult | Promise<CliExecResult>;
 
 /**
@@ -328,7 +330,7 @@ export type CliExec = (
  * freeze the entire daemon (RPC, WS stream, scheduler, approvals) for its
  * whole duration — the exact "Amrita stopped responding" failure mode.
  */
-export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs) =>
+export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs, onLine) =>
   new Promise<CliExecResult>((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -349,8 +351,19 @@ export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs) =>
       child.kill('SIGKILL');
       settle({ status: null, stdout, stderr, failure: 'timeout' });
     }, timeoutMs);
+    let lineBuffer = '';
     child.stdout?.on('data', (c: Buffer) => {
-      stdout += c.toString('utf8');
+      const chunk = c.toString('utf8');
+      stdout += chunk;
+      if (!onLine) return;
+      lineBuffer += chunk;
+      let nl = lineBuffer.indexOf('\n');
+      while (nl >= 0) {
+        const line = lineBuffer.slice(0, nl);
+        lineBuffer = lineBuffer.slice(nl + 1);
+        if (line.trim()) onLine(line);
+        nl = lineBuffer.indexOf('\n');
+      }
     });
     child.stderr?.on('data', (c: Buffer) => {
       if (stderr.length < 16_384) stderr += c.toString('utf8');
@@ -449,6 +462,171 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
         },
       };
     },
+
+    /**
+     * Live streaming through the same CLI session: `--output-format
+     * stream-json --include-partial-messages` (shapes verified against Claude
+     * Code 2.1.207). Only assistant `text_delta`s are surfaced — thinking and
+     * tool chatter stay backstage; the final `result` event is what persists.
+     */
+    async generateStream(req: ChatRequest, onDelta: (text: string) => void): Promise<ChatResponse> {
+      const args = [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
+        '--model',
+        req.model,
+      ];
+      let result: ClaudeCliResult | null = null;
+      const seeLine = (line: string): void => {
+        let ev: unknown;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          return; // hook noise / partial line — never fatal
+        }
+        const e = ev as {
+          type?: string;
+          event?: { type?: string; delta?: { type?: string; text?: string } };
+        };
+        if (e.type === 'stream_event' && e.event?.type === 'content_block_delta') {
+          const delta = e.event.delta;
+          if (delta?.type === 'text_delta' && delta.text) onDelta(delta.text);
+        } else if (e.type === 'result') {
+          result = ev as ClaudeCliResult;
+        }
+      };
+      const r = await exec(
+        'claude',
+        args,
+        flattenTranscript(req.messages),
+        CLAUDE_CLI_TIMEOUT_MS,
+        seeLine,
+      );
+      if (r.status === null) {
+        if (r.failure === 'timeout') {
+          throw new ProviderError(
+            'provider_error',
+            `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+          );
+        }
+        throw new ProviderError(
+          'provider_unavailable',
+          'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
+        );
+      }
+      if (result === null) {
+        // exec impls that buffer (test fakes) never call onLine — scan stdout.
+        for (const line of r.stdout.split('\n')) seeLine(line);
+      }
+      // TS can't see assignments made inside the seeLine closure — re-widen.
+      const parsed = result as ClaudeCliResult | null;
+      if (r.status !== 0 || !parsed || parsed.is_error === true || parsed.subtype !== 'success') {
+        const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
+        const hint =
+          combined.includes('login') || combined.includes('auth') || combined.includes('api key')
+            ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
+            : 'the claude CLI returned an error (run `claude` interactively to inspect)';
+        throw new ProviderError('provider_error', `claude-code turn failed: ${hint}`);
+      }
+      return {
+        text: parsed.result ?? '',
+        finishReason: parsed.stop_reason ?? 'stop',
+        usage: {
+          inputTokens: parsed.usage?.input_tokens ?? 0,
+          outputTokens: parsed.usage?.output_tokens ?? 0,
+        },
+      };
+    },
+  };
+}
+
+interface CodexExecEvent {
+  type?: string;
+  item?: { type?: string; text?: string };
+  usage?: { input_tokens?: number; output_tokens?: number };
+  error?: { message?: string };
+}
+
+/** Codex chat budget mirrors the claude one (long turns beat false timeouts). */
+const CODEX_CLI_TIMEOUT_MS = CLAUDE_CLI_TIMEOUT_MS;
+
+/**
+ * Chat through the locally logged-in Codex CLI (`codex exec --json`) — the
+ * user's ChatGPT SUBSCRIPTION session; no API key exists anywhere in this
+ * path. The reply arrives whole (exec emits complete `agent_message` items,
+ * not token deltas), so this adapter honestly declares `streaming: false`.
+ * Chat runs read-only sandboxed — a chat turn must never write files. Event
+ * shapes verified live against codex-cli 0.144.1. Model `default` = whatever
+ * the login's plan serves (named ids are plan-dependent and refused otherwise).
+ */
+export function createCodexCliProvider(opts: { execImpl?: CliExec }): ChatProvider {
+  const exec = opts.execImpl ?? defaultCliExec;
+  return {
+    id: 'codex-cli',
+    async generate(req: ChatRequest): Promise<ChatResponse> {
+      const args = [
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        '--sandbox',
+        'read-only',
+        ...(req.model && req.model !== 'default' ? ['-m', req.model] : []),
+        '-', // prompt from stdin (the transcript can be long)
+      ];
+      let text = '';
+      let usage = { inputTokens: 0, outputTokens: 0 };
+      let failed = false;
+      const seeLine = (line: string): void => {
+        let ev: CodexExecEvent;
+        try {
+          ev = JSON.parse(line) as CodexExecEvent;
+        } catch {
+          return;
+        }
+        if (ev.type === 'item.completed' && ev.item?.type === 'agent_message' && ev.item.text) {
+          text = ev.item.text; // the last assistant message wins
+        } else if (ev.type === 'turn.completed' && ev.usage) {
+          usage = {
+            inputTokens: ev.usage.input_tokens ?? 0,
+            outputTokens: ev.usage.output_tokens ?? 0,
+          };
+        } else if (ev.type === 'turn.failed' || ev.type === 'error') {
+          failed = true;
+        }
+      };
+      const r = await exec(
+        'codex',
+        args,
+        flattenTranscript(req.messages),
+        CODEX_CLI_TIMEOUT_MS,
+        seeLine,
+      );
+      if (r.status === null) {
+        if (r.failure === 'timeout') {
+          throw new ProviderError(
+            'provider_error',
+            `codex-cli turn timed out after ${Math.round(CODEX_CLI_TIMEOUT_MS / 1000)}s — raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+          );
+        }
+        throw new ProviderError(
+          'provider_unavailable',
+          'the `codex` CLI was not found on the daemon PATH — install with `npm install -g @openai/codex`',
+        );
+      }
+      if (!text && !failed) for (const line of r.stdout.split('\n')) seeLine(line);
+      if (r.status !== 0 || failed || !text) {
+        const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
+        const hint =
+          combined.includes('login') || combined.includes('auth') || combined.includes('api key')
+            ? 'the codex CLI is not logged in — run `codex login`, then retry'
+            : 'the codex CLI returned an error (run `codex` interactively to inspect)';
+        throw new ProviderError('provider_error', `codex-cli turn failed: ${hint}`);
+      }
+      return { text, finishReason: 'stop', usage };
+    },
   };
 }
 
@@ -480,8 +658,9 @@ export const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   gpt: 'openai',
   chatgpt: 'openai',
   'openai-api': 'openai',
-  codex: 'codex',
-  'openai-codex': 'codex',
+  codex: 'codex-cli',
+  'openai-codex': 'codex-cli',
+  'chatgpt-subscription': 'codex-cli',
   router: 'openrouter',
   'open-router': 'openrouter',
   google: 'gemini',
@@ -551,25 +730,27 @@ export const REAL_PROVIDERS: readonly RealProviderSpec[] = [
     transport: 'cli_json',
     defaultModel: 'sonnet',
     models: ['opus', 'sonnet', 'haiku'],
-    streaming: false,
+    streaming: true, // real: stream-json text deltas → model.delta (ADR verified on CLI 2.1.207)
     detectCli: 'claude',
     installHint: 'npm install -g @anthropic-ai/claude-code',
     executable: true,
     create: (opts) => createClaudeCliProvider(opts),
   },
   {
-    id: 'codex',
-    title: 'OpenAI account (via Codex CLI login)',
+    id: 'codex-cli',
+    title: 'ChatGPT subscription (via Codex login)',
     group: 'login',
-    authMode: 'oauth',
+    authMode: 'subscription_cli',
     transport: 'cli_json',
-    defaultModel: 'gpt-5-codex',
-    streaming: false,
+    // 'default' = the login's configured model (named ids are plan-dependent:
+    // e.g. gpt-5.2-codex is refused on ChatGPT accounts — verified live).
+    defaultModel: 'default',
+    models: ['default'],
+    streaming: false, // exec --json emits whole agent messages, never token deltas — honest
     detectCli: 'codex',
     installHint: 'npm install -g @openai/codex',
-    // Honesty: Amrita can DETECT the codex CLI but does not run chat through
-    // it yet — the entry renders as unavailable with this exact explanation.
-    executable: false,
+    executable: true,
+    create: (opts) => createCodexCliProvider(opts),
   },
   {
     id: 'anthropic',

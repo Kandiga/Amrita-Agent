@@ -98,6 +98,26 @@ export function SurfacePanel({ artifacts, onApprovePreview, onOpenCanvas }: Surf
               </article>
             );
           }
+          if (a.kind === 'workspace-preview') {
+            return (
+              <article key={a.id} className="artifact artifact-workspace">
+                <span className="artifact-kind">live build</span>
+                <h3 dir={textDir(a.title)}>{a.title}</h3>
+                <p className="artifact-sub">
+                  {a.laneKind} lane · {a.laneStatus} — real files from the lane's workspace
+                </p>
+                {onOpenCanvas ? (
+                  <button
+                    type="button"
+                    className="canvas-open-btn"
+                    onClick={() => onOpenCanvas(a.id)}
+                  >
+                    Open canvas ⤢
+                  </button>
+                ) : null}
+              </article>
+            );
+          }
           if (a.kind === 'lane-receipt') {
             return (
               <article key={a.id} className="artifact artifact-receipt">

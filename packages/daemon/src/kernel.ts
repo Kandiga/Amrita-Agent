@@ -1,4 +1,11 @@
-import { ClaudeCodeLaneRunner, type LaneRunner, ResearchLaneRunner } from '@amrita/lanes';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  ClaudeCodeLaneRunner,
+  CodexLaneRunner,
+  type LaneRunner,
+  ResearchLaneRunner,
+} from '@amrita/lanes';
 import {
   type AmritaEvent,
   type CinemaMandate,
@@ -273,6 +280,8 @@ export class AmritaKernel {
   private readonly fetchImpl: FetchLike;
   /** Serves `claude-code` and whatever kind the injected default declares (tests: `fake`). */
   private readonly defaultLaneRunner: LaneRunner;
+  /** ADR-0039: real lanes without explicit paths get `<root>/<laneId>`. */
+  private readonly laneWorkspacesRoot: string | null;
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
@@ -301,6 +310,7 @@ export class AmritaKernel {
     defaultLaneRunner: LaneRunner,
     extraLaneRunners: Map<string, LaneRunner>,
     realLaneExecution: boolean,
+    laneWorkspacesRoot: string | null,
     codingRuntimeProber: CommandProber | undefined,
     cliExec: CliExec | undefined,
     approvalTimeoutMs: number,
@@ -312,6 +322,7 @@ export class AmritaKernel {
     this.defaultLaneRunner = defaultLaneRunner;
     this.extraLaneRunners = extraLaneRunners;
     this.realLaneExecution = realLaneExecution;
+    this.laneWorkspacesRoot = laneWorkspacesRoot;
     this.codingRuntimeProber = codingRuntimeProber;
     this.cliExec = cliExec;
     this.approvalTimeoutMs = approvalTimeoutMs;
@@ -350,7 +361,12 @@ export class AmritaKernel {
     // Kind-dispatched runners (ADR-0023): research ships unwired (honest
     // needs-setup abort); injected extras override by kind (tests wire a provider).
     const extraLaneRunners = new Map<string, LaneRunner>();
-    for (const r of [new ResearchLaneRunner(), ...(opts.extraLaneRunners ?? [])]) {
+    // Codex is the ChatGPT-subscription twin of the default runner: real when
+    // the daemon opted in, otherwise the safe refusal (same posture, ADR-0015).
+    const codexRunner = realLaneExecution
+      ? new CodexLaneRunner({ allowRealExecution: true, allowedRoots })
+      : new CodexLaneRunner();
+    for (const r of [new ResearchLaneRunner(), codexRunner, ...(opts.extraLaneRunners ?? [])]) {
       extraLaneRunners.set(r.kind, r);
     }
     return new AmritaKernel(
@@ -361,6 +377,7 @@ export class AmritaKernel {
       laneRunner,
       extraLaneRunners,
       realLaneExecution,
+      allowedRoots[0] ?? null,
       opts.codingRuntimeProber,
       opts.cliExec,
       opts.approvalTimeoutMs ?? 120_000,
@@ -740,7 +757,33 @@ export class AmritaKernel {
         fix: 'claude auth status',
       };
     }
-    // Generic detection-only login provider (codex today): detect, never run.
+    if (spec.id === 'codex-cli') {
+      const prober = this.codingRuntimeProber ?? (await import('./runtimes.ts')).defaultProber;
+      const version = await prober('codex', ['--version'], CATALOG_PROBE_TIMEOUT_MS);
+      if (version.kind !== 'ok') {
+        return {
+          ...base,
+          state: 'missing_cli',
+          detail: 'the `codex` CLI was not found on PATH',
+          fix: spec.installHint ?? '',
+        };
+      }
+      const login = await prober('codex', ['login', 'status'], CATALOG_PROBE_TIMEOUT_MS);
+      if (login.kind === 'ok') {
+        return {
+          ...base,
+          state: 'ready',
+          detail: 'logged in via Codex — ChatGPT subscription session; no API key exists anywhere',
+        };
+      }
+      return {
+        ...base,
+        state: 'needs_login',
+        detail: 'Codex is installed but not logged in',
+        fix: 'codex login',
+      };
+    }
+    // Generic detection-only login provider: detect, never run.
     const probe = this.codingRuntimeProber;
     const cli = spec.detectCli ?? spec.id;
     const found = probe
@@ -1906,11 +1949,26 @@ export class AmritaKernel {
     const laneId = newId();
     const kind = input.kind ?? 'claude-code';
 
+    // ADR-0039: a real run always gets a workspace. When the caller names no
+    // paths, confine the lane to <allowed-root>/<laneId> — the UI never needs
+    // to know filesystem paths, and the canvas can serve the output.
+    let scope = (input.scope ?? {}) as { paths?: string[] } & Record<string, unknown>;
+    if (
+      this.realLaneExecution &&
+      !input.dryRun &&
+      this.laneWorkspacesRoot &&
+      (scope.paths ?? []).length === 0
+    ) {
+      const workspace = join(this.laneWorkspacesRoot, laneId);
+      mkdirSync(workspace, { recursive: true });
+      scope = { ...scope, paths: [workspace] };
+    }
+
     const mandate = laneMandateSchema.parse({
       laneId,
       goal: input.goal,
       contextPack: input.contextPack ?? {},
-      scope: input.scope ?? {},
+      scope,
       budget: input.budget ?? {},
       ...(input.approvals ? { approvals: input.approvals } : {}),
       deliverables: input.deliverables ?? [],
