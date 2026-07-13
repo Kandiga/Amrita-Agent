@@ -40,6 +40,26 @@ function assistantText(message: unknown): string {
     .trim();
 }
 
+/** Tool names in an assistant message's `tool_use` blocks — what she's DOING. */
+function toolUseNames(message: unknown): string[] {
+  const content = (message as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((b): b is { name: string } => {
+      const block = b as { type?: string; name?: unknown };
+      return block.type === 'tool_use' && typeof block.name === 'string';
+    })
+    .map((b) => b.name);
+}
+
+/**
+ * `system` subtypes worth showing a human. Claude Code fires a burst of
+ * `hook_started`/`hook_response`/`status`/`thinking_tokens` events on startup —
+ * surfacing each as a progress line floods the lane console with a wall of
+ * `session hook_started` and buries the real work. Only `init` is meaningful.
+ */
+const MEANINGFUL_SYSTEM_SUBTYPES = new Set(['init']);
+
 /** Parse one NDJSON line. Returns `null` for blank/non-JSON/unrecognized lines. */
 export function parseStreamJsonLine(line: string): StreamJsonEvent | null {
   const trimmed = line.trim();
@@ -55,12 +75,21 @@ export function parseStreamJsonLine(line: string): StreamJsonEvent | null {
 
   switch (obj.type) {
     case 'system': {
-      const subtype = typeof obj.subtype === 'string' ? obj.subtype : 'event';
-      return { note: `session ${subtype}` };
+      const subtype = typeof obj.subtype === 'string' ? obj.subtype : '';
+      if (!MEANINGFUL_SYSTEM_SUBTYPES.has(subtype)) return null; // hook/status noise
+      const model = typeof obj.model === 'string' ? obj.model : '';
+      return { note: model ? `session started · ${model}` : 'session started' };
     }
     case 'assistant': {
+      // A tool_use turn is the interesting one — say WHICH tool, not "assistant turn".
+      const tools = toolUseNames(obj.message);
+      if (tools.length > 0) {
+        return { turn: true, note: `using ${tools.join(', ').slice(0, 120)}` };
+      }
       const text = assistantText(obj.message);
-      return { turn: true, note: text ? `assistant: ${text.slice(0, 160)}` : 'assistant turn' };
+      if (!text) return { turn: true, note: 'assistant turn' };
+      const clipped = text.length > 160 ? `${text.slice(0, 160).trimEnd()}…` : text;
+      return { turn: true, note: `assistant: ${clipped}` };
     }
     case 'user':
       return { note: 'tool result received' };

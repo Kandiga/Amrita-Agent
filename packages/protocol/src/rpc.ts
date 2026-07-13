@@ -174,6 +174,10 @@ export const codingRuntimeStatusSchema = z.object({
   realExecution: z.boolean(),
   detail: z.string(),
   nextCommand: z.string().optional(),
+  /** Tool NAMES a real lane may use for this runtime (ADR-0043). Never secret-shaped —
+   *  presence/absence of a tool is operational config, not a credential. claude-code
+   *  only: codex sandboxes by directory, not by tool allowlist. */
+  allowedTools: z.array(z.string()).optional(),
 });
 export type CodingRuntimeStatusWire = z.infer<typeof codingRuntimeStatusSchema>;
 

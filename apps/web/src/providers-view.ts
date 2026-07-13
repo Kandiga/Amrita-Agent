@@ -3,7 +3,7 @@
  * of the component so the honest-state mapping is unit-testable without a DOM.
  * No secret value ever flows through here — env NAMES and status only.
  */
-import type { ProviderCatalogEntryLite } from './api.ts';
+import type { CodingRuntimeLite, ConnectorStatusLite, ProviderCatalogEntryLite } from './api.ts';
 
 type CatalogState = ProviderCatalogEntryLite['state'];
 type CatalogGroup = ProviderCatalogEntryLite['group'];
@@ -67,4 +67,42 @@ export function groupCatalog(entries: ProviderCatalogEntryLite[]): CatalogGroupV
 /** A one-line dropdown label: provider id + honest state (so the picker never looks green-by-default). */
 export function catalogOptionLabel(entry: ProviderCatalogEntryLite): string {
   return entry.state === 'ready' ? entry.id : `${entry.id} — ${CATALOG_STATE_LABEL[entry.state]}`;
+}
+
+// ── coding runtimes + connectors (ADR-0043: one owner, two consumers) ────────
+// These label/badge maps were inline in SettingsRuntimeHub until the Claude
+// Ecosystem panel needed the SAME honest mapping. Extracted here rather than
+// copied — a second copy is exactly how a "connected" badge drifts from truth.
+
+/** Operator-facing label for each honest coding-runtime state. */
+export const RUNTIME_STATE_LABEL: Record<CodingRuntimeLite['state'], string> = {
+  ready: 'ready',
+  installed_unauthenticated: 'not logged in',
+  installed_auth_unknown: 'auth not verified',
+  not_installed: 'not installed',
+  status_unknown: 'status unknown',
+};
+
+/** Only a live probe can produce `ready` — everything else is warn/off. No fake green. */
+export function runtimeBadgeClass(state: CodingRuntimeLite['state']): string {
+  if (state === 'ready') return 'runtime-ok';
+  if (state === 'not_installed') return 'runtime-off';
+  return 'runtime-warn';
+}
+
+/** Operator-facing label for each honest connector state (ADR-0022). */
+export const CONNECTOR_STATE_LABEL: Record<ConnectorStatusLite['state'], string> = {
+  connected: 'connected',
+  configured_but_failing: 'configured but failing',
+  needs_setup: 'needs setup',
+  needs_install: 'needs install',
+  status_unknown: 'status unknown',
+  experimental: 'experimental',
+};
+
+/** `connected` only ever follows a live probe; `configured` is NOT connected. */
+export function connectorBadgeClass(state: ConnectorStatusLite['state']): string {
+  if (state === 'connected') return 'runtime-ok';
+  if (state === 'configured_but_failing') return 'runtime-warn';
+  return 'runtime-off';
 }

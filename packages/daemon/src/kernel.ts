@@ -283,6 +283,9 @@ export class AmritaKernel {
   private readonly defaultLaneRunner: LaneRunner;
   /** ADR-0039: real lanes without explicit paths get `<root>/<laneId>`. */
   private readonly laneWorkspacesRoot: string | null;
+  /** ADR-0043: the configured claude-code lane tool allowlist, surfaced read-only
+   *  on `runtime.status` (tool NAMES only — never re-parses the env var). */
+  private readonly laneAllowedTools: string[];
   /** Lane-scoped, expiring, read-only workspace view tickets (ADR-0039 amendment).
    *  Worthless outside `GET /lanes/<id>/workspace` — never accepted by RPC/events. */
   private readonly workspaceTickets = new Map<string, { ticket: string; expiresAt: number }>();
@@ -315,6 +318,7 @@ export class AmritaKernel {
     extraLaneRunners: Map<string, LaneRunner>,
     realLaneExecution: boolean,
     laneWorkspacesRoot: string | null,
+    laneAllowedTools: string[],
     codingRuntimeProber: CommandProber | undefined,
     cliExec: CliExec | undefined,
     approvalTimeoutMs: number,
@@ -327,6 +331,7 @@ export class AmritaKernel {
     this.extraLaneRunners = extraLaneRunners;
     this.realLaneExecution = realLaneExecution;
     this.laneWorkspacesRoot = laneWorkspacesRoot;
+    this.laneAllowedTools = laneAllowedTools;
     this.codingRuntimeProber = codingRuntimeProber;
     this.cliExec = cliExec;
     this.approvalTimeoutMs = approvalTimeoutMs;
@@ -382,6 +387,7 @@ export class AmritaKernel {
       extraLaneRunners,
       realLaneExecution,
       allowedRoots[0] ?? null,
+      allowedTools,
       opts.codingRuntimeProber,
       opts.cliExec,
       opts.approvalTimeoutMs ?? 120_000,
@@ -896,6 +902,7 @@ export class AmritaKernel {
     return getRuntimesStatus({
       realExecution: this.realLaneExecution,
       ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
+      ...(this.laneAllowedTools.length > 0 ? { claudeAllowedTools: this.laneAllowedTools } : {}),
     });
   }
 

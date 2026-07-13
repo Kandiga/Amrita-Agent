@@ -979,3 +979,45 @@ One ledger, updated per phase — no scattered notes.
   (go-forward identity already clean; not a credential; not rewritten).
 - **Verification:** `pnpm scan:secrets` clean (265 tracked files); gates green
   (typecheck 0 · lint 0 · 449/449); GitHub secret-scanning: 0 alerts.
+
+## Phase P — The Claude Ecosystem panel (2026-07-13)
+- **Trigger:** the operator circled the chat activity feed believing it was "the Claude Code
+  CLI remote-control session," and asked it to show everything Claude Code has (connections,
+  abilities, skills, MCP) plus a button to open "the session window."
+- **Premise corrected (ADR-0043):** the circled strip is `activity.ts` — a reducer over
+  Amrita's own turn/lane events, NOT a CLI session. And there is no attachable Claude
+  process: chat spawns `claude -p` one-shot per turn, lanes spawn `claude --print` one-shot
+  per run. A live terminal would be a second execution path outside the lane/approval
+  contract — which R4 explicitly rejected ("the lane console IS the remote Claude window").
+  So: an honest ecosystem panel, never a fake terminal.
+- **What landed:**
+  - **Claude Ecosystem drawer** (`ClaudeEcosystemPanel.tsx`) — 5 tabs, all from real RPCs:
+    *Runtime* (live install/auth probe + version), *Abilities* (chat = **no tools**,
+    structural; lanes = the real granted tool list, `Bash` withheld), *Skills*
+    (`skills.list` — which had **zero UI consumers** until now), *MCP* (both CLIs' configured
+    servers, "configured ≠ connected"), *Session* (the real running lane's live output, or an
+    honest empty state).
+  - **Quiet launcher** bottom-right of the chat column, above the composer: low-contrast pill,
+    single status dot (not a count badge — a number implies unread work), turns clay + "· running"
+    only when a lane is actually live. Opens a **bounded drawer over the chat column only**, so
+    the canvas stays visible behind it; Esc/backdrop/✕ close it. Mobile → bottom sheet that
+    leaves the 4-tab bar reachable.
+  - **Wire (one field, no new verb):** `codingRuntimeStatusSchema.allowedTools?: string[]` —
+    tool NAMES (not secret-shaped), populated on the `claude-code` entry only; kernel now holds
+    `laneAllowedTools` and threads it into `getRuntimesStatus`.
+  - **Codex was lying:** the runtime registry hard-coded codex as `executable: false` /
+    "detection-only" even though ADR-0040 gave it a real chat provider AND lane runner. It now
+    gets the same real two-probe (`--version` + `login status`) classification as claude-code —
+    extracted into one shared `probeInstallAndAuth` owner. Live: codex reports **ready**.
+  - **Console noise fixed at the source:** `stream-json.ts` emitted a progress line for EVERY
+    `system` event, so Claude Code's SessionStart hook burst flooded the lane console with 20+
+    `session hook_started` lines and buried the real work. Now only `init` survives (with the
+    model), `tool_use` turns say **which tool** (`using Write`), and long assistant text gets a
+    real ellipsis. Fix is in the shared parser → lane console, activity feed and the new Session
+    tab all benefit.
+  - **SSOT:** runtime/connector label+badge maps extracted from `SettingsRuntimeHub` into
+    `providers-view.ts` (pure, tested) — two consumers, one owner, no drift in the honest-badge rule.
+- **Verification:** root 455/455 · web 76/76 · typecheck/lint/build clean. Live QA against a
+  real daemon: `runtime.status` returns claude-code `ready` + the 6 real tools and codex `ready`;
+  a REAL Claude Code lane (Opus 4.8) ran end-to-end, wrote its file, and its clean 7-line output
+  rendered in the Session tab while the canvas showed the file it wrote. Desktop + mobile verified.

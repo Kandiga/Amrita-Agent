@@ -16,6 +16,7 @@ import { ApprovalsPanel } from './components/ApprovalsPanel.tsx';
 import { BrainPanel } from './components/BrainPanel.tsx';
 import { BrandPanel } from './components/BrandPanel.tsx';
 import { BriefPanel } from './components/BriefPanel.tsx';
+import { ClaudeEcosystemPanel } from './components/ClaudeEcosystemPanel.tsx';
 import { DecisionsPanel } from './components/DecisionsPanel.tsx';
 import { LanesPanel } from './components/LanesPanel.tsx';
 import { MemoryPanel } from './components/MemoryPanel.tsx';
@@ -193,6 +194,8 @@ export function App() {
   const [canvasId, setCanvasId] = useState<string | null>(null);
   /** Lane-scoped workspace view tickets (ADR-0039 amendment), by laneId. */
   const [workspaceTickets, setWorkspaceTickets] = useState<Record<string, string>>({});
+  /** The Claude Ecosystem drawer (ADR-0043) — quiet launcher, opens on demand. */
+  const [ecoOpen, setEcoOpen] = useState(false);
   /** ADR-0038 delete flow: which project is arming, and the typed slug. */
   const [deleteArm, setDeleteArm] = useState<string | null>(null);
   const [deleteDraft, setDeleteDraft] = useState('');
@@ -1168,6 +1171,28 @@ export function App() {
             {error}
           </div>
         ) : null}
+        <div className="eco-launcher-row">
+          <button
+            type="button"
+            className={`eco-launcher${ecoOpen ? ' active' : ''}`}
+            onClick={() => setEcoOpen((v) => !v)}
+            aria-expanded={ecoOpen}
+            title="What Claude Code actually has right now — runtime, tools, skills, MCP, live session"
+          >
+            <span
+              className={`eco-launcher-dot ${laneViews.some((l) => !l.exit) ? 'live' : 'idle'}`}
+            />
+            Claude session
+            {laneViews.some((l) => !l.exit) ? <em>· running</em> : null}
+          </button>
+        </div>
+        <ClaudeEcosystemPanel
+          open={ecoOpen}
+          onClose={() => setEcoOpen(false)}
+          projectId={selectedProject?.id}
+          lanes={laneViews}
+          onError={reportError}
+        />
         <form
           className="composer"
           onSubmit={(e) => {

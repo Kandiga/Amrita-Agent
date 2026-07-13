@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { ProviderCatalogEntryLite } from '../src/api.ts';
 import {
   CATALOG_STATE_LABEL,
+  CONNECTOR_STATE_LABEL,
+  RUNTIME_STATE_LABEL,
   catalogBadgeClass,
   catalogOptionLabel,
   catalogStateHint,
+  connectorBadgeClass,
   groupCatalog,
+  runtimeBadgeClass,
 } from '../src/providers-view.ts';
 
 function entry(over: Partial<ProviderCatalogEntryLite>): ProviderCatalogEntryLite {
@@ -66,5 +70,23 @@ describe('providers-view', () => {
     expect(catalogOptionLabel(entry({ id: 'openai', state: 'needs_key' }))).toBe(
       'openai — needs key',
     );
+  });
+});
+
+describe('runtime + connector badges (ADR-0043 — one owner, two consumers)', () => {
+  it('only a live-probed `ready` runtime is green; inconclusive is never green', () => {
+    expect(runtimeBadgeClass('ready')).toBe('runtime-ok');
+    expect(runtimeBadgeClass('installed_unauthenticated')).toBe('runtime-warn');
+    expect(runtimeBadgeClass('installed_auth_unknown')).toBe('runtime-warn'); // unknown ≠ ok
+    expect(runtimeBadgeClass('status_unknown')).toBe('runtime-warn');
+    expect(runtimeBadgeClass('not_installed')).toBe('runtime-off');
+    expect(RUNTIME_STATE_LABEL.installed_unauthenticated).toBe('not logged in');
+  });
+
+  it('a CONFIGURED connector is never rendered as connected (MCP honesty rule)', () => {
+    expect(connectorBadgeClass('connected')).toBe('runtime-ok');
+    expect(connectorBadgeClass('status_unknown')).toBe('runtime-off'); // "5 MCP configured" ≠ green
+    expect(connectorBadgeClass('configured_but_failing')).toBe('runtime-warn');
+    expect(CONNECTOR_STATE_LABEL.status_unknown).toBe('status unknown');
   });
 });

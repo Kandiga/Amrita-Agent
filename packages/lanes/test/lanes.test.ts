@@ -560,3 +560,44 @@ describe('CodexLaneRunner (ChatGPT-subscription twin)', () => {
     expect(calls[0]?.cwd).toBe('/tmp/ws');
   });
 });
+
+describe('stream-json noise filtering (ADR-0043)', () => {
+  it('drops the SessionStart hook burst — it buried the real work in the console', () => {
+    for (const subtype of ['hook_started', 'hook_response', 'status', 'thinking_tokens']) {
+      expect(parseStreamJsonLine(JSON.stringify({ type: 'system', subtype }))).toBeNull();
+    }
+  });
+
+  it('keeps the one meaningful system event, with the model', () => {
+    const init = parseStreamJsonLine(
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-4-8' }),
+    );
+    expect(init?.note).toBe('session started · claude-opus-4-8');
+  });
+
+  it('names the TOOL being used instead of a generic "assistant turn"', () => {
+    const ev = parseStreamJsonLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Write', input: {} }] },
+      }),
+    );
+    expect(ev).toMatchObject({ turn: true, note: 'using Write' });
+  });
+});
+
+describe('stream-json assistant text clipping', () => {
+  it('marks truncation with an ellipsis instead of cutting mid-word silently', () => {
+    const long = 'x'.repeat(400);
+    const ev = parseStreamJsonLine(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: long }] } }),
+    );
+    expect(ev?.note?.endsWith('…')).toBe(true);
+    expect(ev?.note?.length).toBeLessThan(200);
+
+    const short = parseStreamJsonLine(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }),
+    );
+    expect(short?.note).toBe('assistant: ok'); // short text is NOT given a phantom ellipsis
+  });
+});

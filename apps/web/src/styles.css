@@ -2106,3 +2106,295 @@ code {
 .chat-panel .empty span {
   font-size: 34px;
 }
+
+/* ── Claude Ecosystem: quiet launcher + bounded drawer (ADR-0043) ──────────── */
+/* Design intent: a secondary surface must never compete with the primary task.
+   The launcher is a low-contrast pill that sits ABOVE the composer (never over
+   it — the composer is the one thing that must always be hittable). It carries
+   a single status dot, not a count badge: a number implies unread work and
+   creates a pull the user did not ask for. Opening slides a bounded drawer over
+   the CHAT column only, so the canvas/project context behind it stays visible —
+   the user keeps their place, which is what makes a drawer feel calm and a
+   full-screen modal feel like an interruption. */
+.eco-launcher-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 20px 6px;
+}
+.eco-launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--stone);
+  transition: all 150ms var(--ease);
+}
+.eco-launcher:hover,
+.eco-launcher.active {
+  color: var(--ink);
+  border-color: var(--border-mid);
+  background: var(--cloud);
+}
+.eco-launcher em {
+  font-style: normal;
+  color: var(--clay);
+}
+.eco-launcher-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-mid);
+}
+.eco-launcher-dot.live {
+  background: var(--clay);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--clay) 18%, transparent);
+}
+
+.eco-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border: none;
+  padding: 0;
+  animation: eco-fade 160ms var(--ease);
+}
+@keyframes eco-fade {
+  from {
+    opacity: 0;
+  }
+}
+.eco-panel {
+  position: absolute;
+  inset-inline: 10px;
+  bottom: 10px;
+  z-index: 46;
+  max-height: min(76%, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-lg, 16px);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  animation: eco-rise 220ms var(--ease);
+}
+@keyframes eco-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.chat-panel {
+  position: relative; /* the drawer is bounded by the chat column, not the viewport */
+}
+.eco-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.eco-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.eco-title strong {
+  display: block;
+  font-size: 13.5px;
+}
+.eco-title small {
+  display: block;
+  font-size: 11px;
+  color: var(--stone);
+}
+.eco-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.eco-dot.runtime-ok {
+  background: var(--ok, #7d9b76);
+}
+.eco-dot.runtime-warn {
+  background: var(--clay);
+}
+.eco-dot.runtime-off {
+  background: var(--border-mid);
+}
+.eco-close {
+  margin-inline-start: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--slate);
+  font-size: 11px;
+}
+.eco-close:hover {
+  background: var(--cloud);
+  color: var(--ink);
+}
+.eco-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.eco-tabs button {
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--slate);
+  white-space: nowrap;
+}
+.eco-tabs button:hover {
+  color: var(--ink);
+}
+.eco-tabs button.active {
+  background: var(--cloud);
+  color: var(--ink);
+}
+.eco-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px calc(14px + env(safe-area-inset-bottom));
+}
+.eco-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.eco-row {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.eco-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.eco-row-head strong {
+  font-size: 13px;
+}
+.eco-row-head .doc-badge {
+  margin-inline-start: auto;
+}
+.eco-detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--slate);
+}
+.eco-detail code,
+.eco-foot code {
+  font-size: 11px;
+  background: var(--cloud);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.eco-code {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  background: var(--cloud);
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  overflow-x: auto;
+  direction: ltr;
+}
+.eco-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--clay-strong);
+}
+.eco-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0;
+}
+.eco-tool {
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--cloud);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+  color: var(--ink-soft);
+}
+.eco-foot {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--stone);
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+.eco-empty {
+  text-align: center;
+  padding: 22px 12px;
+  color: var(--slate);
+}
+.eco-empty h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--ink);
+}
+.eco-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.eco-console {
+  background: #1c1c1a;
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  direction: ltr;
+}
+.eco-console-line {
+  margin: 0 0 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.55;
+  color: #d6d3c9;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Mobile: the drawer becomes a bottom sheet, still leaving the tab bar reachable. */
+@media (max-width: 960px) {
+  .eco-panel {
+    inset-inline: 0;
+    bottom: 0;
+    max-height: 82%;
+    border-radius: var(--r-lg, 16px) var(--r-lg, 16px) 0 0;
+    border-inline: none;
+    border-bottom: none;
+  }
+  .eco-launcher-row {
+    padding: 0 12px 6px;
+  }
+}

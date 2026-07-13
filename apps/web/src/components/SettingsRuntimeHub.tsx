@@ -1,7 +1,6 @@
 import { PROVIDER_ROLES, type ProviderRole } from '@amrita/protocol';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import type {
-  CodingRuntimeLite,
   ConnectorStatusLite,
   GithubImportLite,
   ProviderCatalogEntryLite,
@@ -10,9 +9,12 @@ import type {
 import { client } from '../client.ts';
 import {
   CATALOG_STATE_LABEL,
+  CONNECTOR_STATE_LABEL,
+  RUNTIME_STATE_LABEL,
   catalogBadgeClass,
   catalogOptionLabel,
   catalogStateHint,
+  connectorBadgeClass,
   groupCatalog,
 } from '../providers-view.ts';
 
@@ -24,29 +26,6 @@ const ROLE_HINT: Record<Role, string> = {
   main: 'the default conversation brain',
   deep: 'hard reasoning and planning',
 };
-
-const RUNTIME_STATE_LABEL: Record<CodingRuntimeLite['state'], string> = {
-  ready: 'ready',
-  installed_unauthenticated: 'not logged in',
-  installed_auth_unknown: 'auth not verified',
-  not_installed: 'not installed',
-  status_unknown: 'status unknown',
-};
-
-const CONNECTOR_STATE_LABEL: Record<ConnectorStatusLite['state'], string> = {
-  connected: 'connected',
-  configured_but_failing: 'configured but failing',
-  needs_setup: 'needs setup',
-  needs_install: 'needs install',
-  status_unknown: 'status unknown',
-  experimental: 'experimental',
-};
-
-function connectorBadgeClass(state: ConnectorStatusLite['state']): string {
-  if (state === 'connected') return 'runtime-ok';
-  if (state === 'configured_but_failing') return 'runtime-warn';
-  return 'runtime-off';
-}
 
 interface SettingsRuntimeHubProps {
   projectId?: string | undefined;

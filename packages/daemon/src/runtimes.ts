@@ -69,48 +69,49 @@ const PROBE_TIMEOUT_MS = 1500;
  * `claude --version` (installed?) then `claude auth status` (authenticated?).
  * Auth-probe output is classified, never echoed (it could mention account ids).
  */
-export async function getClaudeCodeStatus(opts: {
-  realExecution: boolean;
-  prober?: CommandProber;
-  /** Probe budget. The default favors snappy status panels; interactive
-   * choosers pass more — `claude auth status` alone takes ~4s on a VPS, and a
-   * slow honest answer beats a fast wrong one. */
-  timeoutMs?: number;
+/**
+ * Two-probe install+auth classification shared by every real coding-runtime CLI
+ * (`<cmd> --version` then an auth-check argv). One owner for the honesty rules
+ * (ADR-0019 §6): a probe that fails or times out is `status_unknown`/
+ * `installed_auth_unknown`, never a guessed green state.
+ */
+async function probeInstallAndAuth(opts: {
+  probe: CommandProber;
+  timeoutMs: number;
+  base: { id: string; title: string; realExecution: boolean };
+  cmd: string;
+  authArgs: string[];
+  installHint: string;
+  loginHint: string;
+  readyDetail: string;
 }): Promise<CodingRuntimeStatus> {
-  const probe = opts.prober ?? defaultProber;
-  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const base = {
-    id: 'claude-code' as const,
-    title: 'Claude Code',
-    realExecution: opts.realExecution,
-  };
-
-  const version = await probe('claude', ['--version'], timeoutMs);
+  const { probe, timeoutMs, base, cmd, authArgs, installHint, loginHint, readyDetail } = opts;
+  const version = await probe(cmd, ['--version'], timeoutMs);
   if (version.kind === 'spawn_error') {
     return {
       ...base,
       state: 'not_installed',
-      detail: 'the `claude` CLI was not found on PATH',
-      nextCommand: 'npm install -g @anthropic-ai/claude-code',
+      detail: `the \`${cmd}\` CLI was not found on PATH`,
+      nextCommand: installHint,
     };
   }
   if (version.kind === 'timeout' || version.kind === 'failed') {
     return {
       ...base,
       state: 'status_unknown',
-      detail: 'the `claude` CLI did not answer a bounded version probe',
-      nextCommand: 'claude --version',
+      detail: `the \`${cmd}\` CLI did not answer a bounded version probe`,
+      nextCommand: `${cmd} --version`,
     };
   }
   const versionString = version.stdout.trim().slice(0, 60);
 
-  const auth = await probe('claude', ['auth', 'status'], timeoutMs);
+  const auth = await probe(cmd, authArgs, timeoutMs);
   if (auth.kind === 'ok') {
     return {
       ...base,
       state: 'ready',
       ...(versionString ? { version: versionString } : {}),
-      detail: 'installed and authenticated (subscription login; no key is ever forwarded)',
+      detail: readyDetail,
     };
   }
   if (auth.kind === 'failed') {
@@ -119,7 +120,7 @@ export async function getClaudeCodeStatus(opts: {
       state: 'installed_unauthenticated',
       ...(versionString ? { version: versionString } : {}),
       detail: 'installed, but the auth probe reported not logged in',
-      nextCommand: 'claude login',
+      nextCommand: loginHint,
     };
   }
   return {
@@ -127,8 +128,51 @@ export async function getClaudeCodeStatus(opts: {
     state: 'installed_auth_unknown',
     ...(versionString ? { version: versionString } : {}),
     detail: 'installed; authentication could not be verified within the probe timeout',
-    nextCommand: 'claude auth status',
+    nextCommand: `${cmd} ${authArgs.join(' ')}`,
   };
+}
+
+export async function getClaudeCodeStatus(opts: {
+  realExecution: boolean;
+  prober?: CommandProber;
+  /** Probe budget. The default favors snappy status panels; interactive
+   * choosers pass more — `claude auth status` alone takes ~4s on a VPS, and a
+   * slow honest answer beats a fast wrong one. */
+  timeoutMs?: number;
+}): Promise<CodingRuntimeStatus> {
+  return probeInstallAndAuth({
+    probe: opts.prober ?? defaultProber,
+    timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+    base: { id: 'claude-code', title: 'Claude Code', realExecution: opts.realExecution },
+    cmd: 'claude',
+    authArgs: ['auth', 'status'],
+    installHint: 'npm install -g @anthropic-ai/claude-code',
+    loginHint: 'claude login',
+    readyDetail: 'installed and authenticated (subscription login; no key is ever forwarded)',
+  });
+}
+
+/**
+ * Codex's install+auth probe (ADR-0040/0043) — real now: `codex login status`
+ * exits 0 when a ChatGPT session is active (verified live on codex-cli 0.144.1),
+ * so codex gets the SAME honest ready/unauthenticated/unknown classification as
+ * claude-code, not the generic detection-only path.
+ */
+export async function getCodexStatus(opts: {
+  realExecution: boolean;
+  prober?: CommandProber;
+  timeoutMs?: number;
+}): Promise<CodingRuntimeStatus> {
+  return probeInstallAndAuth({
+    probe: opts.prober ?? defaultProber,
+    timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+    base: { id: 'codex', title: 'Codex', realExecution: opts.realExecution },
+    cmd: 'codex',
+    authArgs: ['login', 'status'],
+    installHint: 'npm install -g @openai/codex',
+    loginHint: 'codex login',
+    readyDetail: 'installed and authenticated (ChatGPT subscription; no key is ever forwarded)',
+  });
 }
 
 // ── generalized coding-runtime registry (ADR-0026) ──────────────────────────
@@ -161,7 +205,7 @@ export const CODING_RUNTIMES: readonly RuntimeSpec[] = [
     title: 'OpenAI Codex',
     detectCli: 'codex',
     installHint: 'npm install -g @openai/codex',
-    executable: false,
+    executable: true, // real lane runner + chat provider since ADR-0040
   },
   {
     id: 'opencode',
@@ -182,18 +226,30 @@ export async function getRuntimesStatus(opts: {
   realExecution: boolean;
   prober?: CommandProber;
   timeoutMs?: number;
+  /** Tool names a real Claude Code lane may use (ADR-0043) — attached to the
+   *  claude-code entry only; codex has no tool-allowlist concept. */
+  claudeAllowedTools?: string[];
 }): Promise<CodingRuntimeStatus[]> {
   const probe = opts.prober ?? defaultProber;
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const out: CodingRuntimeStatus[] = [];
   for (const rt of CODING_RUNTIMES) {
     if (rt.id === 'claude-code') {
+      const status = await getClaudeCodeStatus({
+        realExecution: opts.realExecution,
+        prober: probe,
+        timeoutMs,
+      });
       out.push(
-        await getClaudeCodeStatus({
-          realExecution: opts.realExecution,
-          prober: probe,
-          timeoutMs,
-        }),
+        opts.claudeAllowedTools && opts.claudeAllowedTools.length > 0
+          ? { ...status, allowedTools: opts.claudeAllowedTools }
+          : status,
+      );
+      continue;
+    }
+    if (rt.id === 'codex') {
+      out.push(
+        await getCodexStatus({ realExecution: opts.realExecution, prober: probe, timeoutMs }),
       );
       continue;
     }

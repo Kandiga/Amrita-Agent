@@ -237,8 +237,8 @@ describe('baseUrlEnvVar override', () => {
   });
 });
 
-describe('runtime registry (ADR-0026)', () => {
-  it('reports all three runtimes; claude-code wired, others detection-only', async () => {
+describe('runtime registry (ADR-0026 / 0043)', () => {
+  it('reports all three runtimes; none faked when no CLI is present', async () => {
     kernel = AmritaKernel.open({
       dbPath: ':memory:',
       codingRuntimeProber: async () => ({ kind: 'spawn_error' }),
@@ -248,15 +248,57 @@ describe('runtime registry (ADR-0026)', () => {
     expect(runtimes.every((r) => r.state === 'not_installed')).toBe(true);
   });
 
-  it('detects an installed-but-detection-only runtime honestly', async () => {
+  it('codex now gets a REAL auth probe (login status), like claude-code — not detection-only', async () => {
+    // logged in → ready
     kernel = AmritaKernel.open({
       dbPath: ':memory:',
-      codingRuntimeProber: async (cmd) =>
-        cmd === 'codex' ? { kind: 'ok', stdout: '1.0.0' } : { kind: 'spawn_error' },
+      codingRuntimeProber: async (cmd, args) =>
+        cmd === 'codex' ? { kind: 'ok', stdout: '0.144.1' } : { kind: 'spawn_error' },
     });
-    const codex = (await kernel.getCodingRuntimes()).find((r) => r.id === 'codex');
-    expect(codex?.state).toBe('installed_auth_unknown');
-    expect(codex?.detail).toContain('detection-only');
+    const ready = (await kernel.getCodingRuntimes()).find((r) => r.id === 'codex');
+    expect(ready?.state).toBe('ready');
+    expect(ready?.detail).toContain('ChatGPT subscription');
+    kernel.close();
+
+    // installed but logged OUT → honest, with the exact fix
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      codingRuntimeProber: async (cmd, args) => {
+        if (cmd !== 'codex') return { kind: 'spawn_error' };
+        return args[0] === '--version'
+          ? { kind: 'ok', stdout: '0.144.1' }
+          : { kind: 'failed', stdout: 'not logged in' };
+      },
+    });
+    const out = (await kernel.getCodingRuntimes()).find((r) => r.id === 'codex');
+    expect(out?.state).toBe('installed_unauthenticated');
+    expect(out?.nextCommand).toBe('codex login');
+  });
+
+  it('surfaces the lane tool allowlist on claude-code only (ADR-0043)', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      allowRealLaneExecution: true,
+      laneAllowedTools: ['Write', 'Edit', 'Read'],
+      codingRuntimeProber: async () => ({ kind: 'ok', stdout: 'v1' }),
+    });
+    const runtimes = await kernel.getCodingRuntimes();
+    expect(runtimes.find((r) => r.id === 'claude-code')?.allowedTools).toEqual([
+      'Write',
+      'Edit',
+      'Read',
+    ]);
+    // codex sandboxes by directory, not by tool allowlist — no phantom field
+    expect(runtimes.find((r) => r.id === 'codex')?.allowedTools).toBeUndefined();
+  });
+
+  it('omits allowedTools entirely when no tools are granted (chat grants zero)', async () => {
+    kernel = AmritaKernel.open({
+      dbPath: ':memory:',
+      codingRuntimeProber: async () => ({ kind: 'ok', stdout: 'v1' }),
+    });
+    const cc = (await kernel.getCodingRuntimes()).find((r) => r.id === 'claude-code');
+    expect(cc?.allowedTools).toBeUndefined();
   });
 });
 
