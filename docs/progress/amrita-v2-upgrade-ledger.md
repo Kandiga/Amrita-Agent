@@ -952,3 +952,30 @@ One ledger, updated per phase — no scattered notes.
   workspace; the canvas rendered both via tickets (LIVE BUILD · done), the Snake
   game runs sandboxed on the canvas; a live chat turn answered "אני Claude Opus
   4.8" via `claude-code · opus`. Enter now sends (Shift+Enter breaks the line).
+
+## Phase S — Public-repo secret/PII audit + hardening (2026-07-13)
+- **Trigger:** owner asked to "push to a public repo, after checking no tokens/keys/
+  passwords leak." Reality-scan finding: `Kandiga/Amrita-Agent` is ALREADY public (since
+  ~2026-06-10), all 114 commits (v2-main 108 + main + v0.1-final) already exposed — so the
+  task became audit-existing-exposure + rotation-if-needed, not pre-publication.
+- **Audit (workflow, 30 agents, 1.5M tokens):** 7 adversarial scanner dimensions ×
+  full history + worktree + config/deploy + docs/PII + fixtures + entropy blind spots,
+  each finding independently verified (fail-closed) + a completeness critic. Cross-checked
+  with GitHub's own secret-scanning API (0 alerts) and manual greps.
+- **VERDICT: zero credentials anywhere** — not at HEAD, not in any of 114 commits, not in
+  commit messages. Nothing to rotate. The names-only design held (ADR-0032 secrets.ts
+  regex; secrets.env 0600 outside the repo; no hardcoded token in auth.ts; .gitignore
+  covers .env*/secrets.env/*.db). All `sk-`/`ghp_`/`token` strings are self-describing
+  test fixtures, several *inverted* (they prove a refusal/scrub guard works).
+- **Remediated (ADR-0042, forward commit — no history rewrite, which is useless on an
+  already-public repo):** redacted third-party client identity (`openart-chanan` /
+  "OpenArt bot") and operator attack-surface recon from HERMES_INSPIRATION_RESEARCH.md,
+  keeping every architectural lesson; added `scripts/scan-secrets.mjs` (zero-dep,
+  negative-control-verified) as the executable owner of the quality bar's "secret scan
+  before push" rule; wired `pnpm scan:secrets` + a CI gate (first `.github/` on v2-main).
+- **Reported, NOT changed (owner's decision):** `serve-web.mjs` binds `0.0.0.0:7461` behind
+  an open firewall — the bearer-gated control plane is internet-reachable (loopback-binding
+  would break the live demo link); commit metadata carries the VPS hostname on 58 commits
+  (go-forward identity already clean; not a credential; not rewritten).
+- **Verification:** `pnpm scan:secrets` clean (265 tracked files); gates green
+  (typecheck 0 · lint 0 · 449/449); GitHub secret-scanning: 0 alerts.

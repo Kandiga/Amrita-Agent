@@ -15,11 +15,11 @@
 - State: `/root/.hermes/` — `state.db` (2.9 GB SQLite WAL, schema v19), `SOUL.md`,
   `SECRETS_POLICY.md`, `memories/`, `cron/`, `hooks/`, `skills/`, `profiles/`.
 - Live processes: **two gateway daemons** (`hermes gateway run` default profile +
-  `--profile openart-chanan`) and a Node sidecar (`brain-bridge/server.mjs` — the Cinema
-  bridge Amrita's daemon proxies to).
+  a second `--profile <redacted>`) and a Node sidecar (`brain-bridge/server.mjs` — the
+  Cinema bridge Amrita's daemon proxies to).
 - **Not OS-supervised**: no systemd unit, no crontab entry. The daemons keep themselves
-  alive via internal guards (see §4). `pre_update_backup: false` is currently disabled.
-  Worth recording: the real deployment is scrappier than the idealized picture.
+  alive via internal guards (see §4). Worth recording: the real deployment is scrappier
+  than the idealized picture — a lesson Amrita takes the other way (systemd-first deploy).
 
 ## 1. Memory — layered, not one store
 
@@ -28,7 +28,7 @@
 | Identity | `SOUL.md` — persona paragraph prepended to system prompt, per-profile override | `/root/.hermes/SOUL.md`, `hermes_cli/default_soul.py` |
 | Curated notes | **Two markdown files**: `memories/MEMORY.md` (agent/project notes) + `USER.md` (user facts), `§`-delimited entries, hard char caps (2200/1375), old-text-match **write gate**, drift scanner, sanitized snapshot | `tools/memory_tool.py`; `config.yaml → memory` |
 | Provider seam | `MemoryManager`: builtin always-first + **at most one** external provider; core tool names reserved so a provider can't shadow them; end-of-turn sync on a single serialized background worker | `agent/memory_manager.py` |
-| Episodic | `state.db`: `sessions` (827) + `messages` (99,767) + **FTS5 with trigram tokenizer** for substring recall; sessions carry lineage (`parent_session_id`), token/cost accounting, chat/thread identity, cwd/git context | `hermes_state.py`; PRAGMA-verified |
+| Episodic | `state.db`: `sessions` + `messages` (live counts elided) + **FTS5 with trigram tokenizer** for substring recall; sessions carry lineage (`parent_session_id`), token/cost accounting, chat/thread identity, cwd/git context | `hermes_state.py`; PRAGMA-verified |
 | Compaction | Close old session → open **child session** carrying a summary (lineage chain, never destructive rewrite); `compression_locks` + orphan-finalize guard | `agent/conversation_compression.py`, `context_compressor.py`, `trajectory_compressor.py` |
 | External wiki | `/srv/projects/memory-wiki` (Natanel's add-on, **not core Hermes**): cron every 120 min compiles redacted transcripts → Obsidian vault + recall search. Reads Hermes' live SQLite directly (tight coupling) | `app/compile_to_obsidian.py`; cron job `7ef45b09ea7d` |
 
@@ -142,10 +142,10 @@ the guards prevent *bad* restarts but nothing causes *good* ones after a hard cr
   `gateway/session.py:build_session_key(platform, chat, user?)` maps every channel into
   the same `state.db` + `MEMORY.md`/`USER.md`/`SOUL.md`; `group_sessions_per_user: true`
   isolates users within group chats; the `gateway_routing` table maps channels→sessions.
-- **Profiles = fully isolated brains**: `/root/.hermes/profiles/openart-chanan/` has its
+- **Profiles = fully isolated brains**: `/root/.hermes/profiles/<redacted>/` has its
   own `state.db`, `SOUL.md`, `config.yaml`, `cron/`, `memories/` — a complete second
-  Hermes sharing only the binary, selected by `--profile` (in production use for the
-  OpenArt bot).
+  Hermes sharing only the binary, selected by `--profile` (in production use for a
+  separate third-party bot).
 
 **Adopt:** the session-key model (channel → same brain, deterministic identity mapping) —
 this is exactly the no-memory-duplication guarantee Phase 7 of the reorganization needs,
@@ -163,8 +163,9 @@ at the crash boundary (can drop/duplicate one message).
 - **Tool registry**: `tools/registry.py` — `{schema, handler, toolset, availability}`;
   **AST-scans** `tools/*.py` for `registry.register(...)` (discovery without import
   side-effects); `_generation` counter as cache-invalidation key.
-- **Permissioning**: `command_allowlist` of 21 dangerous-command *patterns* (regex-based —
-  bypassable); `tools/approval.py` + `tool_guardrails.py` + `tirith_security.py`.
+- **Permissioning**: `command_allowlist` of 21 dangerous-command *patterns* (regex/
+  pattern-based — defense-in-depth, not a hard boundary); `tools/approval.py` +
+  `tool_guardrails.py` + `tirith_security.py`.
 - **Skills**: shipped under install `skills/<category>/`; user/agent-installed under
   `~/.hermes/skills/` (31 categories live); prompt snapshot cached
   (`.skills_prompt_snapshot.json`); config gates `guard_agent_created`, `write_approval`.
@@ -172,8 +173,8 @@ at the crash boundary (can drop/duplicate one message).
   **inactivity-triggered** (idle > min_idle_hours && last run > 168h) — pins/archives/
   consolidates **agent-created skills only**, never deletes (archive only), never touches
   pinned skills, runs on the auxiliary client so the main prompt cache is undisturbed.
-- **MCP**: 3 servers live (`supabase`, `higgsfield`, `openart`) — MCP is working runtime
-  here, not just a picker (corrects parity-roadmap row 9).
+- **MCP**: 3 servers live (`supabase`, `higgsfield`, and a third-party server) — MCP is
+  working runtime here, not just a picker (corrects parity-roadmap row 9).
 
 **Adopt:** per-channel toolset gating (the permission model Phase 3's skill registry
 needs); System-vs-User skill split with `guard_agent_created` + write approval; the
@@ -191,8 +192,7 @@ strictly better; unattended background skill mutation without tight scoping.
 - Doctor: ~10 grouped checks, every WARN/FAIL carries the exact fix, `--fix` does safe ops
   only, live-probe vs presence-only labeling. (Adopted in Amrita.)
 - Self-update: in-place `git pull` on the live install + post-pull snapshot for
-  auto-rollback if the next run fails; **`pre_update_backup` currently disabled** here;
-  one 798 MB manual pre-upgrade tarball in `/root/hermes-upgrade-backups/`.
+  auto-rollback if the next run fails; a manual pre-upgrade tarball is also kept.
 
 **Adopt:** config-backup-before-reconfigure; post-update auto-rollback snapshot (for the
 future `amrita update`). **Avoid:** in-place `git pull` self-update on a running daemon;

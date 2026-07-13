@@ -2,7 +2,7 @@
   "name": "amrita",
   "version": "0.0.0",
   "private": true,
-  "description": "Amrita — a chat-first, project-aware, multi-channel agent OS (v2, monorepo)",
+  "description": "Amrita \u2014 a chat-first, project-aware, multi-channel agent OS (v2, monorepo)",
   "type": "module",
   "packageManager": "pnpm@10.33.2",
   "engines": {
@@ -15,7 +15,8 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "amritad": "node packages/daemon/src/bin/amritad.ts",
-    "amrita": "node packages/cli/src/bin/amrita.ts"
+    "amrita": "node packages/cli/src/bin/amrita.ts",
+    "scan:secrets": "node scripts/scan-secrets.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
