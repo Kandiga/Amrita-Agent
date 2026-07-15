@@ -102,6 +102,11 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         sets.push('milestone_id = ?');
         vals.push(p.milestoneId);
       }
+      if (p.laneId !== undefined) {
+        // ADR-0048: the lane↔task link, now derivable from the event log. null un-delegates.
+        sets.push('lane_id = ?');
+        vals.push(p.laneId);
+      }
       // board fields (ADR-0044): absent = leave alone, null = clear.
       if (p.owner !== undefined) {
         sets.push('owner = ?');

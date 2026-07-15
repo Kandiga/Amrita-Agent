@@ -387,6 +387,11 @@ export const eventPayloads = {
       body: z.string().optional(),
       // nullable so a task can be UNLINKED from a milestone (ADR-0018)
       milestoneId: idSchema.nullable().optional(),
+      // The lane this task is delegated to (ADR-0048). Was a raw-SQL write OFF the
+      // event log (`UPDATE tasks SET lane_id`), which made the link invisible to any
+      // event-driven watcher. It now rides the event; nullable so a task can be
+      // un-delegated. Every pre-0048 `task.updated` still parses (it is absent).
+      laneId: idSchema.nullable().optional(),
       // board fields (ADR-0044). Each is NULLABLE as well as optional:
       //   absent  = leave it alone
       //   null    = CLEAR it (un-assign the owner, unblock the task)

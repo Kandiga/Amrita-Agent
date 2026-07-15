@@ -216,6 +216,24 @@ describe("task → lane, and the lane's results (ADR-0045)", () => {
     expect(kernel.listDecisions({ projectId: ctx.projectId })).toHaveLength(0);
   });
 
+  it('the lane↔task link now rides the EVENT LOG, not a raw SQL write (ADR-0048)', async () => {
+    kernel.setProjectRoot({ ...ctx, root: dir });
+    const { taskId } = kernel.createTask({ ...ctx, title: 'Refactor the checkout flow' });
+    const out = await kernel.delegateTask({ ...ctx, taskId });
+
+    // The link is derivable purely from the log — a `task.updated` carries it — so
+    // an event-driven watcher can map `lane.completed{laneId}` back to its task.
+    // It used to be a raw `UPDATE tasks SET lane_id`, invisible to any replay.
+    const linked = kernel
+      .listEvents(ctx.conversationId, 0)
+      .some(
+        (e) =>
+          e.type === 'task.updated' &&
+          (e.payload as { laneId?: string | null }).laneId === out.laneId,
+      );
+    expect(linked).toBe(true);
+  });
+
   it('refuses to delegate the same task twice', async () => {
     kernel.setProjectRoot({ ...ctx, root: dir });
     const { taskId } = kernel.createTask({ ...ctx, title: 'Fix the failing test' });

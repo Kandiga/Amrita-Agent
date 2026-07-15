@@ -1031,6 +1031,8 @@ export class Store {
       body?: string;
       /** A milestone to link to, or `null` to unlink (ADR-0018). */
       milestoneId?: string | null;
+      /** The lane this task is delegated to, or `null` to un-delegate (ADR-0048). */
+      laneId?: string | null;
       owner?: string | null;
       dueDate?: string | null;
       priority?: TaskPriority | null;
@@ -1075,6 +1077,7 @@ export class Store {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.body !== undefined ? { body: input.body } : {}),
         ...(input.milestoneId !== undefined ? { milestoneId: input.milestoneId } : {}),
+        ...(input.laneId !== undefined ? { laneId: input.laneId } : {}),
         ...(input.owner !== undefined ? { owner: input.owner } : {}),
         ...(input.dueDate !== undefined ? { dueDate: input.dueDate } : {}),
         ...(input.priority !== undefined ? { priority: input.priority } : {}),

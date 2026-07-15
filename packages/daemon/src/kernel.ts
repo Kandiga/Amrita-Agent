@@ -1684,18 +1684,19 @@ export class AmritaKernel {
       ...(input.origin ? { origin: input.origin } : {}),
     });
 
-    // Write the link back, so the card and the lane can never drift apart.
+    // Write the link back through the SINGLE write path (ADR-0048), in one event:
+    // status→now AND the lane link. The old raw `UPDATE tasks SET lane_id` wrote it
+    // OFF the event log, so the link was invisible to any event-driven watcher and
+    // could crash-window-drift from the lane. It now rides `task.updated.laneId`.
     this.store.updateTask({
       projectId: input.projectId,
       conversationId: input.conversationId,
       taskId: input.taskId,
       status: 'now',
+      laneId: lane.laneId,
       reason: 'delegated to a lane',
       ...(input.origin ? { origin: input.origin } : {}),
     });
-    this.store.db
-      .prepare('UPDATE tasks SET lane_id = ? WHERE id = ?')
-      .run(lane.laneId, input.taskId);
 
     return { laneId: lane.laneId, status: lane.status };
   }
