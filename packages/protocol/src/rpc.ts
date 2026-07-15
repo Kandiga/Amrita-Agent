@@ -7,11 +7,13 @@ import {
   conversationNodeSchema,
   conversationRowSchema,
   decisionRowSchema,
+  inboxItemRowSchema,
   laneRowSchema,
   memoryEntryRowSchema,
   milestoneRowSchema,
   openQuestionRowSchema,
   pairingRowSchema,
+  phaseRowSchema,
   previewApprovalRowSchema,
   projectBrandRowSchema,
   projectBriefRowSchema,
@@ -21,6 +23,7 @@ import {
 } from './entities.ts';
 import {
   authModeSchema,
+  inboxKindSchema,
   laneRowStatusSchema,
   providerConfigStatusSchema,
   providerRoleSchema,
@@ -97,6 +100,29 @@ export function parseRpcResponse(input: unknown): RpcResponseFrame {
 
 // ── WS stream frames (`/events/ws`) ──────────────────────────────────────────
 
+/**
+ * Domain events that change PROJECT state rather than one conversation's
+ * transcript (ADR-0044). Owned here, once: the daemon decides what to fan out and
+ * the web client decides what to refetch from the SAME list — neither re-declares it.
+ */
+export const PROJECT_DOMAIN_EVENT_PREFIXES = [
+  'task.',
+  'milestone.',
+  'question.',
+  'risk.',
+  'decision.',
+  'inbox.',
+  'brief.',
+  'brand.',
+  'memory.',
+  'preview.',
+  'publication.',
+] as const;
+
+export function isProjectDomainEvent(type: string): boolean {
+  return PROJECT_DOMAIN_EVENT_PREFIXES.some((p) => type.startsWith(p));
+}
+
 export const wsServerFrameSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('event'), event: sealedEventShellSchema }),
   z.object({
@@ -104,6 +130,16 @@ export const wsServerFrameSchema = z.discriminatedUnion('t', [
     conversationId: idSchema,
     sinceSeq: z.number().int().nonnegative(),
   }),
+  /**
+   * A project-scoped domain change (ADR-0044).
+   *
+   * NO cursor, by design: `seq` is per-conversation, so a project-wide stream has
+   * no single monotonic sequence to resume from. This frame is a NOTIFICATION —
+   * "this project changed" — and the client refetches the affected projection.
+   * Missing one is harmless (the next one re-syncs); replaying one is harmless
+   * (a refetch is idempotent).
+   */
+  z.object({ t: z.literal('project-event'), event: sealedEventShellSchema }),
 ]);
 export type WsServerFrame = z.infer<typeof wsServerFrameSchema>;
 
@@ -255,6 +291,7 @@ export const modelDiscoveryResultSchema = z.object({
   source: z.enum(['live', 'curated']),
   detail: z.string(),
 });
+export type ModelDiscoveryResultWire = z.infer<typeof modelDiscoveryResultSchema>;
 
 export const probeEndpointResultSchema = z.object({
   ok: z.boolean(),
@@ -263,6 +300,7 @@ export const probeEndpointResultSchema = z.object({
   detail: z.string(),
   suggestedUrl: z.string().optional(),
 });
+export type ProbeEndpointResultWire = z.infer<typeof probeEndpointResultSchema>;
 
 export const chatUsageSchema = z.object({
   inputTokens: z.number(),
@@ -314,6 +352,186 @@ export const pendingApprovalSchema = z.object({
 });
 export type PendingApprovalWire = z.infer<typeof pendingApprovalSchema>;
 
+/**
+ * What the operator is LOOKING AT right now (ADR-0045).
+ *
+ * "השיחה עם אמריטה תישאר תמיד מחוברת למה שאתה מסתכל עליו. אם פתחת סיכון, היא
+ *  יודעת שאתה מדבר על הסיכון."
+ *
+ * Sent with a chat turn so the conversation is about the thing on screen, instead
+ * of the operator having to re-describe it every time.
+ */
+export const chatFocusSchema = z
+  .object({
+    kind: z.enum([
+      'task',
+      'risk',
+      'question',
+      'decision',
+      'milestone',
+      'phase',
+      'inbox',
+      // ADR-0047: a build the operator selected on the live canvas. It has no
+      // stored row (it is a client-only artifact), so it carries a `label`
+      // instead of ids — the title shown on the card.
+      'artifact',
+    ]),
+    ids: z.array(idSchema).max(10).default([]),
+    /** For `artifact` focus: the on-screen build's title. */
+    label: z.string().min(1).max(200).optional(),
+  })
+  .refine((f) => (f.kind === 'artifact' ? typeof f.label === 'string' : f.ids.length > 0), {
+    message: 'a domain focus needs ids; an artifact focus needs a label',
+  });
+export type ChatFocus = z.infer<typeof chatFocusSchema>;
+
+/**
+ * What can actually be DONE with a task (ADR-0045).
+ *
+ * "לכל משימה באמריטה יהיה מסלול ברור: 'לבצע עכשיו', 'להעביר לסוכן', 'נדרש חיבור
+ *  לכלי חיצוני', 'נדרש אישור' או 'משימה אנושית בלבד'."
+ */
+export const executionRouteSchema = z.enum([
+  'do-now',
+  'delegate',
+  'needs-connector',
+  'needs-approval',
+  'human-only',
+]);
+export type ExecutionRouteWire = z.infer<typeof executionRouteSchema>;
+
+export const routeVerdictSchema = z.object({
+  route: executionRouteSchema,
+  detail: z.string(),
+  /** For `needs-connector`: what is missing, why, and what approving it costs. */
+  missing: z
+    .object({ what: z.string(), why: z.string(), risk: z.string(), fix: z.string() })
+    .optional(),
+});
+export type RouteVerdictWire = z.infer<typeof routeVerdictSchema>;
+
+/**
+ * The weekly review packet (ADR-0045). It PROPOSES; it never acts.
+ *
+ * "פעם בשבוע המתזמן של אמריטה יכין חבילת סקירה, לא יבצע שינויים בשקט."
+ */
+export const reviewPacketSchema = z.object({
+  key: z.string(),
+  weekOf: z.string(),
+  stale: z.array(
+    z.object({ taskId: idSchema, title: z.string(), daysSinceMoved: z.number().int() }),
+  ),
+  approaching: z.array(
+    z.object({
+      milestoneId: idSchema,
+      title: z.string(),
+      targetDate: z.string(),
+      daysLeft: z.number().int(),
+    }),
+  ),
+  overdue: z.array(
+    z.object({
+      milestoneId: idSchema,
+      title: z.string(),
+      targetDate: z.string(),
+      daysLate: z.number().int(),
+    }),
+  ),
+  blockers: z.array(z.object({ taskId: idSchema, title: z.string(), reason: z.string() })),
+  waitingDecisions: z.array(
+    z.object({ questionId: idSchema, text: z.string(), ageDays: z.number().int() }),
+  ),
+  openRisks: z.array(
+    z.object({ riskId: idSchema, text: z.string(), severity: z.string().nullable() }),
+  ),
+  recommendations: z.array(z.string()),
+  empty: z.boolean(),
+});
+export type ReviewPacketWire = z.infer<typeof reviewPacketSchema>;
+
+/**
+ * The PUBLIC view of a project (ADR-0045).
+ *
+ * This shape IS the allowlist. Every field a stakeholder may ever see is named
+ * here; anything not named is unrepresentable, not merely discouraged.
+ */
+export const publicHubSchema = z.object({
+  projectName: z.string(),
+  goal: z.string(),
+  audience: z.string().nullable(),
+  finishLine: z.string().nullable(),
+  milestones: z.array(
+    z.object({
+      title: z.string(),
+      status: z.enum(['planned', 'in-progress', 'done']),
+      targetDate: z.string().nullable(),
+    }),
+  ),
+  phases: z.array(
+    z.object({ title: z.string(), status: z.enum(['planned', 'in-progress', 'done']) }),
+  ),
+  /** A COUNT, never a task list — titles leak internal detail. */
+  progress: z.object({ done: z.number().int(), total: z.number().int() }),
+  updates: z.array(z.object({ date: z.string(), text: z.string() })),
+  generatedAt: z.string(),
+});
+export type PublicHubWire = z.infer<typeof publicHubSchema>;
+
+export const hubPreviewSchema = z.object({
+  hub: publicHubSchema,
+  contentHash: z.string(),
+  published: z
+    .object({ slug: z.string(), publishedAt: z.string(), inSync: z.boolean() })
+    .nullable(),
+});
+export type HubPreviewWire = z.infer<typeof hubPreviewSchema>;
+
+/**
+ * The retrospective (ADR-0045). Computed from what actually happened.
+ *
+ * `lessons` are CANDIDATES. Nothing crosses into another project until the operator
+ * promotes it, one at a time — cross-project contamination is a door we never build.
+ */
+export const retroPacketSchema = z.object({
+  projectId: idSchema,
+  outcome: z.object({
+    finishLine: z.string().nullable(),
+    successCriteria: z.array(z.string()),
+    tasksDone: z.number().int(),
+    tasksTotal: z.number().int(),
+    milestonesHit: z.number().int(),
+    milestonesMissed: z.number().int(),
+  }),
+  findings: z.array(
+    z.object({
+      kind: z.enum(['slipped', 'unanswered', 'risk-realised', 'dropped', 'never-moved', 'scope']),
+      detail: z.string(),
+      lesson: z.string().optional(),
+    }),
+  ),
+  lessons: z.array(z.string()),
+  empty: z.boolean(),
+});
+export type RetroPacketWire = z.infer<typeof retroPacketSchema>;
+
+/** One computed charter finding (ADR-0045) — certainty / missing / contradiction. */
+export const charterFindingSchema = z.object({
+  kind: z.enum(['missing', 'unconfirmed', 'contradiction']),
+  severity: z.enum(['low', 'medium', 'high']),
+  field: z.string(),
+  detail: z.string(),
+  ask: z.string().optional(),
+});
+export type CharterFindingWire = z.infer<typeof charterFindingSchema>;
+
+/** What the project's charter says, and whether it holds together (ADR-0045). */
+export const charterStatusSchema = z.object({
+  findings: z.array(charterFindingSchema),
+  /** Enough basis to propose activating the project. */
+  readyToActivate: z.boolean(),
+});
+export type CharterStatusWire = z.infer<typeof charterStatusSchema>;
+
 export const companionStateSchema = z.object({
   brief: projectBriefRowSchema.nullable(),
   brand: projectBrandRowSchema.nullable(),
@@ -339,12 +557,14 @@ export const channelStatusEntrySchema = z.object({
   status: z.enum(['ready', 'needs_setup']),
   note: z.string(),
 });
+export type ChannelStatusEntryWire = z.infer<typeof channelStatusEntrySchema>;
 
 export const cinemaMandateRowSchema = z.object({
   mandate: cinemaMandateSchema,
   status: z.enum(['open', 'resolved']),
   report: cinemaMandateReportSchema.optional(),
 });
+export type CinemaMandateRowWire = z.infer<typeof cinemaMandateRowSchema>;
 
 /** Scheduler two-signal heartbeat + typed jobs (ADR-0036). */
 export const schedulerStatusSchema = z.object({
@@ -382,6 +602,7 @@ export const systemHealthResultSchema = z.object({
     }),
   ),
 });
+export type SystemHealthResultWire = z.infer<typeof systemHealthResultSchema>;
 
 export const systemAuditFindingSchema = z.object({
   projectId: idSchema,
@@ -395,6 +616,7 @@ export const systemAuditResultSchema = z.object({
   findings: z.array(systemAuditFindingSchema),
   recorded: z.number().int().nonnegative(),
 });
+export type SystemAuditResultWire = z.infer<typeof systemAuditResultSchema>;
 
 /** Compression result (ADR-0033): the child continues; the parent is archived. */
 export const compressResultSchema = z.object({
@@ -468,6 +690,7 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
 
   'tasks.create': z.object({ taskId: idSchema }),
   'tasks.list': z.array(taskRowSchema),
+  'tasks.update': okTrueSchema,
   'tasks.complete': okTrueSchema,
 
   'projects.companion.get': companionStateSchema,
@@ -484,6 +707,37 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'projects.milestones.update': okTrueSchema,
   'projects.milestones.complete': okTrueSchema,
   'projects.timeline.list': sealedEventListSchema,
+  'projects.charter.status': charterStatusSchema, // ADR-0045
+  'projects.phases.list': z.array(phaseRowSchema),
+  'projects.setRoot': okTrueSchema,
+  'tasks.route': routeVerdictSchema,
+  'projects.hub.preview': hubPreviewSchema,
+  'projects.hub.publish': z.object({
+    slug: z.string(),
+    contentHash: z.string(),
+    url: z.string(),
+  }),
+  'projects.hub.revoke': okTrueSchema,
+  'projects.review': reviewPacketSchema,
+  'projects.review.run': z.object({ raised: z.boolean() }),
+  'projects.retro': retroPacketSchema,
+  'projects.retro.run': z.object({ lessons: z.array(z.string()) }),
+  'projects.retro.promote': z.object({ entryId: idSchema }),
+  'tasks.delegate': z.object({ laneId: idSchema, status: z.string() }),
+  'projects.phases.create': z.object({ phaseId: idSchema }),
+  'projects.phases.update': okTrueSchema,
+  'projects.activate': z.object({
+    phaseIds: z.array(idSchema),
+    milestoneIds: z.array(idSchema),
+    taskIds: z.array(idSchema),
+  }),
+
+  // the Inbox — the one triage queue (ADR-0044)
+  'inbox.capture': z.object({ itemId: idSchema }),
+  'inbox.list': z.array(inboxItemRowSchema),
+  // triage returns what the item BECAME, so the caller can navigate straight to it
+  'inbox.triage': z.object({ promotedKind: inboxKindSchema, promotedId: idSchema }),
+  'inbox.dismiss': okTrueSchema,
 
   'decisions.record': z.object({ decisionId: idSchema }),
   'decisions.list': z.array(decisionRowSchema),

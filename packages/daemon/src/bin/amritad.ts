@@ -47,7 +47,25 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
+/**
+ * Last-resort process guards. A stray rejection (a detached lane promise, a
+ * background probe) or a non-fatal throw must never take the daemon down with a
+ * raw stack. Logged VALUE-FREE (message only, never the error object, which could
+ * carry a secret) so the daemon keeps serving. A genuinely fatal listen/DB error
+ * still exits deliberately via its own path.
+ */
+function installProcessGuards(): void {
+  process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.message : 'non-error rejection';
+    process.stderr.write(`amritad: unhandled rejection (ignored, still serving): ${msg}\n`);
+  });
+  process.on('uncaughtException', (err) => {
+    process.stderr.write(`amritad: uncaught exception (ignored, still serving): ${err.message}\n`);
+  });
+}
+
 async function main(): Promise<void> {
+  installProcessGuards();
   // Machine-local secrets file (ADR-0024): fills unset env vars (provider keys,
   // telegram token) before anything reads them. Real process env always wins.
   loadSecretsEnv();
@@ -106,7 +124,23 @@ async function main(): Promise<void> {
 
   if (http) {
     const auth = resolveAuthToken(process.env.AMRITA_AUTH_TOKEN);
-    const running = await startHttpServer(kernel, { port, authToken: auth.token });
+    let running: Awaited<ReturnType<typeof startHttpServer>>;
+    try {
+      running = await startHttpServer(kernel, { port, authToken: auth.token });
+    } catch (err) {
+      // A bind failure is fatal but must be HONEST, not a raw stack trace. The
+      // common case (port already taken by a previous instance) gets a plain line.
+      const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
+      const why =
+        code === 'EADDRINUSE'
+          ? `port ${port} is already in use — another amritad is probably running`
+          : code === 'EACCES'
+            ? `not allowed to bind port ${port}`
+            : `could not start the HTTP server (${code})`;
+      process.stderr.write(`amritad: ${why}\n`);
+      kernel.close();
+      process.exit(1);
+    }
     process.stdout.write(`amritad http listening on http://${running.host}:${running.port}\n`);
     if (auth.source === 'generated') {
       // Printed once, to stdout only — never written to a file or an event.
@@ -137,4 +171,8 @@ async function main(): Promise<void> {
   createStdioServer(kernel, { onClose: () => kernel.close() });
 }
 
-void main();
+void main().catch((err) => {
+  // Last-resort: never let a startup failure surface as an unhandled rejection.
+  process.stderr.write(`amritad: fatal startup error: ${(err as Error).message}\n`);
+  process.exit(1);
+});

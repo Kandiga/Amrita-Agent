@@ -55,28 +55,54 @@ export function createNodeProcessRunner(opts: NodeProcessRunnerOptions = {}): Pr
         let settled = false;
         let killTimer: ReturnType<typeof setTimeout> | null = null;
 
+        // detached:true makes the child a process-GROUP leader so a timeout or a
+        // cancel can kill the whole tree (grandchildren too), not just the direct
+        // child. We handle the abort signal by hand (rather than spawn's `signal`
+        // option) so cancel gets the same SIGTERM→SIGKILL group escalation as a
+        // timeout — a child that ignores SIGTERM otherwise leaks forever.
         const child = spawn(spawnOpts.command, spawnOpts.args, {
           ...(spawnOpts.cwd ? { cwd: spawnOpts.cwd } : {}),
           env: spawnOpts.env, // already scrubbed by the caller
-          ...(spawnOpts.signal ? { signal: spawnOpts.signal } : {}),
+          detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
+
+        const killGroup = (sig: NodeJS.Signals): void => {
+          try {
+            if (child.pid) process.kill(-child.pid, sig);
+            else child.kill(sig);
+          } catch {
+            /* already exited */
+          }
+        };
+        const terminate = (): void => {
+          killGroup('SIGTERM');
+          if (!killTimer) {
+            killTimer = setTimeout(() => killGroup('SIGKILL'), SIGKILL_GRACE_MS);
+            killTimer.unref?.();
+          }
+        };
 
         const timer = spawnOpts.timeoutMs
           ? setTimeout(() => {
               timedOut = true;
-              child.kill('SIGTERM');
-              killTimer = setTimeout(() => child.kill('SIGKILL'), SIGKILL_GRACE_MS);
-              killTimer.unref?.();
+              terminate();
             }, spawnOpts.timeoutMs)
           : null;
         timer?.unref?.();
+
+        const onAbort = (): void => terminate();
+        if (spawnOpts.signal) {
+          if (spawnOpts.signal.aborted) terminate();
+          else spawnOpts.signal.addEventListener('abort', onAbort, { once: true });
+        }
 
         const finish = (result: ProcessResult): void => {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
           if (killTimer) clearTimeout(killTimer);
+          spawnOpts.signal?.removeEventListener('abort', onAbort);
           resolvePromise(result);
         };
 

@@ -1,5 +1,5 @@
 import type { LaneMandate, MergeReport, Usage } from '@amrita/protocol';
-import { type BudgetReason, evaluateBudget } from './budget.ts';
+import { BudgetGuard, type BudgetReason, evaluateBudget } from './budget.ts';
 import { scrubEnv } from './env.ts';
 import { createNodeProcessRunner, isWithinRoots } from './process-runner.ts';
 import {
@@ -47,6 +47,9 @@ export interface ClaudeCodeLaneRunnerOptions {
   allowedTools?: string[];
   /** Max assistant turns when the mandate omits a turn budget. */
   defaultMaxTurns?: number;
+  /** Wall-clock cap (minutes) applied when the mandate omits maxMinutes — a
+   *  child that stalls before any turn event must NOT run forever. */
+  defaultMaxMinutes?: number;
 }
 
 interface ParsedOutput {
@@ -89,6 +92,7 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
   private readonly outputFormat: 'text' | 'stream-json';
   private readonly allowedTools: string[];
   private readonly defaultMaxTurns: number;
+  private readonly defaultMaxMinutes: number;
 
   constructor(opts: ClaudeCodeLaneRunnerOptions = {}) {
     this.processRunner = opts.processRunner;
@@ -101,6 +105,7 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
     this.outputFormat = opts.outputFormat ?? (this.allowRealExecution ? 'stream-json' : 'text');
     this.allowedTools = opts.allowedTools ?? ['Read', 'Grep', 'Glob', 'LS'];
     this.defaultMaxTurns = opts.defaultMaxTurns ?? 12;
+    this.defaultMaxMinutes = opts.defaultMaxMinutes ?? 30;
   }
 
   private resolveRunner(): ProcessRunner {
@@ -164,6 +169,11 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
     let budgetReason: BudgetReason | null = null;
     const signal = ctx?.signal ? AbortSignal.any([ctx.signal, internal.signal]) : internal.signal;
 
+    // Live budget accounting: maxTurns was the only bound enforced DURING a run;
+    // maxTokens/maxUsd were checked only post-hoc, so a runaway lane could blow the
+    // dollar ceiling and only be told after the fact. Record each turn's usage (when
+    // the stream reports it) and abort the moment any bound is crossed.
+    const guard = new BudgetGuard(mandate.budget, this.clock);
     let buffer = '';
     let turns = 0;
     let streamUsage: Usage | undefined;
@@ -174,8 +184,14 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
       if (ev.note) ctx?.onProgress?.(ev.note);
       if (ev.turn) {
         turns += 1;
+        if (ev.usage) guard.recordTurn(ev.usage);
         if (turns > maxTurns && !budgetReason) {
           budgetReason = 'maxTurns';
+          internal.abort();
+        }
+        const crossed = guard.exceeded();
+        if (crossed && !budgetReason) {
+          budgetReason = crossed;
           internal.abort();
         }
       }
@@ -200,8 +216,10 @@ export class ClaudeCodeLaneRunner implements LaneRunner {
             if (note) ctx?.onProgress?.(note.slice(0, 200));
           };
 
-    const timeoutMs =
-      mandate.budget.maxMinutes !== undefined ? mandate.budget.maxMinutes * 60_000 : undefined;
+    // Always cap wall-clock: use the mandate's maxMinutes, else a default, so a
+    // child that stalls before ever emitting a turn cannot run (and hang the
+    // awaiting kernel) forever.
+    const timeoutMs = (mandate.budget.maxMinutes ?? this.defaultMaxMinutes) * 60_000;
     const startedAt = this.clock();
     let result: ProcessResult;
     try {

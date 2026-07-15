@@ -52,8 +52,11 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       const p = ev.payload;
       db.prepare(
         `INSERT INTO tasks
-           (id, project_id, conversation_id, source_message_id, lane_id, milestone_id, status, title, body, external_ref, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, project_id, conversation_id, source_message_id, lane_id, milestone_id,
+            status, title, body, external_ref,
+            owner, due_date, priority, order_key, blocked_reason, certainty, phase_id,
+            derived_from_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         p.taskId,
         p.projectId,
@@ -65,6 +68,14 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         p.title,
         p.body ?? null,
         p.externalRef ?? null,
+        p.owner ?? null,
+        p.dueDate ?? null,
+        p.priority ?? null,
+        p.orderKey ?? null,
+        p.blockedReason ?? null,
+        p.certainty ?? null,
+        p.phaseId ?? null,
+        JSON.stringify(p.derivedFrom ?? []),
         ev.ts,
         ev.ts,
       );
@@ -91,16 +102,55 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         sets.push('milestone_id = ?');
         vals.push(p.milestoneId);
       }
+      // board fields (ADR-0044): absent = leave alone, null = clear.
+      if (p.owner !== undefined) {
+        sets.push('owner = ?');
+        vals.push(p.owner);
+      }
+      if (p.dueDate !== undefined) {
+        sets.push('due_date = ?');
+        vals.push(p.dueDate);
+      }
+      if (p.priority !== undefined) {
+        sets.push('priority = ?');
+        vals.push(p.priority);
+      }
+      if (p.orderKey !== undefined) {
+        sets.push('order_key = ?');
+        vals.push(p.orderKey);
+      }
+      if (p.blockedReason !== undefined) {
+        sets.push('blocked_reason = ?');
+        vals.push(p.blockedReason);
+      }
+      if (p.certainty !== undefined) {
+        sets.push('certainty = ?');
+        vals.push(p.certainty);
+      }
+      if (p.phaseId !== undefined) {
+        // null unlinks; a non-null id is checked by the tasks_phase_upd trigger
+        sets.push('phase_id = ?');
+        vals.push(p.phaseId);
+      }
+      if (p.derivedFrom !== undefined) {
+        sets.push('derived_from_json = ?');
+        vals.push(JSON.stringify(p.derivedFrom));
+      }
+      // `previous` and `reason` live ONLY on the event: they are the history of the
+      // change, not the state of the row. The row says what IS; the log says why.
+      //
+      // ADR-0045: the optimistic-lock token. Deterministic under replay — it is
+      // simply how many updates this row has seen.
+      sets.push('version = version + 1');
       sets.push('updated_at = ?');
       vals.push(ev.ts, p.taskId);
       db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
       return;
     }
     case 'task.completed': {
-      db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(
-        ev.ts,
-        ev.payload.taskId,
-      );
+      db.prepare(
+        "UPDATE tasks SET status = 'done', version = version + 1, updated_at = ? WHERE id = ?",
+      ).run(ev.ts, ev.payload.taskId);
       return;
     }
 
@@ -110,15 +160,22 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       // Full-document upsert: replaying the log rebuilds the row verbatim.
       db.prepare(
         `INSERT INTO project_briefs
-           (project_id, goal, audience, success_criteria_json, scope_json, no_scope_json, source_message_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (project_id, goal, audience, success_criteria_json, scope_json, no_scope_json,
+            finish_line, constraints_json, decision_rights_json, certainty_json,
+            source_message_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(project_id) DO UPDATE SET
            goal = excluded.goal,
            audience = excluded.audience,
            success_criteria_json = excluded.success_criteria_json,
            scope_json = excluded.scope_json,
            no_scope_json = excluded.no_scope_json,
+           finish_line = excluded.finish_line,
+           constraints_json = excluded.constraints_json,
+           decision_rights_json = excluded.decision_rights_json,
+           certainty_json = excluded.certainty_json,
            source_message_id = excluded.source_message_id,
+           version = project_briefs.version + 1,
            updated_at = excluded.updated_at`,
       ).run(
         p.projectId,
@@ -127,6 +184,10 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         JSON.stringify(p.successCriteria),
         JSON.stringify(p.scope),
         JSON.stringify(p.noScope),
+        p.finishLine ?? null,
+        JSON.stringify(p.constraints ?? []),
+        JSON.stringify(p.decisionRights ?? []),
+        JSON.stringify(p.certainty ?? {}),
         p.sourceMessageId ?? null,
         ev.ts,
         ev.ts,
@@ -178,18 +239,137 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       return;
     }
 
+    // ── phases + activation (ADR-0045) ───────────────────────────────────────
+    case 'phase.created': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO phases (id, project_id, title, description, status, order_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        p.phaseId,
+        p.projectId,
+        p.title,
+        p.description ?? null,
+        p.status ?? 'planned',
+        p.orderKey ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    case 'phase.updated': {
+      const p = ev.payload;
+      const sets: string[] = [];
+      const vals: Bind[] = [];
+      if (p.title !== undefined) {
+        sets.push('title = ?');
+        vals.push(p.title);
+      }
+      if (p.description !== undefined) {
+        sets.push('description = ?');
+        vals.push(p.description);
+      }
+      if (p.status !== undefined) {
+        sets.push('status = ?');
+        vals.push(p.status);
+      }
+      if (p.orderKey !== undefined) {
+        sets.push('order_key = ?');
+        vals.push(p.orderKey);
+      }
+      sets.push('updated_at = ?');
+      vals.push(ev.ts, p.phaseId);
+      db.prepare(`UPDATE phases SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      return;
+    }
+    case 'publication.published': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO project_publications (project_id, public_slug, content_hash, published_at, revoked_at)
+         VALUES (?, ?, ?, ?, NULL)
+         ON CONFLICT(project_id) DO UPDATE SET
+           public_slug = excluded.public_slug,
+           content_hash = excluded.content_hash,
+           published_at = excluded.published_at,
+           revoked_at = NULL`,
+      ).run(p.projectId, p.publicSlug, p.contentHash, ev.ts);
+      return;
+    }
+    case 'publication.revoked': {
+      db.prepare('UPDATE project_publications SET revoked_at = ? WHERE project_id = ?').run(
+        ev.ts,
+        ev.payload.projectId,
+      );
+      return;
+    }
+    case 'project.activated': {
+      db.prepare('UPDATE projects SET activated_at = ?, updated_at = ? WHERE id = ?').run(
+        ev.ts,
+        ev.ts,
+        ev.payload.projectId,
+      );
+      return;
+    }
+
+    // ── the Inbox (ADR-0044) ─────────────────────────────────────────────────
+    case 'inbox.captured': {
+      const p = ev.payload;
+      db.prepare(
+        `INSERT INTO inbox_items
+           (id, project_id, conversation_id, source_message_id, origin, text,
+            suggested_kind, suggested_json, rationale, confidence, status,
+            created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      ).run(
+        p.itemId,
+        p.projectId,
+        p.conversationId ?? null,
+        p.sourceMessageId ?? null,
+        p.origin,
+        p.text,
+        p.suggestedKind ?? null,
+        p.suggested ? JSON.stringify(p.suggested) : null,
+        p.rationale ?? null,
+        p.confidence ?? null,
+        ev.ts,
+        ev.ts,
+      );
+      return;
+    }
+    // The CHECK (status != 'triaged' OR promoted_* IS NOT NULL) means a triage
+    // that failed to name what it became rolls the whole event back.
+    case 'inbox.triaged': {
+      const p = ev.payload;
+      db.prepare(
+        `UPDATE inbox_items
+            SET status = 'triaged', promoted_kind = ?, promoted_id = ?, updated_at = ?
+          WHERE id = ?`,
+      ).run(p.promotedKind, p.promotedId, ev.ts, p.itemId);
+      return;
+    }
+    case 'inbox.dismissed': {
+      const p = ev.payload;
+      db.prepare(
+        `UPDATE inbox_items
+            SET status = 'dismissed', dismiss_reason = ?, updated_at = ?
+          WHERE id = ?`,
+      ).run(p.reason, ev.ts, p.itemId);
+      return;
+    }
+
     case 'question.opened': {
       const p = ev.payload;
       db.prepare(
         `INSERT INTO open_questions
-           (id, project_id, conversation_id, source_message_id, text, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`,
+           (id, project_id, conversation_id, source_message_id, text, status, certainty, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       ).run(
         p.questionId,
         p.projectId,
         p.conversationId ?? null,
         p.sourceMessageId ?? null,
         p.text,
+        p.certainty ?? null,
         ev.ts,
         ev.ts,
       );
@@ -217,8 +397,8 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
       const p = ev.payload;
       db.prepare(
         `INSERT INTO risks
-           (id, project_id, conversation_id, source_message_id, text, severity, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+           (id, project_id, conversation_id, source_message_id, text, severity, status, certainty, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       ).run(
         p.riskId,
         p.projectId,
@@ -226,6 +406,7 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         p.sourceMessageId ?? null,
         p.text,
         p.severity ?? null,
+        p.certainty ?? null,
         ev.ts,
         ev.ts,
       );

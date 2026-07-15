@@ -3,10 +3,16 @@
 # ~/.amrita/secrets.env itself (ADR-0024), so no EnvironmentFile is needed.
 [Unit]
 Description=Amrita agent daemon (HTTP + Telegram)
+# Wants= makes the After= ordering real; After= alone is only advisory.
+Wants=network-online.target
 After=network-online.target
 
 [Service]
 ExecStart=__NODE__ __DIR__/packages/daemon/src/bin/amritad.ts --http --telegram --scheduler
+# Genuine readiness gate: the unit is not "started" until /health answers, so any
+# unit ordered After=amritad.service (the web edge) waits for a LISTENING daemon,
+# not merely a spawned process. Bounded, and never fails the unit on a slow start.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 40); do curl -sf http://127.0.0.1:7460/health >/dev/null 2>&1 && exit 0; sleep 0.5; done; exit 0'
 # Subscription-CLI providers (claude-code) spawn `claude` from PATH — systemd's
 # default PATH misses user bins, so the installer substitutes a full one here.
 Environment=PATH=__PATH__

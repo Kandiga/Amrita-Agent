@@ -1,12 +1,22 @@
 import { z } from 'zod';
 import {
   authModeSchema,
+  certaintySchema,
   connectorStatusSchema,
+  decisionRightSchema,
+  derivationSchema,
+  inboxConfidenceSchema,
+  inboxKindSchema,
+  inboxOriginSchema,
+  inboxStatusSchema,
   laneRowStatusSchema,
   memoryScopeSchema,
   milestoneStatusSchema,
+  phaseStatusSchema,
+  projectConstraintSchema,
   questionStatusSchema,
   riskSeveritySchema,
+  taskPrioritySchema,
   taskStatusSchema,
 } from './events.ts';
 import { idSchema, isoTimestampSchema } from './ids.ts';
@@ -28,6 +38,8 @@ export const projectRowSchema = z
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be kebab-case'),
     name: z.string().min(1).max(200),
     root: z.string().nullable(),
+    /** When the operator approved activation (ADR-0045). Null = not started yet. */
+    activatedAt: isoTimestampSchema.nullable(),
     createdAt: isoTimestampSchema,
     updatedAt: isoTimestampSchema,
   })
@@ -98,6 +110,21 @@ export const taskRowSchema = z.object({
   status: taskStatusSchema,
   title: z.string(),
   body: z.string().nullable(),
+  // the board (ADR-0044). `blockedReason` non-null IS the "Waiting" column —
+  // the status enum is deliberately not widened (see migration 0012).
+  owner: z.string().nullable(),
+  dueDate: z.string().nullable(),
+  priority: taskPrioritySchema.nullable(),
+  orderKey: z.string().nullable(),
+  blockedReason: z.string().nullable(),
+  /** Fact vs hypothesis (ADR-0045). `inferred` = Amrita worked it out. */
+  certainty: certaintySchema.nullable(),
+  /** The project phase this task lives in (ADR-0045) — where the board's columns come from. */
+  phaseId: idSchema.nullable(),
+  /** Optimistic-lock token (ADR-0045). Monotonic; a timestamp would collide. */
+  version: z.number().int().nonnegative(),
+  /** Why this card exists (ADR-0045) — the goal/constraint/decision it came from. */
+  derivedFrom: z.array(derivationSchema),
   externalRef: z.string().nullable(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
@@ -135,6 +162,15 @@ export const projectBriefRowSchema = z.object({
   successCriteria: z.array(z.string()),
   scope: z.array(z.string()),
   noScope: z.array(z.string()),
+  // the charter (ADR-0044) — the money, dates and decision rights a plan must
+  // live within, plus an explicit definition of done
+  finishLine: z.string().nullable(),
+  constraints: z.array(projectConstraintSchema),
+  decisionRights: z.array(decisionRightSchema),
+  /** Per-field certainty (ADR-0045) — what the UI marks as certain / inferred. */
+  certainty: z.record(z.string(), certaintySchema),
+  /** Optimistic-lock token (ADR-0045). */
+  version: z.number().int().nonnegative(),
   sourceMessageId: idSchema.nullable(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
@@ -151,6 +187,7 @@ export const openQuestionRowSchema = z.object({
   resolution: z.string().nullable(),
   resolvedByDecisionId: idSchema.nullable(),
   dropReason: z.string().nullable(),
+  certainty: certaintySchema.nullable(), // ADR-0045
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });
@@ -160,6 +197,29 @@ export const riskRowSchema = openQuestionRowSchema.extend({
   severity: riskSeveritySchema.nullable(),
 });
 export type RiskRowWire = z.infer<typeof riskRowSchema>;
+
+/** A live publication of the public hub (ADR-0045). */
+export const publicationRowSchema = z.object({
+  projectId: idSchema,
+  publicSlug: z.string(),
+  contentHash: z.string(),
+  publishedAt: isoTimestampSchema,
+  revokedAt: isoTimestampSchema.nullable(),
+});
+export type PublicationRowWire = z.infer<typeof publicationRowSchema>;
+
+/** A phase — the project's own shape (ADR-0045). */
+export const phaseRowSchema = z.object({
+  id: idSchema,
+  projectId: idSchema,
+  title: z.string(),
+  description: z.string().nullable(),
+  status: phaseStatusSchema,
+  orderKey: z.string().nullable(),
+  createdAt: isoTimestampSchema,
+  updatedAt: isoTimestampSchema,
+});
+export type PhaseRowWire = z.infer<typeof phaseRowSchema>;
 
 export const milestoneRowSchema = z.object({
   id: idSchema,
@@ -196,6 +256,35 @@ export const previewApprovalRowSchema = z.object({
   approvedAt: isoTimestampSchema,
 });
 export type PreviewApprovalRowWire = z.infer<typeof previewApprovalRowSchema>;
+
+/**
+ * An Inbox item (ADR-0044) — a proposal awaiting triage.
+ *
+ * `promotedKind`/`promotedId` are non-null exactly when `status === 'triaged'`,
+ * and `dismissReason` exactly when `status === 'dismissed'`. Both are enforced by
+ * CHECK constraints in the store, so an item can never leave the queue without
+ * saying what became of it.
+ */
+export const inboxItemRowSchema = z.object({
+  id: idSchema,
+  projectId: idSchema,
+  conversationId: idSchema.nullable(),
+  sourceMessageId: idSchema.nullable(),
+  origin: inboxOriginSchema,
+  text: z.string(),
+  suggestedKind: inboxKindSchema.nullable(),
+  /** The proposed command payload, as stored. Validated at triage, not at capture. */
+  suggested: z.record(z.string(), z.unknown()).nullable(),
+  rationale: z.string().nullable(),
+  confidence: inboxConfidenceSchema.nullable(),
+  status: inboxStatusSchema,
+  promotedKind: inboxKindSchema.nullable(),
+  promotedId: idSchema.nullable(),
+  dismissReason: z.string().nullable(),
+  createdAt: isoTimestampSchema,
+  updatedAt: isoTimestampSchema,
+});
+export type InboxItemRowWire = z.infer<typeof inboxItemRowSchema>;
 
 export const connectorRowSchema = z.object({
   id: idSchema,

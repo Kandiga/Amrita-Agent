@@ -1,0 +1,12 @@
+-- 0009 (ADR-0044): restore `idx_events_project_ts`, silently lost in 0007.
+--
+-- 0004_companion.sql:139 created THREE indexes on `events`. 0007_whatsapp_channel
+-- rebuilt the table to widen the `channel` CHECK and recreated only two of them —
+-- its own comment ("both indexes are preserved") was already wrong. Since 0007,
+-- `listProjectEvents` (WHERE project_id = ? ORDER BY ts DESC) — the query behind
+-- the project timeline, the weekly review, the stakeholder hub and the retro —
+-- has been a full table scan.
+--
+-- IF NOT EXISTS: a database created before 0007 that never rebuilt `events` may
+-- still carry the index, so this must be idempotent.
+CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project_id, ts);

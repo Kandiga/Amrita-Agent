@@ -48,16 +48,29 @@ const MIME = {
 };
 
 /** Routes forwarded to the daemon — everything else is static. */
-const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes'];
+const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes', '/p'];
 
 function proxyHttp(req, res) {
+  // This process is the internet-facing edge; the daemon behind it is loopback.
+  // Append the TRUE peer as the rightmost X-Forwarded-For hop so the daemon's
+  // public-hub rate limiter can key on the real visitor instead of 127.0.0.1.
+  // Appending (not replacing) means a client that pre-seeds the header cannot
+  // forge the rightmost entry — the one the daemon trusts.
+  const peer = req.socket.remoteAddress ?? '';
+  const priorXff = req.headers['x-forwarded-for'];
+  const forwardedFor = priorXff ? `${priorXff}, ${peer}` : peer;
+
   const upstream = httpRequest(
     {
       host: DAEMON_HOST,
       port: DAEMON_PORT,
       method: req.method,
       path: req.url,
-      headers: { ...req.headers, host: `${DAEMON_HOST}:${DAEMON_PORT}` },
+      headers: {
+        ...req.headers,
+        host: `${DAEMON_HOST}:${DAEMON_PORT}`,
+        'x-forwarded-for': forwardedFor,
+      },
     },
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
@@ -83,16 +96,31 @@ function serveStatic(req, res) {
     'content-type': MIME[extname(file)] ?? 'application/octet-stream',
     'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=3600',
   });
-  createReadStream(file).pipe(res);
+  // pipe() does NOT forward the source's 'error' event, so a read that fails
+  // mid-stream (an unlink race during a redeploy, an I/O error) would otherwise
+  // throw unhandled and take the whole edge server down. Handle it explicitly.
+  const stream = createReadStream(file);
+  stream.on('error', () => {
+    if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('read error');
+  });
+  stream.pipe(res);
 }
 
 const server = createServer((req, res) => {
-  const path = (req.url ?? '/').split('?')[0];
-  if (PROXY_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) {
-    proxyHttp(req, res);
-    return;
+  // One bad request must never take down the internet-facing edge. Any throw in
+  // routing/serving becomes a clean 500 instead of an uncaught exception.
+  try {
+    const path = (req.url ?? '/').split('?')[0];
+    if (PROXY_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) {
+      proxyHttp(req, res);
+      return;
+    }
+    serveStatic(req, res);
+  } catch {
+    if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('server error');
   }
-  serveStatic(req, res);
 });
 
 // WS passthrough for /events/ws: replay the original handshake to the daemon
@@ -117,6 +145,13 @@ server.on('upgrade', (req, socket, head) => {
   };
   upstream.on('error', drop);
   socket.on('error', drop);
+});
+
+// A bind failure (port already taken, no permission) must be an honest one-liner
+// and a clean exit, not a raw uncaught stack from the internet-facing process.
+server.on('error', (e) => {
+  process.stderr.write(`amrita-web: cannot bind ${PORT}: ${e.code ?? e.message}\n`);
+  process.exit(1);
 });
 
 server.listen(PORT, '0.0.0.0', () => {

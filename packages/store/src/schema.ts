@@ -1,14 +1,21 @@
 import {
   authModeSchema,
+  certaintySchema,
   connectorStatusSchema,
   eventChannelSchema,
   eventOriginSchema,
+  inboxConfidenceSchema,
+  inboxKindSchema,
+  inboxOriginSchema,
+  inboxStatusSchema,
   laneRowStatusSchema,
   memoryScopeSchema,
   messageRoleSchema,
   milestoneStatusSchema,
+  phaseStatusSchema,
   questionStatusSchema,
   riskSeveritySchema,
+  taskPrioritySchema,
   taskStatusSchema,
 } from '@amrita/protocol';
 import { sql } from 'drizzle-orm';
@@ -45,9 +52,31 @@ export const projects = sqliteTable('projects', {
   slug: text('slug').notNull().unique(),
   name: text('name').notNull(),
   root: text('root'),
+  /** 0014 (ADR-0045): null = a conversation, not yet a plan. */
+  activatedAt: text('activated_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+/** 0014 (ADR-0045): phases — the project's own shape, which the board reads. */
+export const phases = sqliteTable(
+  'phases',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status', { enum: columnEnum(phaseStatusSchema) })
+      .notNull()
+      .default('planned'),
+    orderKey: text('order_key'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({ byProject: index('idx_phases_project').on(t.projectId, t.status, t.orderKey) }),
+);
 
 export const conversations = sqliteTable(
   'conversations',
@@ -100,6 +129,10 @@ export const events = sqliteTable(
     bySeq: unique('uq_events_conversation_seq').on(t.conversationId, t.seq),
     byConversationSeq: index('idx_events_conversation_seq').on(t.conversationId, t.seq),
     byType: index('idx_events_type').on(t.type),
+    // The project timeline read (`listProjectEvents`). Created in 0004, silently
+    // dropped by the 0007 table rebuild, restored in 0009 (ADR-0044) — and never
+    // declared here until now, so the mirror was out of lock-step with the SQL.
+    byProjectTs: index('idx_events_project_ts').on(t.projectId, t.ts),
   }),
 );
 
@@ -144,10 +177,23 @@ export const tasks = sqliteTable(
     milestoneId: text('milestone_id'),
     // 0006: external provenance, e.g. `github:owner/repo#123` — see ADR-0022.
     externalRef: text('external_ref'),
+    // 0012 (ADR-0044): the board. `blockedReason` non-null IS the "Waiting"
+    // column — the status enum is NOT widened (SQLite cannot alter a CHECK).
+    owner: text('owner'),
+    dueDate: text('due_date'),
+    priority: text('priority', { enum: columnEnum(taskPrioritySchema) }),
+    /** Lexicographic fractional index: a drag is ONE event touching ONE row. */
+    orderKey: text('order_key'),
+    blockedReason: text('blocked_reason'),
+    // 0013 (ADR-0045): fact vs hypothesis.
+    certainty: text('certainty', { enum: columnEnum(certaintySchema) }),
+    // 0014 (ADR-0045): the phase this task lives in; trigger-enforced, no FK clause.
+    phaseId: text('phase_id'),
   },
   (t) => ({
     byProjectStatus: index('idx_tasks_project_status').on(t.projectId, t.status),
     byMilestone: index('idx_tasks_milestone').on(t.milestoneId),
+    byBoard: index('idx_tasks_board').on(t.projectId, t.status, t.orderKey),
   }),
 );
 
@@ -293,6 +339,10 @@ export const projectBriefs = sqliteTable('project_briefs', {
   successCriteriaJson: text('success_criteria_json').notNull().default('[]'),
   scopeJson: text('scope_json').notNull().default('[]'),
   noScopeJson: text('no_scope_json').notNull().default('[]'),
+  // the charter (ADR-0044) — 0011
+  finishLine: text('finish_line'),
+  constraintsJson: text('constraints_json').notNull().default('[]'),
+  decisionRightsJson: text('decision_rights_json').notNull().default('[]'),
   sourceMessageId: text('source_message_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -400,6 +450,53 @@ export const previewApprovals = sqliteTable(
   },
   (t) => ({ pk: primaryKey({ columns: [t.projectId, t.previewId] }) }),
 );
+
+// ── 0010: the Inbox — the one triage queue (ADR-0044) ────────────────────────
+// The two "no silent exit" CHECKs (triaged ⇒ promoted_*, dismissed ⇒ reason)
+// live in the SQL migration; Drizzle mirrors the shape, the migration is truth.
+export const inboxItems = sqliteTable(
+  'inbox_items',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id').references(() => conversations.id, {
+      onDelete: 'set null',
+    }),
+    sourceMessageId: text('source_message_id').references(() => messages.id, {
+      onDelete: 'set null',
+    }),
+    origin: text('origin', { enum: columnEnum(inboxOriginSchema) }).notNull(),
+    text: text('text').notNull(),
+    suggestedKind: text('suggested_kind', { enum: columnEnum(inboxKindSchema) }),
+    suggestedJson: text('suggested_json'),
+    rationale: text('rationale'),
+    confidence: text('confidence', { enum: columnEnum(inboxConfidenceSchema) }),
+    status: text('status', { enum: columnEnum(inboxStatusSchema) })
+      .notNull()
+      .default('pending'),
+    promotedKind: text('promoted_kind', { enum: columnEnum(inboxKindSchema) }),
+    promotedId: text('promoted_id'),
+    dismissReason: text('dismiss_reason'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    byProjectStatus: index('idx_inbox_project_status').on(t.projectId, t.status, t.createdAt),
+  }),
+);
+
+/** 0017 (ADR-0045): the public hub. The BYTES are on disk; this is the fact. */
+export const projectPublications = sqliteTable('project_publications', {
+  projectId: text('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  publicSlug: text('public_slug').notNull().unique(),
+  contentHash: text('content_hash').notNull(),
+  publishedAt: text('published_at').notNull(),
+  revokedAt: text('revoked_at'),
+});
 
 // ── 0003: channel pairings (links external identities → project/conversation) ──
 export const channelPairings = sqliteTable(

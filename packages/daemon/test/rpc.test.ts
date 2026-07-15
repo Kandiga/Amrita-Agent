@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { MIGRATIONS } from '@amrita/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AmritaKernel } from '../src/kernel.ts';
 import { METHOD_NAMES, dispatch, isErrorResponse } from '../src/rpc.ts';
@@ -27,7 +28,7 @@ describe('rpc dispatch', () => {
     expect(await call('ping')).toEqual({ pong: true });
     const h = (await call('health')) as { ok: boolean; schemaVersion: number };
     expect(h.ok).toBe(true);
-    expect(h.schemaVersion).toBe(8);
+    expect(h.schemaVersion).toBe(MIGRATIONS.length - 1);
   });
 
   it('rejects an unknown method', async () => {

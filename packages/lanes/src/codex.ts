@@ -1,5 +1,5 @@
 import type { LaneMandate, MergeReport, Usage } from '@amrita/protocol';
-import { type BudgetReason, evaluateBudget } from './budget.ts';
+import { BudgetGuard, type BudgetReason, evaluateBudget } from './budget.ts';
 import { scrubEnv } from './env.ts';
 import { createNodeProcessRunner, isWithinRoots } from './process-runner.ts';
 import {
@@ -42,6 +42,8 @@ export interface CodexLaneRunnerOptions {
   allowedRoots?: string[];
   /** Max turns when the mandate omits a turn budget. */
   defaultMaxTurns?: number;
+  /** Wall-clock cap (minutes) when the mandate omits maxMinutes — no infinite hang. */
+  defaultMaxMinutes?: number;
 }
 
 interface CodexItem {
@@ -68,6 +70,7 @@ export class CodexLaneRunner implements LaneRunner {
   private readonly clock: () => number;
   private readonly allowedRoots: string[];
   private readonly defaultMaxTurns: number;
+  private readonly defaultMaxMinutes: number;
 
   constructor(opts: CodexLaneRunnerOptions = {}) {
     this.processRunner = opts.processRunner;
@@ -78,6 +81,7 @@ export class CodexLaneRunner implements LaneRunner {
     this.clock = opts.clock ?? Date.now;
     this.allowedRoots = opts.allowedRoots ?? [];
     this.defaultMaxTurns = opts.defaultMaxTurns ?? 12;
+    this.defaultMaxMinutes = opts.defaultMaxMinutes ?? 30;
   }
 
   private resolveRunner(): ProcessRunner {
@@ -129,6 +133,8 @@ export class CodexLaneRunner implements LaneRunner {
 
     const internal = new AbortController();
     let budgetReason: BudgetReason | null = null;
+    // Live token/usd enforcement (was post-hoc only): abort the moment a bound is crossed.
+    const guard = new BudgetGuard(mandate.budget, this.clock);
     const signal = ctx?.signal ? AbortSignal.any([ctx.signal, internal.signal]) : internal.signal;
 
     let buffer = '';
@@ -172,6 +178,12 @@ export class CodexLaneRunner implements LaneRunner {
               inputTokens: ev.usage.input_tokens ?? 0,
               outputTokens: ev.usage.output_tokens ?? 0,
             };
+            guard.recordTurn(usage);
+            const crossed = guard.exceeded();
+            if (crossed && !budgetReason) {
+              budgetReason = crossed;
+              internal.abort();
+            }
           }
           break;
         case 'turn.failed':
@@ -192,8 +204,8 @@ export class CodexLaneRunner implements LaneRunner {
       }
     };
 
-    const timeoutMs =
-      mandate.budget.maxMinutes !== undefined ? mandate.budget.maxMinutes * 60_000 : undefined;
+    // Always cap wall-clock so a stalled child cannot run forever.
+    const timeoutMs = (mandate.budget.maxMinutes ?? this.defaultMaxMinutes) * 60_000;
     const startedAt = this.clock();
     let result: ProcessResult;
     try {

@@ -3,6 +3,9 @@
 # install time. Holds no secret; the daemon's bearer token gates everything.
 [Unit]
 Description=Amrita web preview (static + daemon proxy)
+# Wants= makes the After= ordering real. amritad's ExecStartPost health gate means
+# this only starts once the daemon is actually listening, not merely spawned.
+Wants=network-online.target
 After=network-online.target amritad.service
 
 [Service]

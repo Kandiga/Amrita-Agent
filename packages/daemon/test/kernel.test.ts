@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MIGRATIONS } from '@amrita/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AmritaKernel } from '../src/kernel.ts';
 
@@ -26,7 +27,7 @@ describe('AmritaKernel', () => {
     const h = k.health();
     expect(h.ok).toBe(true);
     expect(h.name).toBe('amritad');
-    expect(h.schemaVersion).toBe(8); // 0000..0008 applied
+    expect(h.schemaVersion).toBe(MIGRATIONS.length - 1); // every migration applied
     expect(h.counts.projects).toBe(0);
     k.close();
     rmSync(dir, { recursive: true, force: true });

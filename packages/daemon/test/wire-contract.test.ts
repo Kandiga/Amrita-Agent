@@ -72,8 +72,20 @@ describe('wire-contract round-trip (ADR-0032)', () => {
   it('every coverable method round-trips through its result contract', async () => {
     vi.stubEnv('GITHUB_TOKEN', 'ghp_clearly_fake_test_fixture');
 
-    // Excluded: module-owned opaque proxies that need the live cinema bridge.
-    const excluded = new Set(['cinema.chat', 'cinema.assetAnalysis', 'cinema.providers']);
+    // Excluded: module-owned opaque proxies that need the live cinema bridge, plus
+    // the two ADR-0045 verbs that need a REAL allowed root and a REAL coding runtime
+    // to succeed — faking either here would prove nothing. Both round-trip against a
+    // real kernel with a fake runner in `delegation.test.ts`.
+    const excluded = new Set([
+      'cinema.chat',
+      'cinema.assetAnalysis',
+      'cinema.providers',
+      'projects.setRoot',
+      'tasks.delegate',
+      // publish/revoke are approval-gated and write real bytes — exercised in hub.test.ts
+      'projects.hub.publish',
+      'projects.hub.revoke',
+    ]);
     const exercised = new Set<string>(excluded);
     const run = async (method: string, params?: unknown): Promise<unknown> => {
       exercised.add(method);
@@ -100,6 +112,17 @@ describe('wire-contract round-trip (ADR-0032)', () => {
       taskId: string;
     };
     await run('tasks.list', { projectId: p.id });
+    // ADR-0044: the board write path (dormant until now)
+    await run('tasks.update', {
+      ...ctx,
+      taskId: t.taskId,
+      status: 'later',
+      owner: 'Dana',
+      dueDate: '2026-09-01',
+      priority: 'high',
+      orderKey: 'a0',
+      blockedReason: 'waiting on the permit',
+    });
     await run('tasks.complete', { ...ctx, taskId: t.taskId });
 
     await run('projects.brief.update', { ...ctx, goal: 'close the wire' });
@@ -140,6 +163,49 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     await run('projects.milestones.complete', { ...ctx, milestoneId: m.milestoneId });
     await run('projects.companion.get', { projectId: p.id });
     await run('projects.timeline.list', { projectId: p.id });
+    await run('projects.charter.status', { projectId: p.id }); // ADR-0045
+    // phases + activation (ADR-0045). Activation needs a charter with a basis.
+    await run('projects.brief.update', {
+      ...ctx,
+      goal: 'close the wire',
+      finishLine: 'the contract holds',
+      constraints: [{ kind: 'budget', text: 'no overrun', hard: true }],
+    });
+    const ph = (await run('projects.phases.create', { ...ctx, title: 'Phase one' })) as {
+      phaseId: string;
+    };
+    await run('projects.phases.update', { ...ctx, phaseId: ph.phaseId, status: 'active' });
+    await run('projects.phases.list', { projectId: p.id });
+    await run('projects.activate', { ...ctx, phases: [{ title: 'Only phase' }] });
+    // ADR-0045: routes + root binding. Delegation itself needs a real runtime, so
+    // it is exercised in delegation.test.ts against a fake runner.
+    await run('tasks.route', { taskId: t.taskId });
+    await run('projects.hub.preview', { projectId: p.id });
+    await run('projects.retro', { projectId: p.id });
+    await run('projects.retro.run', { ...ctx });
+    await run('projects.retro.promote', { ...ctx, lesson: 'wire contracts are worth it' });
+    await run('projects.review', { projectId: p.id });
+    await run('projects.review.run', { projectId: p.id });
+
+    // the Inbox — capture, triage into a real aggregate, dismiss (ADR-0044)
+    const i1 = (await run('inbox.capture', {
+      ...ctx,
+      origin: 'agent',
+      text: 'the deposit is due March 3rd',
+      suggestedKind: 'task',
+      suggested: { title: 'Pay the deposit' },
+      rationale: 'a date was committed to',
+      confidence: 'high',
+    })) as { itemId: string };
+    await run('inbox.list', { projectId: p.id, status: 'pending' });
+    await run('inbox.triage', {
+      ...ctx,
+      itemId: i1.itemId,
+      kind: 'task',
+      title: 'Pay the deposit',
+    });
+    const i2 = (await run('inbox.capture', { ...ctx, text: 'noise' })) as { itemId: string };
+    await run('inbox.dismiss', { ...ctx, itemId: i2.itemId, reason: 'not relevant' });
 
     await run('decisions.record', { ...ctx, text: 'wire contracts are law' });
     await run('decisions.list', { projectId: p.id });

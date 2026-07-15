@@ -37,17 +37,122 @@ export type RuntimeVia = z.infer<typeof runtimeViaSchema>;
 export const taskStatusSchema = z.enum(['now', 'later', 'done', 'dropped']);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
+/**
+ * Task priority (ADR-0044). Deliberately three levels and no score: the project
+ * already refuses to invent a risk-scoring system (ADR-0018), and a board does
+ * not need one either.
+ */
+export const taskPrioritySchema = z.enum(['low', 'normal', 'high']);
+export type TaskPriority = z.infer<typeof taskPrioritySchema>;
+
 export const memoryScopeSchema = z.enum(['user', 'project']);
 export type MemoryScope = z.infer<typeof memoryScopeSchema>;
 
 export const milestoneStatusSchema = z.enum(['planned', 'active', 'done', 'dropped']);
 export type MilestoneStatus = z.infer<typeof milestoneStatusSchema>;
 
+/**
+ * A phase (ADR-0045) — the project's OWN shape, which the board's columns come
+ * from. Not a milestone: a milestone is a dated outcome you hit or miss; a phase
+ * is a stretch of work that tasks live inside.
+ *
+ * "כך הלוח לא מופיע מתוך תבנית מוכנה. הוא נולד מההקשר הספציפי."
+ */
+export const phaseStatusSchema = z.enum(['planned', 'active', 'done', 'dropped']);
+export type PhaseStatus = z.infer<typeof phaseStatusSchema>;
+
 export const questionStatusSchema = z.enum(['open', 'resolved', 'dropped']);
 export type QuestionStatus = z.infer<typeof questionStatusSchema>;
 
 export const riskSeveritySchema = z.enum(['low', 'medium', 'high']);
 export type RiskSeverity = z.infer<typeof riskSeveritySchema>;
+
+// ── the Inbox (ADR-0044) — the one triage queue ──────────────────────────────
+// Everything an agent, a lane or a human captures lands here as a PROPOSAL and
+// is promoted into a real aggregate only by an explicit triage. Nothing becomes
+// silent, untyped project truth.
+
+/** Who raised the item. `agent` = the Scribe; `lane` = a merge report. */
+export const inboxOriginSchema = z.enum(['user', 'agent', 'lane', 'system']);
+export type InboxOrigin = z.infer<typeof inboxOriginSchema>;
+
+/** What an inbox item can be promoted INTO — every one an existing aggregate. */
+export const inboxKindSchema = z.enum([
+  'task',
+  'decision',
+  'risk',
+  'question',
+  'milestone',
+  'memory',
+]);
+export type InboxKind = z.infer<typeof inboxKindSchema>;
+
+export const inboxStatusSchema = z.enum(['pending', 'triaged', 'dismissed']);
+export type InboxStatus = z.infer<typeof inboxStatusSchema>;
+
+export const inboxConfidenceSchema = z.enum(['low', 'medium', 'high']);
+export type InboxConfidence = z.infer<typeof inboxConfidenceSchema>;
+
+/**
+ * How sure are we of a fact (ADR-0045)?
+ *
+ *   stated     — the operator said it. The strongest truth this system has.
+ *   documented — it came from a document or an external system.
+ *   inferred   — Amrita worked it out. A HYPOTHESIS until a human confirms it.
+ *
+ * "כך אמריטה לעולם לא תערבב עובדה עם השערה."
+ */
+export const certaintySchema = z.enum(['stated', 'documented', 'inferred']);
+export type Certainty = z.infer<typeof certaintySchema>;
+
+// ── the charter (ADR-0044) — "constraints as fuel" ───────────────────────────
+
+export const constraintKindSchema = z.enum(['budget', 'date', 'resource', 'policy']);
+export type ConstraintKind = z.infer<typeof constraintKindSchema>;
+
+/** A constraint the project must live within. `hard` = fixed, not negotiable. */
+export const projectConstraintSchema = z
+  .object({
+    kind: constraintKindSchema,
+    text: z.string().min(1).max(300),
+    hard: z.boolean(),
+  })
+  .strict();
+export type ProjectConstraint = z.infer<typeof projectConstraintSchema>;
+
+/**
+ * Where a task CAME FROM (ADR-0045) — the answer to "why does this card exist?".
+ *
+ * "פתיחת כרטיס תציג לא רק פרטים, אלא גם למה הוא קיים, מאיזו מטרה, מגבלה,
+ *  החלטה או מסמך הוא נגזר."
+ */
+export const derivationKindSchema = z.enum([
+  'goal',
+  'constraint',
+  'decision',
+  'milestone',
+  'risk',
+  'question',
+  'source',
+]);
+export type DerivationKind = z.infer<typeof derivationKindSchema>;
+
+export const derivationSchema = z
+  .object({
+    kind: derivationKindSchema,
+    /** The row this came from, when it is a row (a decision id, a risk id…). */
+    ref: idSchema.optional(),
+    /** What it said — so the card can explain itself without a second lookup. */
+    label: z.string().min(1).max(300),
+  })
+  .strict();
+export type Derivation = z.infer<typeof derivationSchema>;
+
+/** Who approves what. Free text: there is no user/contact table (see ADR-0044). */
+export const decisionRightSchema = z
+  .object({ area: z.string().min(1).max(200), approver: z.string().min(1).max(200) })
+  .strict();
+export type DecisionRight = z.infer<typeof decisionRightSchema>;
 
 export const laneRowStatusSchema = z.enum([
   'spawned',
@@ -256,6 +361,20 @@ export const eventPayloads = {
       title: z.string().min(1),
       status: taskStatusSchema.optional(),
       body: z.string().max(4000).optional(),
+      // board fields (ADR-0044). All optional, so every pre-0044 `task.created`
+      // event still parses and replays to an identical row.
+      owner: z.string().min(1).max(120).optional(),
+      dueDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+      priority: taskPrioritySchema.optional(),
+      orderKey: z.string().min(1).max(64).optional(),
+      blockedReason: z.string().min(1).max(300).optional(),
+      certainty: certaintySchema.optional(), // ADR-0045
+      phaseId: idSchema.optional(), // ADR-0045
+      /** Why this card exists (ADR-0045). */
+      derivedFrom: z.array(derivationSchema).max(6).optional(),
       // provenance to an external system, e.g. `github:owner/repo#123` (ADR-0022)
       externalRef: z.string().min(1).max(200).optional(),
     })
@@ -268,6 +387,40 @@ export const eventPayloads = {
       body: z.string().optional(),
       // nullable so a task can be UNLINKED from a milestone (ADR-0018)
       milestoneId: idSchema.nullable().optional(),
+      // board fields (ADR-0044). Each is NULLABLE as well as optional:
+      //   absent  = leave it alone
+      //   null    = CLEAR it (un-assign the owner, unblock the task)
+      owner: z.string().min(1).max(120).nullable().optional(),
+      dueDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .nullable()
+        .optional(),
+      priority: taskPrioritySchema.nullable().optional(),
+      orderKey: z.string().min(1).max(64).optional(),
+      blockedReason: z.string().min(1).max(300).nullable().optional(),
+      certainty: certaintySchema.nullable().optional(), // ADR-0045
+      phaseId: idSchema.nullable().optional(), // ADR-0045 — null unlinks
+      derivedFrom: z.array(derivationSchema).max(6).optional(),
+      /**
+       * ADR-0045 — "אירוע שמספר מי הזיז, מאיזה מצב לאיזה מצב, מתי ולמה".
+       *
+       * `origin` already says WHO and `ts` says WHEN. These two say FROM WHAT and
+       * WHY. `previous` is filled by the store from the row as it was, so the event
+       * is self-describing: you can read the history without replaying it.
+       */
+      previous: z
+        .object({
+          status: taskStatusSchema.optional(),
+          phaseId: idSchema.nullable().optional(),
+          owner: z.string().nullable().optional(),
+          priority: taskPrioritySchema.nullable().optional(),
+          blockedReason: z.string().nullable().optional(),
+          milestoneId: idSchema.nullable().optional(),
+        })
+        .strict()
+        .optional(),
+      reason: z.string().min(1).max(300).optional(),
     })
     .strict(),
   'task.completed': z.object({ taskId: idSchema }).strict(),
@@ -282,6 +435,13 @@ export const eventPayloads = {
       successCriteria: z.array(z.string().min(1).max(500)).max(20),
       scope: z.array(z.string().min(1).max(500)).max(50),
       noScope: z.array(z.string().min(1).max(500)).max(50),
+      // The charter (ADR-0044). All optional, so every pre-0044 `brief.updated`
+      // event still parses and replays to an identical row.
+      finishLine: z.string().min(1).max(500).optional(),
+      constraints: z.array(projectConstraintSchema).max(20).optional(),
+      decisionRights: z.array(decisionRightSchema).max(20).optional(),
+      /** Per-field certainty, e.g. `{goal:'stated', finishLine:'inferred'}` (ADR-0045). */
+      certainty: z.record(z.string(), certaintySchema).optional(),
       sourceMessageId: idSchema.optional(),
     })
     .strict(),
@@ -292,6 +452,7 @@ export const eventPayloads = {
       conversationId: idSchema.optional(),
       sourceMessageId: idSchema.optional(),
       text: z.string().min(1).max(2000),
+      certainty: certaintySchema.optional(), // ADR-0045
     })
     .strict(),
   // Resolving needs evidence: a note or a decision link — never a silent close.
@@ -316,6 +477,7 @@ export const eventPayloads = {
       sourceMessageId: idSchema.optional(),
       text: z.string().min(1).max(2000),
       severity: riskSeveritySchema.optional(),
+      certainty: certaintySchema.optional(), // ADR-0045
     })
     .strict(),
   'risk.resolved': z
@@ -356,6 +518,87 @@ export const eventPayloads = {
     })
     .strict(),
   'milestone.completed': z.object({ milestoneId: idSchema }).strict(),
+
+  // ── phases + activation (ADR-0045) ────────────────────────────────────────
+  'phase.created': z
+    .object({
+      phaseId: idSchema,
+      projectId: idSchema,
+      title: z.string().min(1).max(120),
+      description: z.string().max(1000).optional(),
+      status: phaseStatusSchema.optional(),
+      orderKey: z.string().min(1).max(64).optional(),
+    })
+    .strict(),
+  'phase.updated': z
+    .object({
+      phaseId: idSchema,
+      title: z.string().min(1).max(120).optional(),
+      description: z.string().max(1000).nullable().optional(),
+      status: phaseStatusSchema.optional(),
+      orderKey: z.string().min(1).max(64).optional(),
+    })
+    .strict(),
+  /**
+   * The project stops being a conversation and becomes a plan. Emitted ONLY after
+   * the operator approves Amrita's proposal — she never conjures a board unasked.
+   */
+  // ── the public hub (ADR-0045) ─────────────────────────────────────────────
+  // Publishing is CONSEQUENTIAL: it is one of the few things in this system that
+  // cannot be taken back (a page someone already fetched is out in the world).
+  // So it is approval-gated, and both directions are on the audit log.
+  'publication.published': z
+    .object({
+      projectId: idSchema,
+      publicSlug: z.string().min(16).max(64),
+      contentHash: z.string().min(1).max(64),
+    })
+    .strict(),
+  'publication.revoked': z
+    .object({ projectId: idSchema, reason: z.string().min(1).max(300) })
+    .strict(),
+
+  'project.activated': z
+    .object({
+      projectId: idSchema,
+      phaseCount: z.number().int().nonnegative(),
+      milestoneCount: z.number().int().nonnegative(),
+      taskCount: z.number().int().nonnegative(),
+    })
+    .strict(),
+
+  // ── the Inbox (ADR-0044) ───────────────────────────────────────────────────
+  // The single triage queue. A capture is a PROPOSAL: it carries what was seen
+  // (`text`), optionally what it looks like (`suggestedKind` + `suggested`, the
+  // payload for the target command), why (`rationale`), and how sure the raiser
+  // is. It is NOT project truth until someone triages it.
+  'inbox.captured': z
+    .object({
+      itemId: idSchema,
+      projectId: idSchema,
+      origin: inboxOriginSchema,
+      text: z.string().min(1).max(2000),
+      suggestedKind: inboxKindSchema.optional(),
+      /** The proposed command payload, validated at triage against the real command. */
+      suggested: z.record(z.string(), z.unknown()).optional(),
+      rationale: z.string().min(1).max(1000).optional(),
+      confidence: inboxConfidenceSchema.optional(),
+      conversationId: idSchema.optional(),
+      sourceMessageId: idSchema.optional(),
+    })
+    .strict(),
+  // A promotion must NAME what it became — the store CHECK enforces the same
+  // invariant, so a silent triage is impossible at the SQL layer too.
+  'inbox.triaged': z
+    .object({
+      itemId: idSchema,
+      promotedKind: inboxKindSchema,
+      promotedId: idSchema,
+    })
+    .strict(),
+  // Dismissal needs a reason, exactly like question.dropped / risk.dropped:
+  // nothing leaves the queue silently (the ADR-0018 house rule).
+  'inbox.dismissed': z.object({ itemId: idSchema, reason: z.string().min(1).max(500) }).strict(),
 
   // brand memory + preview approvals (ADR-0020)
   // The brand is a FULL-document upsert like the brief; an empty write is
@@ -450,6 +693,13 @@ export const eventPayloads = {
     .strict()
     .refine((p) => !SECRET_KEY_RE.test(p.key), {
       message: 'settings keys must not look like secrets (use accounts.secret_ref)',
+    })
+    // Defense-in-depth for the store gate: `cascade.*` toggles the decisions
+    // append-only DELETE guard and is only ever set by the store's own
+    // deleteProject transaction (a direct INSERT, never an event), so no
+    // legitimate settings.updated event carries it.
+    .refine((p) => !p.key.startsWith('cascade.'), {
+      message: 'settings keys under "cascade." are reserved for internal use',
     }),
 
   // diagnostics

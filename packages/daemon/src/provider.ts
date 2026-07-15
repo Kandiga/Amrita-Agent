@@ -11,6 +11,7 @@
  * tests never hit the network and never spawn processes.
  */
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { PROVIDER_ROLES } from '@amrita/protocol';
 import type {
   AuthMode as ProviderAuthMode,
@@ -375,31 +376,75 @@ export type CliExec = (
  * freeze the entire daemon (RPC, WS stream, scheduler, approvals) for its
  * whole duration — the exact "Amrita stopped responding" failure mode.
  */
+/**
+ * Every live CLI subprocess, so the daemon can reap them on shutdown (stability
+ * audit: chat-turn/lane children were untracked and survived the daemon). Each
+ * is a process-GROUP leader (detached), so killing -pid takes grandchildren too.
+ */
+const liveExecs = new Set<ReturnType<typeof spawn>>();
+
+/** SIGKILL every tracked subprocess group. Called from kernel.close(). */
+export function killAllCliExec(): void {
+  for (const child of liveExecs) killGroup(child, 'SIGKILL');
+  liveExecs.clear();
+}
+
+function killGroup(child: ReturnType<typeof spawn>, sig: NodeJS.Signals): void {
+  try {
+    // Negative pid = the whole process group (detached leader). Falls back to the
+    // direct child if the group is already gone.
+    if (child.pid) process.kill(-child.pid, sig);
+    else child.kill(sig);
+  } catch {
+    /* already exited */
+  }
+}
+
+/** OOM backstop only — far larger than any real model reply, so never truncates one. */
+const STDOUT_CAP_BYTES = 32 * 1024 * 1024;
+
 export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs, onLine) =>
   new Promise<CliExecResult>((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      // detached:true makes the child its own process-group leader so a timeout
+      // or shutdown can kill the WHOLE tree, not just the direct child.
+      child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: true });
     } catch {
       resolve({ status: null, stdout: '', stderr: '', failure: 'spawn_error' });
       return;
     }
+    liveExecs.add(child);
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
     const settle = (r: CliExecResult) => {
       if (settled) return;
       settled = true;
       resolve(r);
     };
+    const done = (): void => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      liveExecs.delete(child);
+    };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      // Escalate: SIGTERM the group, then SIGKILL if it will not die. The promise
+      // settles now so the caller is never blocked on a wedged child.
+      killGroup(child, 'SIGTERM');
+      killTimer = setTimeout(() => killGroup(child, 'SIGKILL'), 2000);
       settle({ status: null, stdout, stderr, failure: 'timeout' });
     }, timeoutMs);
+    // StringDecoder keeps multibyte characters (Hebrew, emoji) intact when a code
+    // point is split across two pipe reads — a plain toString('utf8') per chunk
+    // corrupts them into replacement characters.
+    const outDec = new StringDecoder('utf8');
+    const errDec = new StringDecoder('utf8');
     let lineBuffer = '';
     child.stdout?.on('data', (c: Buffer) => {
-      const chunk = c.toString('utf8');
-      stdout += chunk;
+      const chunk = outDec.write(c);
+      if (stdout.length < STDOUT_CAP_BYTES) stdout += chunk;
       if (!onLine) return;
       lineBuffer += chunk;
       let nl = lineBuffer.indexOf('\n');
@@ -411,10 +456,10 @@ export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs, onLine) =>
       }
     });
     child.stderr?.on('data', (c: Buffer) => {
-      if (stderr.length < 16_384) stderr += c.toString('utf8');
+      if (stderr.length < 16_384) stderr += errDec.write(c);
     });
     child.on('error', (e: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
+      done();
       settle({
         status: null,
         stdout: '',
@@ -423,7 +468,7 @@ export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs, onLine) =>
       });
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      done();
       settle({ status: code, stdout, stderr });
     });
     child.stdin?.on('error', () => {

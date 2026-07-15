@@ -1,21 +1,30 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   type AmritaEvent,
   type AuthMode,
+  type Certainty,
   type ConnectorStatus,
   type ConversationRow,
+  type DecisionRight,
+  type Derivation,
   type EventChannel,
   type EventOrigin,
   type EventType,
+  type InboxConfidence,
+  type InboxKind,
+  type InboxOrigin,
+  type InboxStatus,
   type LaneRowStatus,
   type MemoryScope,
   type MessageRow,
   type MilestoneStatus,
+  type ProjectConstraint,
   type ProjectRow,
   type ProviderConfigStatus,
   type QuestionStatus,
   type RiskSeverity,
+  type TaskPriority,
   type TaskStatus,
   type UnsealedEvent,
   isSafeEnvSecretRefName,
@@ -32,6 +41,53 @@ type DB = Database.Database;
 
 /** Tool-completed payloads larger than this are spilled to an artifact file. */
 export const SPILL_THRESHOLD_BYTES = 32 * 1024;
+
+function isCorruptionError(err: unknown): boolean {
+  const code = (err as { code?: string }).code ?? '';
+  const msg = (err as Error)?.message ?? '';
+  return (
+    code === 'SQLITE_CORRUPT' ||
+    code === 'SQLITE_NOTADB' ||
+    /malformed|not a database|file is encrypted/i.test(msg)
+  );
+}
+
+/**
+ * Open the DB, but if the file is CORRUPT/not-a-database, move it aside and throw
+ * a clear message instead of crash-looping (ST3). SQLite opens lazily, so a cheap
+ * probe forces it to read the header/schema and surface corruption here rather
+ * than mid-migration. Quarantining the file (and its WAL sidecars) means the next
+ * restart starts from a fresh store while the corrupt image is kept for recovery.
+ */
+function openDatabaseOrQuarantine(path: string): DB {
+  const db = new Database(path);
+  try {
+    db.exec('SELECT 1');
+    db.pragma('schema_version');
+    return db;
+  } catch (err) {
+    try {
+      db.close();
+    } catch {
+      /* handle already unusable */
+    }
+    if (path !== ':memory:' && isCorruptionError(err)) {
+      const stamp = Date.now();
+      for (const suffix of ['', '-wal', '-shm']) {
+        try {
+          renameSync(`${path}${suffix}`, `${path}${suffix}.corrupt.${stamp}`);
+        } catch {
+          /* sidecar may not exist; best effort */
+        }
+      }
+      const code = (err as { code?: string }).code ?? 'unknown';
+      throw new Error(
+        `store: database at ${path} is corrupt (${code}); moved aside to ${path}.corrupt.${stamp} — restart to begin from a fresh store, and keep the quarantined file for recovery`,
+      );
+    }
+    throw err;
+  }
+}
 
 export interface OpenStoreOptions {
   /** Path to the SQLite database file, or ':memory:'. */
@@ -70,12 +126,21 @@ export interface EntityWriteOpts {
 // Status enums are protocol-owned since ADR-0032; re-exported for store consumers.
 export type {
   AuthMode,
+  Certainty,
   ConnectorStatus,
+  DecisionRight,
+  Derivation,
+  ProjectConstraint,
+  InboxConfidence,
+  InboxKind,
+  InboxOrigin,
+  InboxStatus,
   MemoryScope,
   MilestoneStatus,
   ProviderConfigStatus,
   QuestionStatus,
   RiskSeverity,
+  TaskPriority,
   TaskStatus,
 };
 export type LaneStatus = LaneRowStatus;
@@ -90,8 +155,68 @@ export interface TaskRow {
   status: TaskStatus;
   title: string;
   body: string | null;
+  /** The board (ADR-0044). Free-text owner: Amrita has no user table. */
+  owner: string | null;
+  dueDate: string | null;
+  priority: TaskPriority | null;
+  /** Lexicographic fractional index — a drag is ONE event touching ONE row. */
+  orderKey: string | null;
+  /** Non-null IS the "Waiting" column. The status enum is deliberately not widened. */
+  blockedReason: string | null;
+  /** Fact vs hypothesis (ADR-0045). `inferred` = Amrita worked it out. */
+  certainty: Certainty | null;
+  /** The phase this task lives in (ADR-0045) — the board's columns come from these. */
+  phaseId: string | null;
+  /** Optimistic-lock token (ADR-0045). Monotonic; a timestamp would collide. */
+  version: number;
+  /** Why this card exists (ADR-0045) — the goal/constraint/decision it came from. */
+  derivedFrom: Derivation[];
   /** Provenance to an external system, e.g. `github:owner/repo#123` (ADR-0022). */
   externalRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A live publication of the public hub (ADR-0045). */
+export interface PublicationRow {
+  projectId: string;
+  publicSlug: string;
+  contentHash: string;
+  publishedAt: string;
+  revokedAt: string | null;
+}
+
+/** A phase — the project's own shape, which the board's columns come from (ADR-0045). */
+export interface PhaseRow {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: MilestoneStatus;
+  orderKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A proposal awaiting triage — the one queue for agent, lane and human capture (ADR-0044). */
+export interface InboxItemRow {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  sourceMessageId: string | null;
+  origin: InboxOrigin;
+  text: string;
+  suggestedKind: InboxKind | null;
+  /** The proposed command payload; validated against the real command at triage. */
+  suggested: Record<string, unknown> | null;
+  rationale: string | null;
+  confidence: InboxConfidence | null;
+  status: InboxStatus;
+  /** Non-null exactly when triaged — the SQL CHECK enforces it. */
+  promotedKind: InboxKind | null;
+  promotedId: string | null;
+  /** Non-null exactly when dismissed — the SQL CHECK enforces it. */
+  dismissReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -126,6 +251,16 @@ export interface ProjectBriefRow {
   successCriteria: string[];
   scope: string[];
   noScope: string[];
+  /** The charter (ADR-0044) — "done means [this]". */
+  finishLine: string | null;
+  /** The money/dates/policy the plan must live within. `hard` = not negotiable. */
+  constraints: ProjectConstraint[];
+  /** Who approves what. Free text — Amrita has no user table. */
+  decisionRights: DecisionRight[];
+  /** Per-field certainty (ADR-0045): `{goal:'stated', finishLine:'inferred'}`. */
+  certainty: Record<string, Certainty>;
+  /** Optimistic-lock token (ADR-0045). */
+  version: number;
   sourceMessageId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -133,6 +268,7 @@ export interface ProjectBriefRow {
 
 export interface OpenQuestionRow {
   id: string;
+  certainty?: Certainty | null;
   projectId: string;
   conversationId: string | null;
   sourceMessageId: string | null;
@@ -289,7 +425,7 @@ export class Store {
   private readonly listeners = new Set<(ev: AmritaEvent) => void>();
 
   constructor(opts: OpenStoreOptions) {
-    this.db = new Database(opts.path);
+    this.db = openDatabaseOrQuarantine(opts.path);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('busy_timeout = 5000');
@@ -334,6 +470,7 @@ export class Store {
       slug: input.slug,
       name: input.name,
       root: input.root ?? null,
+      activatedAt: null, // ADR-0045: a conversation, not yet a plan
       createdAt: ts,
       updatedAt: ts,
     };
@@ -387,6 +524,9 @@ export class Store {
         'preview_approvals',
         'memory_entries',
         'lanes',
+        'inbox_items', // ADR-0044
+        'phases', // ADR-0045
+        'project_publications', // ADR-0045
       ]) {
         this.db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
       }
@@ -535,6 +675,87 @@ export class Store {
     }
     this.emitAppended(sealed); // post-commit notify (live fan-out)
     return sealed;
+  }
+
+  /**
+   * Replay the ENTIRE event log into the event-derived read model (ADR-0044).
+   *
+   * This is the executable proof of the "views are projections" invariant: the
+   * reducer is pure and clock-free (every timestamp comes from `ev.ts`, see
+   * project.ts), so re-applying the log must reproduce the read model exactly.
+   * It is also the prerequisite for introducing any NEW projection — without it,
+   * a new table would start empty for historical events.
+   *
+   * Everything happens in ONE transaction: a failing replay rolls the read model
+   * back to where it was, so a bug here can never leave a half-rebuilt store.
+   *
+   * Replay order is `rowid` — the original append order — which is the only
+   * ordering that is guaranteed causally correct across conversations (`seq` is
+   * per-conversation, so it cannot order the log globally).
+   *
+   * SCOPE — only tables whose SOLE writer is `applyEventProjection` are rebuilt.
+   * `projects`, `conversations` (the rows themselves), `accounts.secret_ref`,
+   * `settings`, `channel_pairings` and `artifacts` have sanctioned direct writers
+   * (ADR-0007/0008/0013) and are left untouched: they are not derived state, and
+   * rebuilding them from the log would delete data the log does not contain.
+   */
+  rebuildProjections(): { events: number } {
+    const rebuild = this.db.transaction((): number => {
+      const projectIds = (this.db.prepare('SELECT id FROM projects').all() as { id: string }[]).map(
+        (r) => r.id,
+      );
+
+      // `decisions` is append-only at the SQL layer. Deleting requires the same
+      // per-project gate ADR-0038 built for project.delete — opened for one
+      // project at a time and cleared before commit, so the gate is never
+      // observable outside this transaction and the trigger is NOT weakened.
+      const openGate = this.db.prepare(
+        "INSERT INTO settings (key, value_json, updated_at) VALUES ('cascade.project.delete', ?, ?) " +
+          'ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at',
+      );
+      for (const projectId of projectIds) {
+        openGate.run(JSON.stringify(projectId), now());
+        this.db.prepare('DELETE FROM decisions WHERE project_id = ?').run(projectId);
+      }
+      this.db.prepare("DELETE FROM settings WHERE key = 'cascade.project.delete'").run();
+
+      // Child-first, so an ON DELETE SET NULL FK never blanks a column on a row
+      // we are about to re-project anyway. `messages` goes last: tasks/decisions
+      // point at it via source_message_id.
+      for (const table of [
+        'preview_approvals',
+        'project_brands',
+        'project_briefs',
+        'lanes',
+        'connectors',
+        'memory_entries',
+        'inbox_items', // ADR-0044
+        'project_publications', // ADR-0045
+        'risks',
+        'open_questions',
+        'tasks',
+        'phases', // ADR-0045 — after tasks (the phase trigger checks existence)
+        'milestones',
+        'messages',
+      ]) {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      }
+      // `conversations.archived_at` is projected from `conversation.archived`;
+      // the row itself is not. Reset just the projected column.
+      this.db.prepare('UPDATE conversations SET archived_at = NULL').run();
+      // `projects.activated_at` is projected from `project.activated`; the row is not.
+      this.db.prepare('UPDATE projects SET activated_at = NULL').run();
+
+      const rows = this.db.prepare('SELECT * FROM events ORDER BY rowid ASC').all() as Record<
+        string,
+        unknown
+      >[];
+      for (const row of rows) {
+        applyEventProjection(this.db, rowToEvent(row));
+      }
+      return rows.length;
+    });
+    return { events: rebuild() };
   }
 
   /**
@@ -699,6 +920,14 @@ export class Store {
       milestoneId?: string;
       body?: string;
       externalRef?: string;
+      owner?: string;
+      dueDate?: string;
+      priority?: TaskPriority;
+      orderKey?: string;
+      blockedReason?: string;
+      certainty?: Certainty;
+      phaseId?: string;
+      derivedFrom?: Derivation[];
     } & EntityWriteOpts,
   ): { taskId: string; event: AmritaEvent } {
     const taskId = newId();
@@ -717,12 +946,81 @@ export class Store {
         ...(input.status ? { status: input.status } : {}),
         ...(input.body ? { body: input.body } : {}),
         ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+        ...(input.owner ? { owner: input.owner } : {}),
+        ...(input.dueDate ? { dueDate: input.dueDate } : {}),
+        ...(input.priority ? { priority: input.priority } : {}),
+        ...(input.orderKey ? { orderKey: input.orderKey } : {}),
+        ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
+        ...(input.certainty ? { certainty: input.certainty } : {}),
+        ...(input.phaseId ? { phaseId: input.phaseId } : {}),
+        ...(input.derivedFrom?.length ? { derivedFrom: input.derivedFrom } : {}),
       },
       input,
     );
     return { taskId, event };
   }
 
+  getTask(taskId: string): TaskRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, lane_id AS laneId,
+                milestone_id AS milestoneId, status, title, body,
+                owner, due_date AS dueDate, priority, order_key AS orderKey,
+                blocked_reason AS blockedReason, certainty, phase_id AS phaseId, version,
+                derived_from_json AS dfj, external_ref AS externalRef,
+                created_at AS createdAt, updated_at AS updatedAt
+           FROM tasks WHERE id = ?`,
+      )
+      .get(taskId) as (Omit<TaskRow, 'derivedFrom'> & { dfj: string }) | undefined;
+    if (!row) return undefined;
+    const { dfj, ...rest } = row;
+    return { ...rest, derivedFrom: JSON.parse(dfj) as Derivation[] };
+  }
+
+  /**
+   * Optimistic concurrency (ADR-0045).
+   *
+   * The caller sends the `version` it last SAW. If the row has moved on since,
+   * someone else changed it and this write is stale — so we refuse it and say so,
+   * rather than silently overwriting their work. Two operators dragging the same
+   * card, or a Scribe write racing a human edit, must never end in a quiet loss.
+   *
+   * The token is a monotonic COUNTER, not a timestamp: `updated_at` has millisecond
+   * resolution, so two writes in the same millisecond would carry the same token and
+   * a stale write would sail straight through the guard meant to stop it. (This was
+   * a real bug in the first cut, caught by a test.)
+   *
+   * The read-then-write is atomic in practice: better-sqlite3 is synchronous and the
+   * daemon is single-threaded, so nothing can interleave between the check and the
+   * append inside one synchronous method.
+   *
+   * `conflict:` is the prefix the RPC layer maps to the `conflict` error code.
+   */
+  private assertFresh(
+    kind: string,
+    id: string,
+    actual: number | undefined,
+    expected: number | undefined,
+  ): void {
+    if (expected === undefined) return; // caller opted out (CLI, agent, migration)
+    if (actual === undefined) throw new Error(`no such ${kind}: ${id}`);
+    if (actual !== expected) {
+      throw new Error(
+        `conflict: this ${kind} was changed by someone else (you saw v${expected}, it is now v${actual}) — reload and reapply`,
+      );
+    }
+  }
+
+  /**
+   * Update a task (ADR-0018 + the board fields of ADR-0044).
+   *
+   * For every field: **absent = leave it alone, `null` = clear it.** That is what
+   * lets the board un-assign an owner or unblock a task without a second verb.
+   *
+   * `expectedUpdatedAt` (ADR-0045) makes the write optimistic-locked: a stale
+   * update is REFUSED, never silently applied.
+   */
   updateTask(
     input: {
       projectId: string;
@@ -733,8 +1031,40 @@ export class Store {
       body?: string;
       /** A milestone to link to, or `null` to unlink (ADR-0018). */
       milestoneId?: string | null;
+      owner?: string | null;
+      dueDate?: string | null;
+      priority?: TaskPriority | null;
+      orderKey?: string;
+      blockedReason?: string | null;
+      certainty?: Certainty | null;
+      phaseId?: string | null;
+      derivedFrom?: Derivation[];
+      /** WHY the change was made (ADR-0045). Lives on the event, not the row. */
+      reason?: string;
+      /** The row `version` the caller last saw. Mismatch ⇒ `conflict`, not a silent overwrite. */
+      expectedVersion?: number;
     } & EntityWriteOpts,
   ): { event: AmritaEvent } {
+    const before = this.getTask(input.taskId);
+    this.assertFresh('task', input.taskId, before?.version, input.expectedVersion);
+
+    // ADR-0045: "מאיזה מצב לאיזה מצב" — capture the FROM side, for exactly the
+    // fields this update touches, so the event explains itself without a replay.
+    const previous: Record<string, unknown> = {};
+    if (before) {
+      if (input.status !== undefined && input.status !== before.status)
+        previous.status = before.status;
+      if (input.phaseId !== undefined && input.phaseId !== before.phaseId)
+        previous.phaseId = before.phaseId;
+      if (input.owner !== undefined && input.owner !== before.owner) previous.owner = before.owner;
+      if (input.priority !== undefined && input.priority !== before.priority)
+        previous.priority = before.priority;
+      if (input.blockedReason !== undefined && input.blockedReason !== before.blockedReason)
+        previous.blockedReason = before.blockedReason;
+      if (input.milestoneId !== undefined && input.milestoneId !== before.milestoneId)
+        previous.milestoneId = before.milestoneId;
+    }
+
     const event = this.emit(
       'task.updated',
       input.projectId,
@@ -745,6 +1075,16 @@ export class Store {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.body !== undefined ? { body: input.body } : {}),
         ...(input.milestoneId !== undefined ? { milestoneId: input.milestoneId } : {}),
+        ...(input.owner !== undefined ? { owner: input.owner } : {}),
+        ...(input.dueDate !== undefined ? { dueDate: input.dueDate } : {}),
+        ...(input.priority !== undefined ? { priority: input.priority } : {}),
+        ...(input.orderKey !== undefined ? { orderKey: input.orderKey } : {}),
+        ...(input.blockedReason !== undefined ? { blockedReason: input.blockedReason } : {}),
+        ...(input.certainty !== undefined ? { certainty: input.certainty } : {}),
+        ...(input.phaseId !== undefined ? { phaseId: input.phaseId } : {}),
+        ...(input.derivedFrom !== undefined ? { derivedFrom: input.derivedFrom } : {}),
+        ...(Object.keys(previous).length > 0 ? { previous } : {}),
+        ...(input.reason ? { reason: input.reason } : {}),
       },
       input,
     );
@@ -829,9 +1169,25 @@ export class Store {
       successCriteria?: string[];
       scope?: string[];
       noScope?: string[];
+      finishLine?: string;
+      constraints?: ProjectConstraint[];
+      decisionRights?: DecisionRight[];
+      certainty?: Record<string, Certainty>;
       sourceMessageId?: string;
+      /**
+       * The row `version` the caller last saw (ADR-0045). The brief is a FULL-document
+       * upsert, so a stale write does not just lose a field — it WIPES the charter
+       * someone else just wrote. This is the most dangerous stale write in the system.
+       */
+      expectedVersion?: number;
     } & EntityWriteOpts,
   ): { event: AmritaEvent } {
+    this.assertFresh(
+      'brief',
+      input.projectId,
+      this.getBrief(input.projectId)?.version,
+      input.expectedVersion,
+    );
     const event = this.emit(
       'brief.updated',
       input.projectId,
@@ -843,6 +1199,10 @@ export class Store {
         successCriteria: input.successCriteria ?? [],
         scope: input.scope ?? [],
         noScope: input.noScope ?? [],
+        ...(input.finishLine ? { finishLine: input.finishLine } : {}),
+        ...(input.constraints ? { constraints: input.constraints } : {}),
+        ...(input.decisionRights ? { decisionRights: input.decisionRights } : {}),
+        ...(input.certainty ? { certainty: input.certainty } : {}),
         ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
       },
       input,
@@ -915,6 +1275,7 @@ export class Store {
       projectId: string;
       conversationId: string;
       text: string;
+      certainty?: Certainty;
       sourceMessageId?: string;
     } & EntityWriteOpts,
   ): { questionId: string; event: AmritaEvent } {
@@ -929,6 +1290,7 @@ export class Store {
         conversationId: input.conversationId,
         ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
         text: input.text,
+        ...(input.certainty ? { certainty: input.certainty } : {}),
       },
       input,
     );
@@ -983,6 +1345,7 @@ export class Store {
       conversationId: string;
       text: string;
       severity?: RiskSeverity;
+      certainty?: Certainty;
       sourceMessageId?: string;
     } & EntityWriteOpts,
   ): { riskId: string; event: AmritaEvent } {
@@ -998,6 +1361,7 @@ export class Store {
         ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
         text: input.text,
         ...(input.severity ? { severity: input.severity } : {}),
+        ...(input.certainty ? { certainty: input.certainty } : {}),
       },
       input,
     );
@@ -1111,6 +1475,286 @@ export class Store {
         { milestoneId: input.milestoneId },
         input,
       ),
+    };
+  }
+
+  // ── phases + activation (ADR-0045) ──────────────────────────────────────────
+
+  createPhase(
+    input: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+      description?: string;
+      status?: MilestoneStatus;
+      orderKey?: string;
+    } & EntityWriteOpts,
+  ): { phaseId: string; event: AmritaEvent } {
+    const phaseId = newId();
+    const event = this.emit(
+      'phase.created',
+      input.projectId,
+      input.conversationId,
+      {
+        phaseId,
+        projectId: input.projectId,
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.orderKey ? { orderKey: input.orderKey } : {}),
+      },
+      input,
+    );
+    return { phaseId, event };
+  }
+
+  updatePhase(
+    input: {
+      projectId: string;
+      conversationId: string;
+      phaseId: string;
+      title?: string;
+      description?: string | null;
+      status?: MilestoneStatus;
+      orderKey?: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'phase.updated',
+        input.projectId,
+        input.conversationId,
+        {
+          phaseId: input.phaseId,
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.orderKey !== undefined ? { orderKey: input.orderKey } : {}),
+        },
+        input,
+      ),
+    };
+  }
+
+  listPhases(projectId: string): PhaseRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, title, description, status,
+                order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt
+           FROM phases WHERE project_id = ?
+          ORDER BY order_key IS NULL, order_key ASC, created_at ASC, rowid ASC`,
+      )
+      .all(projectId) as PhaseRow[];
+  }
+
+  /**
+   * Mark the project ACTIVATED (ADR-0045). The project stops being a conversation
+   * and becomes a plan — but only ever because the operator said so.
+   */
+  activateProject(
+    input: {
+      projectId: string;
+      conversationId: string;
+      phaseCount: number;
+      milestoneCount: number;
+      taskCount: number;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'project.activated',
+        input.projectId,
+        input.conversationId,
+        {
+          projectId: input.projectId,
+          phaseCount: input.phaseCount,
+          milestoneCount: input.milestoneCount,
+          taskCount: input.taskCount,
+        },
+        input,
+      ),
+    };
+  }
+
+  // ── the public hub (ADR-0045) ───────────────────────────────────────────────
+
+  publishHub(
+    input: {
+      projectId: string;
+      conversationId: string;
+      publicSlug: string;
+      contentHash: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'publication.published',
+        input.projectId,
+        input.conversationId,
+        {
+          projectId: input.projectId,
+          publicSlug: input.publicSlug,
+          contentHash: input.contentHash,
+        },
+        input,
+      ),
+    };
+  }
+
+  revokeHub(
+    input: { projectId: string; conversationId: string; reason: string } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'publication.revoked',
+        input.projectId,
+        input.conversationId,
+        { projectId: input.projectId, reason: input.reason },
+        input,
+      ),
+    };
+  }
+
+  getPublication(projectId: string): PublicationRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT project_id AS projectId, public_slug AS publicSlug, content_hash AS contentHash,
+                published_at AS publishedAt, revoked_at AS revokedAt
+           FROM project_publications WHERE project_id = ?`,
+      )
+      .get(projectId) as PublicationRow | undefined;
+  }
+
+  // ── the Inbox — the one triage queue (ADR-0044) ─────────────────────────────
+
+  /**
+   * Capture a PROPOSAL. Whoever raised it — a human quick-capture, the Scribe
+   * (`origin: 'agent'`), or a lane merge report (`origin: 'lane'`) — it lands in
+   * the same queue and is not project truth until someone triages it.
+   */
+  captureInboxItem(
+    input: {
+      projectId: string;
+      conversationId: string;
+      origin: InboxOrigin;
+      text: string;
+      suggestedKind?: InboxKind;
+      suggested?: Record<string, unknown>;
+      rationale?: string;
+      confidence?: InboxConfidence;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { itemId: string; event: AmritaEvent } {
+    const itemId = newId();
+    const event = this.emit(
+      'inbox.captured',
+      input.projectId,
+      input.conversationId,
+      {
+        itemId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        origin: input.origin,
+        text: input.text,
+        ...(input.suggestedKind ? { suggestedKind: input.suggestedKind } : {}),
+        ...(input.suggested ? { suggested: input.suggested } : {}),
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        ...(input.confidence ? { confidence: input.confidence } : {}),
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      },
+      input,
+    );
+    return { itemId, event };
+  }
+
+  /**
+   * Record that an item was promoted into a real aggregate. The CALLER performs
+   * the promotion (by calling the real typed command) and passes back what it
+   * became — so the Inbox never becomes a second write path into the domain.
+   */
+  triageInboxItem(
+    input: {
+      projectId: string;
+      conversationId: string;
+      itemId: string;
+      promotedKind: InboxKind;
+      promotedId: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'inbox.triaged',
+        input.projectId,
+        input.conversationId,
+        {
+          itemId: input.itemId,
+          promotedKind: input.promotedKind,
+          promotedId: input.promotedId,
+        },
+        input,
+      ),
+    };
+  }
+
+  /** Dismiss with a reason — nothing leaves the queue silently. */
+  dismissInboxItem(
+    input: {
+      projectId: string;
+      conversationId: string;
+      itemId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    return {
+      event: this.emit(
+        'inbox.dismissed',
+        input.projectId,
+        input.conversationId,
+        { itemId: input.itemId, reason: input.reason },
+        input,
+      ),
+    };
+  }
+
+  listInboxItems(filters: { projectId: string; status?: InboxStatus }): InboxItemRow[] {
+    const where = filters.status ? 'WHERE project_id = ? AND status = ?' : 'WHERE project_id = ?';
+    const args = filters.status ? [filters.projectId, filters.status] : [filters.projectId];
+    const rows = this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, origin, text,
+                suggested_kind AS suggestedKind, suggested_json AS suggestedJson,
+                rationale, confidence, status, promoted_kind AS promotedKind,
+                promoted_id AS promotedId, dismiss_reason AS dismissReason,
+                created_at AS createdAt, updated_at AS updatedAt
+           FROM inbox_items ${where} ORDER BY created_at ASC, rowid ASC`,
+      )
+      .all(...args) as (Omit<InboxItemRow, 'suggested'> & { suggestedJson: string | null })[];
+    return rows.map(({ suggestedJson, ...r }) => ({
+      ...r,
+      suggested: suggestedJson ? (JSON.parse(suggestedJson) as Record<string, unknown>) : null,
+    }));
+  }
+
+  getInboxItem(itemId: string): InboxItemRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+                source_message_id AS sourceMessageId, origin, text,
+                suggested_kind AS suggestedKind, suggested_json AS suggestedJson,
+                rationale, confidence, status, promoted_kind AS promotedKind,
+                promoted_id AS promotedId, dismiss_reason AS dismissReason,
+                created_at AS createdAt, updated_at AS updatedAt
+           FROM inbox_items WHERE id = ?`,
+      )
+      .get(itemId) as
+      | (Omit<InboxItemRow, 'suggested'> & { suggestedJson: string | null })
+      | undefined;
+    if (!row) return undefined;
+    const { suggestedJson, ...rest } = row;
+    return {
+      ...rest,
+      suggested: suggestedJson ? (JSON.parse(suggestedJson) as Record<string, unknown>) : null,
     };
   }
 
@@ -1271,7 +1915,16 @@ export class Store {
       label?: string;
     } & EntityWriteOpts,
   ): { accountId: string; event: AmritaEvent } {
-    const accountId = input.accountId ?? newId();
+    // Idempotent reconnect: (provider, label) is UNIQUE, so connecting the same
+    // account twice with a fresh id would raise a raw UNIQUE violation surfaced as
+    // an opaque 'internal' error. When the caller does not pin an id, reuse the
+    // existing account for this (provider, label) instead of minting a new one.
+    const existing = input.accountId
+      ? undefined
+      : (this.db
+          .prepare('SELECT id FROM accounts WHERE provider = ? AND label IS ?')
+          .get(input.provider, input.label ?? null) as { id: string } | undefined);
+    const accountId = input.accountId ?? existing?.id ?? newId();
     const event = this.emit(
       'provider.connected',
       input.projectId,
@@ -1401,7 +2054,40 @@ export class Store {
   }
 
   private static readonly PROJECT_COLS =
-    'id, slug, name, root, created_at AS createdAt, updated_at AS updatedAt';
+    'id, slug, name, root, activated_at AS activatedAt, created_at AS createdAt, updated_at AS updatedAt';
+
+  /**
+   * Set (or clear) a project's working root (ADR-0045).
+   *
+   * `root` was write-once: it could only be given at `createProject`, and there was
+   * no `updateProject` at all — which is exactly why every live project sat at
+   * `root = NULL` and the bounded file/git probes had nothing to look at. The path
+   * is validated by the CALLER against the allowed-roots allowlist; the store just
+   * records it, and the `project.updated` event makes the change auditable.
+   */
+  setProjectRoot(
+    input: { projectId: string; conversationId: string; root: string | null } & EntityWriteOpts,
+  ): { event: AmritaEvent } {
+    // The audit event and the row mutation must be ONE transaction. They used to be
+    // two, so a crash (or a failing UPDATE) between them left the log saying "root
+    // changed" while projects.root still held the old value — and the event carries
+    // only `{fields:['root']}`, not the value, so the divergence was unreconcilable.
+    // Nesting appendEvent's transaction as a savepoint makes them atomic: if the
+    // UPDATE throws, the event rolls back too.
+    return this.db.transaction(() => {
+      const event = this.emit(
+        'project.updated',
+        input.projectId,
+        input.conversationId,
+        { fields: ['root'] },
+        input,
+      );
+      this.db
+        .prepare('UPDATE projects SET root = ?, updated_at = ? WHERE id = ?')
+        .run(input.root, now(), input.projectId);
+      return { event };
+    })();
+  }
 
   getProject(id: string): ProjectRow | undefined {
     return this.db.prepare(`SELECT ${Store.PROJECT_COLS} FROM projects WHERE id = ?`).get(id) as
@@ -1542,16 +2228,25 @@ export class Store {
       vals.push(filters.status);
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT id, project_id AS projectId, conversation_id AS conversationId,
                 source_message_id AS sourceMessageId, lane_id AS laneId,
                 milestone_id AS milestoneId, status, title, body,
-                external_ref AS externalRef,
+                owner, due_date AS dueDate, priority, order_key AS orderKey,
+                blocked_reason AS blockedReason, certainty, phase_id AS phaseId, version,
+                derived_from_json AS dfj, external_ref AS externalRef,
                 created_at AS createdAt, updated_at AS updatedAt
-         FROM tasks ${clause} ORDER BY created_at ASC`,
+         FROM tasks ${clause}
+         -- board order: an explicit key first, then a stable fallback for tasks
+         -- that have never been dragged (order_key IS NULL sorts last otherwise)
+         ORDER BY order_key IS NULL, order_key ASC, created_at ASC, rowid ASC`,
       )
-      .all(...vals) as TaskRow[];
+      .all(...vals) as (Omit<TaskRow, 'derivedFrom'> & { dfj: string })[];
+    return rows.map(({ dfj, ...r }) => ({
+      ...r,
+      derivedFrom: JSON.parse(dfj) as Derivation[],
+    }));
   }
 
   /** The external refs (e.g. `github:owner/repo#N`) already present in a project (ADR-0022). */
@@ -1571,24 +2266,35 @@ export class Store {
       .prepare(
         `SELECT project_id AS projectId, goal, audience,
                 success_criteria_json AS sc, scope_json AS sj, no_scope_json AS nsj,
+                finish_line AS finishLine, constraints_json AS cj, decision_rights_json AS drj,
+                certainty_json AS ctj, version,
                 source_message_id AS sourceMessageId,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM project_briefs WHERE project_id = ?`,
       )
       .get(projectId) as
-      | (Omit<ProjectBriefRow, 'successCriteria' | 'scope' | 'noScope'> & {
+      | (Omit<
+          ProjectBriefRow,
+          'successCriteria' | 'scope' | 'noScope' | 'constraints' | 'decisionRights' | 'certainty'
+        > & {
           sc: string;
           sj: string;
           nsj: string;
+          cj: string;
+          drj: string;
+          ctj: string;
         })
       | undefined;
     if (!row) return undefined;
-    const { sc, sj, nsj, ...rest } = row;
+    const { sc, sj, nsj, cj, drj, ctj, ...rest } = row;
     return {
       ...rest,
       successCriteria: JSON.parse(sc) as string[],
       scope: JSON.parse(sj) as string[],
       noScope: JSON.parse(nsj) as string[],
+      constraints: JSON.parse(cj) as ProjectConstraint[],
+      decisionRights: JSON.parse(drj) as DecisionRight[],
+      certainty: JSON.parse(ctj) as Record<string, Certainty>,
     };
   }
 
@@ -1645,6 +2351,7 @@ export class Store {
         `SELECT id, project_id AS projectId, conversation_id AS conversationId,
                 source_message_id AS sourceMessageId, text, status, resolution,
                 resolved_by_decision_id AS resolvedByDecisionId, drop_reason AS dropReason,
+                certainty,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM open_questions ${clause} ORDER BY created_at ASC`,
       )
@@ -1668,6 +2375,7 @@ export class Store {
         `SELECT id, project_id AS projectId, conversation_id AS conversationId,
                 source_message_id AS sourceMessageId, text, severity, status, resolution,
                 resolved_by_decision_id AS resolvedByDecisionId, drop_reason AS dropReason,
+                certainty,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM risks ${clause} ORDER BY created_at ASC`,
       )

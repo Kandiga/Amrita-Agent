@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import {
   ClaudeCodeLaneRunner,
   CodexLaneRunner,
@@ -9,6 +9,7 @@ import {
 } from '@amrita/lanes';
 import {
   type AmritaEvent,
+  type ChatFocus,
   type CinemaMandate,
   type CinemaMandateReport,
   type ConnectorStatusReport,
@@ -31,11 +32,19 @@ import {
 import {
   type AccountRow,
   type AuthMode,
+  type Certainty,
   type ChannelLink,
   type ConnectorRow,
   type ConversationNode,
+  type DecisionRight,
   type DecisionRow,
+  type Derivation,
   type EntityWriteOpts,
+  type InboxConfidence,
+  type InboxItemRow,
+  type InboxKind,
+  type InboxOrigin,
+  type InboxStatus,
   type LaneRow,
   type LaneStatus,
   type MemoryEntryRow,
@@ -44,25 +53,35 @@ import {
   type MilestoneStatus,
   type OpenQuestionRow,
   type PairingRow,
+  type PhaseRow,
   type PreviewApprovalRow,
   type ProjectBrandRow,
   type ProjectBriefRow,
+  type ProjectConstraint,
   type ProviderConfigStatus,
   type QuestionStatus,
   type RiskRow,
   type RiskSeverity,
   type Store,
+  type TaskPriority,
   type TaskRow,
   type TaskStatus,
   openStore,
 } from '@amrita/store';
+import { type CharterFinding, auditCharter, readyToActivate } from './charter-audit.ts';
 import {
   completeCinemaMandate,
   issueCinemaMandate,
   listCinemaMandates,
 } from './cinema-mandates.ts';
 import { connectorStatuses } from './connectors.ts';
+import {
+  AMRITA_CAPABILITIES,
+  CONTEXT_PACK_SETTING,
+  buildProjectContextPack,
+} from './context-pack.ts';
 import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
+import { type RouteVerdict, routeFor } from './execution-route.ts';
 import { fetchGithubIssues } from './github.ts';
 import {
   HARNESS_TOPOLOGY,
@@ -70,7 +89,9 @@ import {
   buildProjectBrain,
   cinemaKnowledgeSource,
 } from './harness.ts';
+import { type PublicHub, SLUG_RE, buildPublicHub, contentHash, renderPublicHub } from './hub.ts';
 import {
+  type ChatMessage,
   type ChatProvider,
   type ChatUsage,
   type CliExec,
@@ -89,6 +110,7 @@ import {
   defaultFetch,
   envPresent,
   findProviderSpec,
+  killAllCliExec,
   normalizeProvider,
   parseLocalEndpoint,
   parseRoleBinding,
@@ -98,12 +120,31 @@ import {
   suggestV1BaseUrl,
 } from './provider.ts';
 import {
+  ORG_MEMORY_SOURCE_PREFIX,
+  type RetroPacket,
+  buildRetroPacket,
+  renderRetroPacket,
+} from './retro.ts';
+import { type ReviewPacket, buildReviewPacket, renderReviewPacket } from './review.ts';
+import {
   type CodingRuntimeStatus,
   type CommandProber,
   getClaudeCodeStatus,
   getRuntimesStatus,
 } from './runtimes.ts';
+import { SCHEDULER_STATE_SETTING } from './scheduler.ts';
 import type { SchedulerStatus } from './scheduler.ts';
+import {
+  MAX_AUTO_QUESTIONS_PER_TURN,
+  MAX_OPEN_QUESTIONS,
+  SCRIBE_AUTO_OPEN_QUESTIONS_SETTING,
+  SCRIBE_SETTING,
+  buildScribePrompt,
+  looksLikeProjectTruth,
+  parseScribeResponse,
+  questionKey,
+  suggestedPayload,
+} from './scribe.ts';
 import { loadSkillStatuses } from './skills.ts';
 import { clean } from './util.ts';
 
@@ -113,6 +154,8 @@ export interface ChatTurnInput {
   text: string;
   provider?: string;
   model?: string;
+  /** What the operator has open on screen (ADR-0045) — the chat is about THAT. */
+  focus?: ChatFocus;
   /**
    * A provider ROLE instead of a concrete provider (D5/ADR-0017). Resolution:
    * an explicit `provider` always wins; otherwise the role's settings binding
@@ -193,6 +236,20 @@ export interface PendingApproval {
 }
 
 /** Start a lane (delegated unit of work). Secret-free; nested fields are zod-validated upstream. */
+/**
+ * What an Inbox item may be promoted INTO (ADR-0044). A discriminated union, so
+ * the compiler — not a runtime string check — guarantees every branch supplies
+ * exactly the fields its target command needs. Every arm maps to a command that
+ * already existed; triage adds no new way to write the domain.
+ */
+export type TriageTarget =
+  | { kind: 'task'; title: string; body?: string; milestoneId?: string }
+  | { kind: 'decision'; text: string }
+  | { kind: 'risk'; text: string; severity?: RiskSeverity }
+  | { kind: 'question'; text: string }
+  | { kind: 'milestone'; title: string; description?: string; targetDate?: string }
+  | { kind: 'memory'; content: string };
+
 export interface LaneStartInput {
   conversationId: string;
   goal: string;
@@ -407,8 +464,13 @@ export class AmritaKernel {
     // Abort any in-flight (detached) lanes so no child outlives the daemon.
     for (const { controller } of this.activeLanes.values()) controller.abort();
     this.activeLanes.clear();
+    // Reap every tracked CLI subprocess (chat turns, probes) as a process group —
+    // an aborted lane resolves before its child exits, and a chat exec is not on
+    // the lane list at all, so without this they leak past daemon shutdown.
+    killAllCliExec();
     for (const pending of this.pendingApprovals.values()) pending.settle('deny');
     this.pendingApprovals.clear();
+    this.workspaceTickets.clear();
     this.streamListeners.clear();
     this.store.close();
   }
@@ -1228,9 +1290,32 @@ export class AmritaKernel {
     });
 
     // Provider call — pure side effect, outside any store transaction.
-    const messages = this.store
+    //
+    // ADR-0044: the transcript is prefixed with the Project Context Pack — the
+    // live, bounded state of this project — as ONE system message. Before this,
+    // the model received the raw transcript and nothing else, so the
+    // "project-aware agent OS" was not, in fact, project-aware at the chat layer.
+    //
+    // It is a plain `system` ChatMessage, NOT a new provider field, because every
+    // adapter already handles the system role correctly: Anthropic lifts it into
+    // the `system` param, OpenAI passes the role through, and the CLI providers'
+    // `flattenTranscript` puts it first. Reuse the seam that exists.
+    //
+    // It is deliberately NOT persisted: injecting it as a `message.system` event
+    // would pollute the transcript and the event log with a value that is derived
+    // (and rebuilt every turn anyway). The persisted record of the turn is
+    // unchanged, so the log stays byte-identical to the pre-ADR-0044 world.
+    const transcript = this.store
       .listMessages(input.conversationId)
       .map((m) => ({ role: m.role, text: m.text }));
+    const pack = await this.buildContextPack(projectId);
+    // ADR-0045: what the operator is LOOKING AT. Appended to the pack rather than
+    // baked into it, so the pack stays cacheable-by-value and focus stays per-turn.
+    const focus = this.renderFocus(projectId, input.focus);
+    const system = focus ? `${pack}\n\n${focus}` : pack;
+    const messages: ChatMessage[] = system
+      ? [{ role: 'system', text: system }, ...transcript]
+      : transcript;
     let resp: Awaited<ReturnType<ChatProvider['generate']>>;
     try {
       // Prefer the provider's streaming path: incremental text is fanned out as
@@ -1265,6 +1350,25 @@ export class AmritaKernel {
       usage: resp.usage,
     });
 
+    // ADR-0044: the Scribe runs AFTER the turn is complete and persisted, so it
+    // can never delay a reply and a failure inside it can never fail the turn.
+    // The reply above is already final; this only adds proposals to the Inbox.
+    // The guard is load-bearing: runScribe does unguarded store reads (the settings
+    // gate, the open-question lookups), and a transient failure there must degrade
+    // to "no proposals", never surface as a failed turn to the operator.
+    try {
+      await this.runScribe({
+        projectId,
+        conversationId: input.conversationId,
+        userText: input.text,
+        agentText: resp.text,
+        sourceMessageId: assistant.message.id,
+        contextPack: pack,
+      });
+    } catch {
+      /* the turn is already persisted; the Scribe is best-effort */
+    }
+
     return {
       turnId,
       provider: providerId,
@@ -1290,9 +1394,60 @@ export class AmritaKernel {
       title: string;
       status?: TaskStatus;
       milestoneId?: string;
+      body?: string;
+      sourceMessageId?: string;
+      // ADR-0044: `laneId` was supported by the column, the event AND the store —
+      // and silently dropped here, so a task could never point at the lane doing it.
+      laneId?: string;
+      owner?: string;
+      dueDate?: string;
+      priority?: TaskPriority;
+      orderKey?: string;
+      blockedReason?: string;
+      certainty?: Certainty;
+      phaseId?: string;
+      derivedFrom?: Derivation[];
     } & EntityWriteOpts,
   ): { taskId: string } {
     return { taskId: this.store.createTask(input).taskId };
+  }
+
+  /**
+   * Update a task (ADR-0044).
+   *
+   * `store.updateTask` has existed, fully implemented and tested, since ADR-0018 —
+   * with **zero callers above the store**. No kernel method, no RPC, no UI. The
+   * `task.updated` event and its reducer were written and then never reached.
+   * This method is the missing wire: it is what makes re-staging, retitling,
+   * re-owning, dating, prioritizing, blocking and DRAGGING a card possible.
+   *
+   * Every field: absent = leave alone, `null` = clear.
+   */
+  updateTask(
+    input: {
+      projectId: string;
+      conversationId: string;
+      taskId: string;
+      status?: TaskStatus;
+      title?: string;
+      body?: string;
+      milestoneId?: string | null;
+      owner?: string | null;
+      dueDate?: string | null;
+      priority?: TaskPriority | null;
+      orderKey?: string;
+      blockedReason?: string | null;
+      certainty?: Certainty | null;
+      phaseId?: string | null;
+      derivedFrom?: Derivation[];
+      /** ADR-0045: WHY the change was made. Lives on the event, not the row. */
+      reason?: string;
+      /** ADR-0045: the row `version` the caller saw. Mismatch ⇒ `conflict`. */
+      expectedVersion?: number;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.updateTask(input);
+    return { ok: true };
   }
 
   listTasks(filters: {
@@ -1333,6 +1488,936 @@ export class AmritaKernel {
     };
   }
 
+  /**
+   * Render what the operator has open (ADR-0045).
+   *
+   * "אם פתחת סיכון, היא יודעת שאתה מדבר על הסיכון. אם סימנת שלוש משימות, אפשר
+   *  לשאול מה הסדר הנכון ומה את יכולה לקחת ממני עכשיו?"
+   *
+   * Resolves the ids against real rows — a focus that points at nothing renders
+   * nothing, rather than inviting the model to invent what it might have been.
+   */
+  private renderFocus(projectId: string, focus?: ChatFocus): string {
+    if (!focus) return '';
+    // ADR-0047: a build selected on the live canvas. No stored row to resolve — the
+    // label IS the target. Tell the model the message is about THAT build and how
+    // to change it (return the full updated HTML so the canvas re-renders).
+    if (focus.kind === 'artifact') {
+      if (!focus.label) return '';
+      return [
+        '## What the operator is looking at right now (a build on the live canvas)',
+        `- "${focus.label}"`,
+        '',
+        'Their message is about THIS build. If they ask for a change, return the',
+        'COMPLETE updated HTML in a ```html block (it re-renders live on the canvas).',
+      ].join('\n');
+    }
+    if (focus.ids.length === 0) return '';
+    const ids = new Set(focus.ids);
+    const lines: string[] = [];
+
+    switch (focus.kind) {
+      case 'task':
+        for (const t of this.store.listTasks({ projectId })) {
+          if (ids.has(t.id)) {
+            lines.push(
+              `- ${t.title} [${t.status}${t.blockedReason ? `, waiting on: ${t.blockedReason}` : ''}${t.owner ? `, owner ${t.owner}` : ''}${t.dueDate ? `, due ${t.dueDate}` : ''}]`,
+            );
+          }
+        }
+        break;
+      case 'risk':
+        for (const r of this.store.listRisks({ projectId })) {
+          if (ids.has(r.id)) lines.push(`- ${r.severity ? `[${r.severity}] ` : ''}${r.text}`);
+        }
+        break;
+      case 'question':
+        for (const q of this.store.listQuestions({ projectId })) {
+          if (ids.has(q.id)) lines.push(`- ${q.text}`);
+        }
+        break;
+      case 'decision':
+        for (const d of this.store.listDecisions({ projectId })) {
+          if (ids.has(d.id)) lines.push(`- ${d.text}`);
+        }
+        break;
+      case 'milestone':
+        for (const m of this.store.listMilestones({ projectId })) {
+          if (ids.has(m.id)) {
+            lines.push(`- ${m.title} [${m.status}${m.targetDate ? `, due ${m.targetDate}` : ''}]`);
+          }
+        }
+        break;
+      case 'phase':
+        for (const p of this.store.listPhases(projectId)) {
+          if (ids.has(p.id)) lines.push(`- ${p.title} [${p.status}]`);
+        }
+        break;
+      case 'inbox':
+        for (const i of this.store.listInboxItems({ projectId })) {
+          if (ids.has(i.id)) lines.push(`- ${i.text}`);
+        }
+        break;
+    }
+
+    if (lines.length === 0) return '';
+    return [
+      `## What the operator is looking at right now (${focus.kind})`,
+      ...lines,
+      '',
+      'Assume the conversation is ABOUT these unless they say otherwise. Do not make',
+      'them describe again what is already on their screen.',
+    ].join('\n');
+  }
+
+  /**
+   * The charter's health (ADR-0045): what is missing, what Amrita only GUESSED,
+   * and what cannot all be true at once — plus whether there is enough basis to
+   * propose activating the project.
+   */
+  getCharterStatus(projectId: string): {
+    findings: CharterFinding[];
+    readyToActivate: boolean;
+  } {
+    const brief = this.store.getBrief(projectId) ?? null;
+    return {
+      findings: auditCharter({
+        brief,
+        tasks: this.store.listTasks({ projectId }),
+        risks: this.store.listRisks({ projectId }),
+        questions: this.store.listQuestions({ projectId }),
+      }),
+      readyToActivate: readyToActivate(brief),
+    };
+  }
+
+  /**
+   * Bind (or unbind) a project's working folder (ADR-0045).
+   *
+   * The browser NEVER picks a path — that is the whole reason the video's
+   * File-System-Access trick is wrong here. The daemon validates the path against
+   * the allowed-roots allowlist it was started with, so a project can only ever
+   * point somewhere the operator already authorised at the process level.
+   */
+  setProjectRoot(
+    input: { projectId: string; conversationId: string; root: string | null } & EntityWriteOpts,
+  ): { ok: true } {
+    if (input.root !== null) {
+      const resolved = resolve(input.root);
+      // The same allowlist a real lane is jailed to (ADR-0039). If the daemon was
+      // not authorised to touch anything, a project cannot point anywhere either.
+      const base = this.laneWorkspacesRoot;
+      if (!base) {
+        throw new Error(
+          'conflict: this daemon has no allowed roots configured (AMRITA_LANES_ALLOWED_ROOTS) — a project root cannot be bound',
+        );
+      }
+      const jail = resolve(base);
+      const ok = resolved === jail || resolved.startsWith(`${jail}/`);
+      if (!ok) {
+        throw new Error(
+          'conflict: that path is outside every allowed root — bind it to a folder the daemon was authorised to touch',
+        );
+      }
+      if (!rootExists(resolved)) throw new Error(`not found: no such folder: ${resolved}`);
+      this.store.setProjectRoot({ ...input, root: resolved });
+      return { ok: true };
+    }
+    this.store.setProjectRoot({ ...input, root: null });
+    return { ok: true };
+  }
+
+  /**
+   * What can actually be done with this task right now (ADR-0045) — derived, never
+   * stored, so it can never go stale.
+   */
+  async routeForTask(taskId: string): Promise<RouteVerdict> {
+    const task = this.store.getTask(taskId);
+    if (!task) throw new Error(`no such task: ${taskId}`);
+    const project = this.store.getProject(task.projectId);
+    const runtimes = await this.getCodingRuntimes();
+    return routeFor({
+      task,
+      hasRoot: Boolean(project?.root),
+      runtimeReady: runtimes.some((r) => r.state === 'ready' && r.realExecution),
+      realExecution: this.realLaneExecution,
+    });
+  }
+
+  /**
+   * Hand a task to a lane (ADR-0045).
+   *
+   * "אם מעבירים משימה לסוכן, היא נפתחת בתוך מסלול הביצוע שכבר קיים באמריטה, עם
+   *  הרשאות, תקציב, קבצים מותרים, נקודות עצירה וקבלה שמוכיחה מה נעשה."
+   *
+   * No new orchestration stack: this is `lanes.start` with a goal assembled from
+   * the task and the charter, and the resulting `laneId` written back onto the card
+   * so the two never drift apart. The existing approval gate, budget and receipt
+   * all apply unchanged.
+   */
+  async delegateTask(
+    input: { projectId: string; conversationId: string; taskId: string } & EntityWriteOpts,
+  ): Promise<{ laneId: string; status: string }> {
+    const task = this.store.getTask(input.taskId);
+    if (!task) throw new Error(`no such task: ${input.taskId}`);
+    if (task.laneId) throw new Error('conflict: this task is already delegated to a lane');
+
+    const verdict = await this.routeForTask(input.taskId);
+    if (verdict.route !== 'delegate') {
+      throw new Error(
+        `conflict: this task cannot be delegated (${verdict.route}) — ${verdict.detail}`,
+      );
+    }
+
+    const brief = this.store.getBrief(input.projectId);
+    const goal = [
+      task.title,
+      task.body ? `\n\n${task.body}` : '',
+      brief?.goal ? `\n\nProject goal: ${brief.goal}` : '',
+      brief?.finishLine ? `\nDone means: ${brief.finishLine}` : '',
+    ].join('');
+
+    const lane = await this.startLane({
+      conversationId: input.conversationId,
+      goal,
+      detach: true,
+      ...(input.origin ? { origin: input.origin } : {}),
+    });
+
+    // Write the link back, so the card and the lane can never drift apart.
+    this.store.updateTask({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      taskId: input.taskId,
+      status: 'now',
+      reason: 'delegated to a lane',
+      ...(input.origin ? { origin: input.origin } : {}),
+    });
+    this.store.db
+      .prepare('UPDATE tasks SET lane_id = ? WHERE id = ?')
+      .run(lane.laneId, input.taskId);
+
+    return { laneId: lane.laneId, status: lane.status };
+  }
+
+  // ── the retrospective, and what crosses out of a project (ADR-0045) ────────
+
+  /** What actually happened. Computed from the record, not from a model's memory. */
+  buildRetro(projectId: string, now: Date = new Date()): RetroPacket {
+    return buildRetroPacket({
+      projectId,
+      brief: this.store.getBrief(projectId) ?? null,
+      tasks: this.store.listTasks({ projectId }),
+      milestones: this.store.listMilestones({ projectId }),
+      risks: this.store.listRisks({ projectId }),
+      questions: this.store.listQuestions({ projectId }),
+      decisions: this.store.listDecisions({ projectId }),
+      now,
+    });
+  }
+
+  /**
+   * Run the retrospective: write the summary into the project, and offer the lessons
+   * as PROPOSALS. Nothing leaves the project here.
+   */
+  runRetro(
+    input: { projectId: string; conversationId: string } & EntityWriteOpts,
+    now: Date = new Date(),
+  ): { lessons: string[] } {
+    const packet = this.buildRetro(input.projectId, now);
+
+    this.store.appendEvent({
+      id: newId(),
+      ts: now.toISOString(),
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      origin: 'system',
+      type: 'message.system',
+      payload: { text: renderRetroPacket(packet) },
+    } as UnsealedEvent);
+
+    // The retro's own record stays IN the project, as project memory.
+    for (const l of packet.lessons.slice(0, 10)) {
+      try {
+        this.store.putMemoryEntry({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          scope: 'project',
+          content: l,
+          source: 'retro',
+          ...(input.origin ? { origin: input.origin } : {}),
+        });
+      } catch {
+        // one bad lesson must not lose the retro
+      }
+    }
+
+    return { lessons: packet.lessons };
+  }
+
+  /**
+   * Promote ONE lesson into organizational memory (ADR-0045).
+   *
+   * "הלקחים לא יזלגו אוטומטית לכל הפרויקטים. אתה תאשר מה הופך לידע ארגוני, והוא
+   *  יישמר עם המקור וההקשר."
+   *
+   * This is the only path by which anything crosses out of a project, and it is one
+   * lesson at a time, by hand. The promoted entry is `user`-scoped (organizational)
+   * and carries `retro:<projectId>` as its source — so the next project is always
+   * told WHOSE experience it is being offered, and can disagree with it.
+   *
+   * There is deliberately no "promote all". Cross-project contamination is not a bug
+   * you fix later; it is a door you never build.
+   */
+  promoteLesson(
+    input: { projectId: string; conversationId: string; lesson: string } & EntityWriteOpts,
+  ): { entryId: string } {
+    const project = this.store.getProject(input.projectId);
+    if (!project) throw new Error(`no such project: ${input.projectId}`);
+
+    const { entryId } = this.store.putMemoryEntry({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      // `user` scope = organizational, visible beyond this project.
+      scope: 'user',
+      content: `${input.lesson} (learned on: ${project.name})`,
+      source: `${ORG_MEMORY_SOURCE_PREFIX}${input.projectId}`,
+      ...(input.origin ? { origin: input.origin } : {}),
+    });
+    return { entryId };
+  }
+
+  // ── the public stakeholder hub (ADR-0045) — SECURITY-CRITICAL ──────────────
+
+  /** Where published bytes live. One directory, fixed, never derived from input. */
+  private hubDir(): string {
+    return join(dirname(this.dbPath === ':memory:' ? '.' : this.dbPath), 'public');
+  }
+
+  /**
+   * The public view + its hash + whether it is currently published and in sync.
+   * Reading it publishes nothing.
+   */
+  previewHub(
+    projectId: string,
+    generatedAt: string = new Date().toISOString(),
+  ): {
+    hub: PublicHub;
+    contentHash: string;
+    published: { slug: string; publishedAt: string; inSync: boolean } | null;
+  } {
+    const project = this.store.getProject(projectId);
+    if (!project) throw new Error(`no such project: ${projectId}`);
+
+    const hub = buildPublicHub({
+      project: { name: project.name },
+      brief: this.store.getBrief(projectId) ?? null,
+      milestones: this.store.listMilestones({ projectId }),
+      phases: this.store.listPhases(projectId),
+      tasks: this.store.listTasks({ projectId }),
+      updates: [], // only explicitly-approved updates; none are implicit
+      generatedAt,
+    });
+
+    // Hash the CONTENT, not the render — `generatedAt` changes every call and would
+    // otherwise make every preview look like a change.
+    const hash = contentHash(JSON.stringify({ ...hub, generatedAt: '' }));
+    const row = this.store.getPublication(projectId);
+    const published =
+      row && !row.revokedAt
+        ? { slug: row.publicSlug, publishedAt: row.publishedAt, inSync: row.contentHash === hash }
+        : null;
+
+    return { hub, contentHash: hash, published };
+  }
+
+  /**
+   * Publish the hub (ADR-0045).
+   *
+   * Consequential and effectively irreversible — a page someone already fetched is
+   * out in the world — so it goes through `requestApproval`, which until now had
+   * exactly ONE caller in the entire system (real lane runs). This is its second.
+   *
+   * The bytes are written to disk. The public route serves ONLY those bytes and
+   * executes zero SQL, so there is no query for anything to be injected into.
+   */
+  async publishHub(
+    input: { projectId: string; conversationId: string } & EntityWriteOpts,
+  ): Promise<{ slug: string; contentHash: string; url: string }> {
+    const project = this.store.getProject(input.projectId);
+    if (!project) throw new Error(`no such project: ${input.projectId}`);
+
+    const { hub, contentHash: hash } = this.previewHub(input.projectId);
+    if (!hub.goal) {
+      throw new Error('conflict: nothing to publish — the project has no goal yet');
+    }
+
+    // `requestApproval` returns the DECISION STRING, not a boolean. `if (!decision)`
+    // would be false for 'deny' — a truthy string — and a denied publish would have
+    // published. Compare explicitly against 'allow' and nothing else.
+    const decision = await this.requestApproval(
+      { projectId: input.projectId, conversationId: input.conversationId },
+      'hub.publish',
+      `Publish "${project.name}" publicly. Anyone with the link can read it, and a page already fetched cannot be un-fetched.`,
+    );
+    if (decision !== 'allow') {
+      throw new Error(`conflict: publication was not approved (${decision})`);
+    }
+
+    // Reuse the existing slug so the URL is STABLE across republishes — the video's
+    // own complaint about Cloudflare Drop was that the URL changed every time.
+    const existing = this.store.getPublication(input.projectId);
+    const slug = existing?.publicSlug ?? randomBytes(18).toString('base64url');
+    if (!SLUG_RE.test(slug)) throw new Error('internal: generated an invalid slug');
+
+    const dir = this.hubDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${slug}.html`), renderPublicHub(hub), 'utf8');
+
+    this.store.publishHub({ ...input, publicSlug: slug, contentHash: hash });
+    return { slug, contentHash: hash, url: `/p/${slug}` };
+  }
+
+  /**
+   * Take it down. The bytes go first; the DB fact and audit trail follow.
+   *
+   * The public reader executes zero SQL — it serves whatever `<slug>.html` is on
+   * disk, so **the file is the only thing a stranger sees**, not `revoked_at`.
+   * That makes the unlink the actual takedown, and it must fail CLOSED: only
+   * "already gone" counts as removed; any other error (EPERM/EBUSY/EROFS — real on
+   * the Windows target when a scanner or the operator's browser holds the file)
+   * throws BEFORE the DB is marked revoked, so the operator is never told a page
+   * came down while it is still being served.
+   */
+  revokeHub(
+    input: { projectId: string; conversationId: string; reason: string } & EntityWriteOpts,
+  ): { ok: true } {
+    const row = this.store.getPublication(input.projectId);
+    if (!row || row.revokedAt) throw new Error('not found: nothing is published for this project');
+    try {
+      rmSync(join(this.hubDir(), `${row.publicSlug}.html`));
+    } catch (err) {
+      // "already gone" is the goal state, not a failure. Anything else means the
+      // bytes are still live — refuse to report a takedown that did not happen.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(
+          'conflict: the published page could not be removed from disk, so it is still live — nothing was revoked',
+        );
+      }
+    }
+    this.store.revokeHub(input);
+    return { ok: true };
+  }
+
+  /**
+   * Serve a published page (ADR-0045). THE PUBLIC REQUEST PATH.
+   *
+   * Executes **zero SQL**. It validates the slug against a regex, then reads one
+   * file by exact name from one fixed directory. There is no query for anything to
+   * be injected into, and no way to reach another project's data with any input.
+   */
+  readPublishedHub(slug: string): string | null {
+    if (!SLUG_RE.test(slug)) return null; // validated BEFORE any path is constructed
+    const dir = this.hubDir();
+    const file = join(dir, `${slug}.html`);
+    // Belt and braces: the resolved path must still be inside the publish dir.
+    if (!resolve(file).startsWith(`${resolve(dir)}/`)) return null;
+    try {
+      return readFileSync(file, 'utf8');
+    } catch {
+      return null; // never distinguish "revoked" from "never existed"
+    }
+  }
+
+  // ── the weekly review (ADR-0045) ───────────────────────────────────────────
+
+  /**
+   * Persist the scheduler's run-state (ADR-0045) — a plain, non-secret settings row.
+   *
+   * Anchored to the `system` project, like every other daemon-level fact. It is
+   * settings, not domain state: losing it costs one extra review, not correctness
+   * (the packet is idempotent per ISO week regardless).
+   */
+  putSchedulerState(state: Record<string, unknown>): void {
+    const project = this.ensureProject({ slug: 'system', name: 'System' });
+    const conversationId = this.defaultConversationFor(project.id);
+    this.store.updateSetting({
+      projectId: project.id,
+      conversationId,
+      key: SCHEDULER_STATE_SETTING,
+      value: state,
+      origin: 'system',
+    });
+  }
+
+  /** Compute the packet without writing anything — for the UI and for tests. */
+  buildReview(projectId: string, now: Date = new Date()): ReviewPacket {
+    return buildReviewPacket({
+      projectId,
+      brief: this.store.getBrief(projectId) ?? null,
+      tasks: this.store.listTasks({ projectId }),
+      milestones: this.store.listMilestones({ projectId }),
+      risks: this.store.listRisks({ projectId }),
+      questions: this.store.listQuestions({ projectId }),
+      now,
+    });
+  }
+
+  /**
+   * Run the weekly review for one project (ADR-0045).
+   *
+   * "לא יבצע שינויים בשקט" — it proposes and it summarizes. The ONLY things it is
+   * allowed to write are Inbox items (proposals) and one `message.system`. It never
+   * closes a task, never moves a date, never publishes.
+   *
+   * Idempotent per ISO week: the packet key is `review:<project>:<week>`, and a
+   * second run in the same week is a no-op. That holds even if the scheduler's
+   * run-state is lost, which is the belt to the persisted-state braces.
+   *
+   * Returns true when there was something worth saying.
+   */
+  runProjectReview(projectId: string, now: Date = new Date()): boolean {
+    const project = this.store.getProject(projectId);
+    if (!project?.activatedAt) return false; // a project that never started cannot drift
+
+    const packet = this.buildReview(projectId, now);
+    if (packet.empty) return false;
+
+    // Already reviewed this week? Then say nothing again.
+    const already = this.store
+      .listInboxItems({ projectId })
+      .some((i) => i.suggested?.reviewKey === packet.key);
+    if (already) return false;
+
+    const conversationId = this.defaultConversationFor(projectId);
+
+    // The recommendations become PROPOSALS — never actions.
+    for (const r of packet.recommendations.slice(0, 6)) {
+      try {
+        this.store.captureInboxItem({
+          projectId,
+          conversationId,
+          origin: 'system',
+          text: r,
+          rationale: `Weekly review ${packet.weekOf}`,
+          confidence: 'medium',
+          // The week key rides along so a second run in the same week is a no-op
+          // even if the scheduler's run-state was lost.
+          suggested: { reviewKey: packet.key },
+        });
+      } catch {
+        // one bad proposal must not lose the packet
+      }
+    }
+
+    // …and one message the operator actually reads.
+    this.store.appendEvent({
+      id: newId(),
+      ts: now.toISOString(),
+      projectId,
+      conversationId,
+      origin: 'system',
+      type: 'message.system',
+      payload: { text: renderReviewPacket(packet) },
+    } as UnsealedEvent);
+
+    return true;
+  }
+
+  /** The project's default conversation — created on demand, never guessed. */
+  private defaultConversationFor(projectId: string): string {
+    const live = this.store.listConversations(projectId).filter((c) => !c.archivedAt);
+    const existing = live[0];
+    if (existing) return existing.id;
+    return this.store.createConversation({ projectId, title: '(default)' }).id;
+  }
+
+  // ── phases + activation (ADR-0045) ─────────────────────────────────────────
+
+  listPhases(projectId: string): PhaseRow[] {
+    return this.store.listPhases(projectId);
+  }
+
+  createPhase(
+    input: {
+      projectId: string;
+      conversationId: string;
+      title: string;
+      description?: string;
+      status?: MilestoneStatus;
+      orderKey?: string;
+    } & EntityWriteOpts,
+  ): { phaseId: string } {
+    return { phaseId: this.store.createPhase(input).phaseId };
+  }
+
+  updatePhase(
+    input: {
+      projectId: string;
+      conversationId: string;
+      phaseId: string;
+      title?: string;
+      description?: string | null;
+      status?: MilestoneStatus;
+      orderKey?: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    this.store.updatePhase(input);
+    return { ok: true };
+  }
+
+  /**
+   * ACTIVATE the project (ADR-0045).
+   *
+   * "כאשר יש מספיק בסיס, אמריטה מציעה להפעיל את הפרויקט. רק אחרי אישור שלך היא
+   *  יוצרת אבני דרך, שלבים ומשימות ראשונות."
+   *
+   * This is what stops Amrita from dumping you into an empty board. Until it is
+   * called, the project is a CONVERSATION. It is called only by an explicit
+   * operator action, and it is the caller (the UI, having shown the proposal) that
+   * supplies the phases/milestones/tasks — Amrita proposes them, the human approves
+   * them, and only then do they exist.
+   *
+   * Refuses to run twice, and refuses to run on a charter with no basis: a board
+   * conjured from nothing is exactly what the whole design is against.
+   */
+  activateProject(
+    input: {
+      projectId: string;
+      conversationId: string;
+      // `| undefined` on the nested optionals: `clean()` only strips undefined at the
+      // TOP level, and `exactOptionalPropertyTypes` is on — so the zod-parsed shape
+      // genuinely carries `description?: string | undefined` inside the arrays.
+      phases: { title: string; description?: string | undefined }[];
+      milestones?: { title: string; targetDate?: string | undefined }[];
+      tasks?: { title: string; phaseIndex?: number | undefined }[];
+    } & EntityWriteOpts,
+  ): { phaseIds: string[]; milestoneIds: string[]; taskIds: string[] } {
+    const project = this.store.getProject(input.projectId);
+    if (!project) throw new Error(`no such project: ${input.projectId}`);
+    if (project.activatedAt) {
+      throw new Error('conflict: this project is already activated');
+    }
+    const brief = this.store.getBrief(input.projectId) ?? null;
+    if (!readyToActivate(brief)) {
+      throw new Error(
+        'conflict: the charter has no basis yet — a goal, a finish line and at least one constraint are needed before a board can exist',
+      );
+    }
+
+    const c = {
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      ...(input.origin ? { origin: input.origin } : {}),
+    };
+
+    // Phases first: tasks reference them, and the trigger checks they exist.
+    const phaseIds: string[] = [];
+    let key = 'n';
+    for (const p of input.phases) {
+      const { phaseId } = this.store.createPhase({
+        ...c,
+        title: p.title,
+        ...(p.description ? { description: p.description } : {}),
+        orderKey: key,
+      });
+      phaseIds.push(phaseId);
+      key = `${key}n`; // monotone, and never terminal — see board.ts's invariant
+    }
+
+    const milestoneIds = (input.milestones ?? []).map(
+      (m) =>
+        this.store.createMilestone({
+          ...c,
+          title: m.title,
+          ...(m.targetDate ? { targetDate: m.targetDate } : {}),
+        }).milestoneId,
+    );
+
+    const taskIds = (input.tasks ?? []).map((t) => {
+      const phaseId = t.phaseIndex !== undefined ? phaseIds[t.phaseIndex] : undefined;
+      return this.store.createTask({
+        ...c,
+        title: t.title,
+        // Amrita proposed these and the operator approved them — so they are real,
+        // but they are not something the operator said first-hand (ADR-0045).
+        certainty: 'inferred',
+        ...(phaseId ? { phaseId } : {}),
+      }).taskId;
+    });
+
+    this.store.activateProject({
+      ...c,
+      phaseCount: phaseIds.length,
+      milestoneCount: milestoneIds.length,
+      taskCount: taskIds.length,
+    });
+
+    return { phaseIds, milestoneIds, taskIds };
+  }
+
+  /**
+   * Turn a lane's merge report into Inbox proposals (ADR-0045).
+   *
+   * A lane is an agent, so its output follows exactly the same rule as the Scribe's:
+   * it PROPOSES, a human disposes. Nothing a lane "found" becomes project truth
+   * without a triage — that is what keeps a runaway lane from quietly rewriting the
+   * plan. Best-effort: a lane must never fail because its bookkeeping did.
+   */
+  private captureMergeReport(projectId: string, conversationId: string, report: MergeReport): void {
+    const propose = (text: string, kind: InboxKind, suggested: Record<string, unknown>): void => {
+      try {
+        this.store.captureInboxItem({
+          projectId,
+          conversationId,
+          origin: 'lane',
+          text,
+          suggestedKind: kind,
+          suggested,
+          rationale: `A lane reported this while working: ${report.summary.slice(0, 200)}`,
+          confidence: 'medium',
+        });
+      } catch {
+        // one bad item must not fail the lane
+      }
+    };
+
+    for (const t of report.tasks ?? []) propose(t, 'task', { title: t });
+    for (const d of report.decisions ?? []) propose(d, 'decision', { text: d });
+    for (const f of report.followUps ?? []) propose(f, 'task', { title: f });
+  }
+
+  // ── the Scribe — the agent→domain bridge (ADR-0044) ────────────────────────
+
+  /**
+   * Normalize what a turn established into typed proposals.
+   *
+   * Everything here is best-effort by design: the reply has already been sent and
+   * persisted. A provider failure, a malformed response, a missing role binding —
+   * all of them mean "no proposals this turn", never "the turn failed".
+   */
+  private async runScribe(input: {
+    projectId: string;
+    conversationId: string;
+    userText: string;
+    agentText: string;
+    sourceMessageId: string;
+    contextPack: string;
+  }): Promise<void> {
+    if (this.getSetting(SCRIBE_SETTING) === false) return;
+    // The gate is REQUIRED, not an optimization: the `fast` role can resolve to a
+    // CLI subprocess, so an ungated Scribe would spawn a process for "thanks!".
+    if (!looksLikeProjectTruth(input.userText, input.agentText)) return;
+
+    let text: string;
+    try {
+      // Role `fast` by construction — the Scribe is a cheap, mechanical pass and
+      // must never burn the `main`/`deep` model that answers the operator.
+      const { provider, model } = this.resolveChatProvider(
+        { conversationId: input.conversationId, text: '', role: 'fast' },
+        input.projectId,
+      );
+      const resp = await provider.generate({
+        messages: [
+          {
+            role: 'user',
+            text: buildScribePrompt({
+              contextPack: input.contextPack,
+              userText: input.userText,
+              agentText: input.agentText,
+            }),
+          },
+        ],
+        model,
+      });
+      text = resp.text;
+    } catch {
+      return; // no provider, no proposals — never a failed turn
+    }
+
+    const proposals = parseScribeResponse(text);
+    if (proposals.length === 0) return;
+
+    // The auto-commit boundary (ADR-0044): an open question is INERT — it asserts
+    // nothing and is maximally reversible — so it commits directly and the
+    // interview flows. Everything that ASSERTS something waits for a human.
+    const autoOpen =
+      this.getSetting(SCRIBE_AUTO_OPEN_QUESTIONS_SETTING) !== false &&
+      this.store.listQuestions({ projectId: input.projectId, status: 'open' }).length <
+        MAX_OPEN_QUESTIONS;
+    const existing = new Set(
+      this.store
+        .listQuestions({ projectId: input.projectId, status: 'open' })
+        .map((q) => questionKey(q.text)),
+    );
+
+    let opened = 0;
+    for (const p of proposals) {
+      try {
+        if (
+          p.kind === 'question' &&
+          autoOpen &&
+          opened < MAX_AUTO_QUESTIONS_PER_TURN &&
+          !existing.has(questionKey(p.text))
+        ) {
+          this.store.openQuestion({
+            projectId: input.projectId,
+            conversationId: input.conversationId,
+            text: p.text,
+            sourceMessageId: input.sourceMessageId,
+            origin: 'agent',
+            // ADR-0045: this is the ONE thing that enters project truth without a
+            // human approving it, so it must never look like something you said.
+            certainty: 'inferred',
+          });
+          existing.add(questionKey(p.text));
+          opened++;
+          continue;
+        }
+
+        const { kind, text: itemText, suggested } = suggestedPayload(p);
+        this.store.captureInboxItem({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          origin: 'agent',
+          text: itemText,
+          suggestedKind: kind,
+          suggested,
+          rationale: p.rationale,
+          confidence: p.confidence,
+          sourceMessageId: input.sourceMessageId,
+        });
+      } catch {
+        // one bad proposal must not lose the rest of the turn's work
+      }
+    }
+  }
+
+  // ── the Inbox — the one triage queue (ADR-0044) ────────────────────────────
+
+  captureInbox(
+    input: {
+      projectId: string;
+      conversationId: string;
+      origin: InboxOrigin;
+      text: string;
+      suggestedKind?: InboxKind;
+      suggested?: Record<string, unknown>;
+      rationale?: string;
+      confidence?: InboxConfidence;
+      sourceMessageId?: string;
+    } & EntityWriteOpts,
+  ): { itemId: string } {
+    return { itemId: this.store.captureInboxItem(input).itemId };
+  }
+
+  listInbox(filters: { projectId: string; status?: InboxStatus }): InboxItemRow[] {
+    return this.store.listInboxItems(filters);
+  }
+
+  /**
+   * Promote an Inbox item into a REAL aggregate.
+   *
+   * The promotion goes through the same typed command a human would call — this
+   * is what stops the Inbox from becoming a second, weaker write path into the
+   * domain. Only once the aggregate exists do we record what the item became.
+   *
+   * Not one transaction (each is its own `appendEvent`), and that asymmetry is
+   * deliberate: if the promotion succeeds but the bookkeeping throws, the worst
+   * case is an item that stays `pending` while its task exists — visible, and
+   * re-triageable. The reverse (an item marked triaged with nothing behind it)
+   * is the one that would be a lie, and the SQL CHECK makes it impossible.
+   */
+  triageInbox(
+    input: { projectId: string; conversationId: string; itemId: string } & TriageTarget &
+      EntityWriteOpts,
+  ): { promotedKind: InboxKind; promotedId: string } {
+    const item = this.store.getInboxItem(input.itemId);
+    if (!item) throw new Error(`no such inbox item: ${input.itemId}`);
+    if (item.status !== 'pending') {
+      throw new Error(`inbox item is already ${item.status}`);
+    }
+    const c = {
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      ...(input.origin ? { origin: input.origin } : {}),
+      // provenance survives the promotion: the task/risk/decision points back at
+      // the message that produced the proposal in the first place
+      ...(item.sourceMessageId ? { sourceMessageId: item.sourceMessageId } : {}),
+    };
+    // ADR-0045: certainty follows WHO raised it. A human capture is something you
+    // stated; anything an agent or a lane worked out stays marked as INFERRED even
+    // after you approve it — approval makes it actionable, not first-hand.
+    const certainty: Certainty = item.origin === 'user' ? 'stated' : 'inferred';
+
+    let promotedId: string;
+    switch (input.kind) {
+      case 'task':
+        promotedId = this.store.createTask({
+          ...c,
+          certainty,
+          title: input.title,
+          ...(input.body ? { body: input.body } : {}),
+          ...(input.milestoneId ? { milestoneId: input.milestoneId } : {}),
+        }).taskId;
+        break;
+      case 'decision':
+        promotedId = this.store.recordDecision({ ...c, text: input.text }).decisionId;
+        break;
+      case 'risk':
+        promotedId = this.store.openRisk({
+          ...c,
+          certainty,
+          text: input.text,
+          ...(input.severity ? { severity: input.severity } : {}),
+        }).riskId;
+        break;
+      case 'question':
+        promotedId = this.store.openQuestion({ ...c, certainty, text: input.text }).questionId;
+        break;
+      case 'milestone':
+        promotedId = this.store.createMilestone({
+          ...c,
+          title: input.title,
+          ...(input.description ? { description: input.description } : {}),
+          ...(input.targetDate ? { targetDate: input.targetDate } : {}),
+        }).milestoneId;
+        break;
+      case 'memory':
+        promotedId = this.store.putMemoryEntry({
+          ...c,
+          scope: 'project',
+          content: input.content,
+          source: 'inbox',
+        }).entryId;
+        break;
+    }
+
+    this.store.triageInboxItem({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      itemId: input.itemId,
+      promotedKind: input.kind,
+      promotedId,
+      ...(input.origin ? { origin: input.origin } : {}),
+    });
+    return { promotedKind: input.kind, promotedId };
+  }
+
+  dismissInbox(
+    input: {
+      projectId: string;
+      conversationId: string;
+      itemId: string;
+      reason: string;
+    } & EntityWriteOpts,
+  ): { ok: true } {
+    const item = this.store.getInboxItem(input.itemId);
+    if (!item) throw new Error(`no such inbox item: ${input.itemId}`);
+    this.store.dismissInboxItem(input);
+    return { ok: true };
+  }
+
   // ── organizational brain harness (ADR-0027) ────────────────────────────────
 
   /** The harness agent topology (honest about active vs planned agents). */
@@ -1368,6 +2453,57 @@ export class AmritaKernel {
    * and links), gaps, maintenance timeline, counts. A deterministic projection
    * over event-sourced state + manually-captured memory (no new storage).
    */
+  /**
+   * The Project Context Pack for a chat turn (ADR-0044) — the live project state
+   * the model is given as a system message. `''` when the project has nothing
+   * worth saying yet (a brand-new project), in which case the caller sends no
+   * system message at all.
+   *
+   * No cache, by design: rebuilt from the store every turn, so a task the user
+   * just dragged is in the very next turn's context with no invalidation step.
+   *
+   * Settings-gated (`context.pack.enabled`, default ON) so a bad pack degrades to
+   * exactly the old behavior — transcript only — rather than breaking chat.
+   */
+  async buildContextPack(projectId: string): Promise<string> {
+    if (this.getSetting(CONTEXT_PACK_SETTING) === false) return '';
+    const project = this.store.getProject(projectId);
+    if (!project) return '';
+
+    // The working tree probe spawns `git` and can fail on a bad root; a chat turn
+    // must never die because of it.
+    let context: ProjectContextWire | null = null;
+    try {
+      context = await this.getProjectContext(projectId);
+    } catch {
+      context = null;
+    }
+
+    const brain = this.getProjectBrain(projectId);
+    const brief = this.store.getBrief(projectId) ?? null;
+    const tasks = this.store.listTasks({ projectId });
+    const risks = this.store.listRisks({ projectId });
+    const questions = this.store.listQuestions({ projectId });
+    const pack = buildProjectContextPack({
+      project: { name: project.name },
+      brief,
+      charterFindings: auditCharter({ brief, tasks, risks, questions }),
+      tasks,
+      milestones: this.store.listMilestones({ projectId }),
+      questions,
+      risks,
+      decisions: this.store.listDecisions({ projectId }),
+      memory: this.store.listMemoryEntries(projectId),
+      gaps: brain.gaps,
+      sources: brain.sources,
+      context,
+    });
+    // The canvas capability is a property of Amrita, not the project, so it goes
+    // on EVERY turn — even a stateless one, which is exactly when someone says
+    // "build me a game" on a fresh project and expects it on the canvas.
+    return pack ? `${AMRITA_CAPABILITIES}\n\n${pack}` : AMRITA_CAPABILITIES;
+  }
+
   getProjectBrain(projectId: string, now: string = new Date().toISOString()): ProjectBrain {
     return buildProjectBrain({
       projectId,
@@ -1469,7 +2605,14 @@ export class AmritaKernel {
       successCriteria?: string[];
       scope?: string[];
       noScope?: string[];
+      // the charter (ADR-0044)
+      finishLine?: string;
+      constraints?: ProjectConstraint[];
+      decisionRights?: DecisionRight[];
+      certainty?: Record<string, Certainty>;
       sourceMessageId?: string;
+      /** ADR-0045: a stale full-document brief write would WIPE the charter. */
+      expectedVersion?: number;
     } & EntityWriteOpts,
   ): { ok: true } {
     this.store.upsertBrief(input);
@@ -1763,6 +2906,8 @@ export class AmritaKernel {
         title,
         body: `Imported from ${issue.url}`,
         externalRef,
+        // ADR-0045: it came from an external system, not from you and not from a guess.
+        certainty: 'documented',
         ...(input.origin ? { origin: input.origin } : {}),
         ...(input.channel ? { channel: input.channel } : {}),
       });
@@ -1788,8 +2933,14 @@ export class AmritaKernel {
   /** Mint (or renew) the workspace view ticket for one lane (6h TTL). */
   issueWorkspaceTicket(laneId: string): { ticket: string; expiresAt: string } {
     if (!this.store.getLane(laneId)) throw new Error(`no such lane: ${laneId}`);
+    const now = Date.now();
+    // Sweep expired tickets on each mint so the map cannot grow without bound over
+    // the daemon's lifetime (one ticket per lane view, never cleaned before).
+    for (const [id, entry] of this.workspaceTickets) {
+      if (now > entry.expiresAt) this.workspaceTickets.delete(id);
+    }
     const ticket = randomBytes(24).toString('base64url');
-    const expiresAt = Date.now() + 6 * 60 * 60 * 1000;
+    const expiresAt = now + 6 * 60 * 60 * 1000;
     this.workspaceTickets.set(laneId, { ticket, expiresAt });
     return { ticket, expiresAt: new Date(expiresAt).toISOString() };
   }
@@ -2111,6 +3262,11 @@ export class AmritaKernel {
       });
       const sealed = mergeReportSchema.parse({ ...report, laneId });
       this.safeEmitLane(projectId, conversationId, laneId, 'lane.merge_report', sealed);
+      // ADR-0045: the lane's TYPED outputs used to be thrown away — `project.ts`
+      // projected `merge_json` and nothing else, so a lane could report that it
+      // created three tasks and zero rows would appear. They are proposals now,
+      // and they land in the same Inbox as everything else an agent produces.
+      this.captureMergeReport(projectId, conversationId, sealed);
       // `cancelled` and `aborted` are terminal-aborted in the row state machine;
       // the precise disposition lives in the merge report's `exit`.
       if (sealed.exit === 'aborted' || sealed.exit === 'cancelled') {

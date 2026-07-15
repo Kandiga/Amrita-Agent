@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { newId } from '@amrita/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { currentVersion, migrateDown, migrateUp } from '../src/migrate.ts';
+import { MIGRATIONS, currentVersion, migrateDown, migrateUp } from '../src/migrate.ts';
 import { type Store, openStore } from '../src/store.ts';
 
 let tmp: string;
@@ -47,6 +47,9 @@ const REQUIRED_TABLES = [
   'milestones',
   'project_brands',
   'preview_approvals',
+  'inbox_items',
+  'phases',
+  'project_publications',
 ];
 
 function tableNames(db: Database.Database): string[] {
@@ -57,20 +60,24 @@ function tableNames(db: Database.Database): string[] {
   ).map((t) => t.name);
 }
 
+// Derived, not hard-coded: a new migration must not break the reversibility test.
+const MIGRATION_COUNT = MIGRATIONS.length;
+const TOP_VERSION = MIGRATION_COUNT - 1;
+
 describe('migrations', () => {
   it('apply up, down, and up again (reversible) across all migrations', () => {
     const db = new Database(':memory:');
     expect(currentVersion(db)).toBe(-1);
 
-    // up: 0000..0008 all apply
-    expect(migrateUp(db)).toBe(9);
-    expect(currentVersion(db)).toBe(8);
+    // up: every migration applies
+    expect(migrateUp(db)).toBe(MIGRATION_COUNT);
+    expect(currentVersion(db)).toBe(TOP_VERSION);
     for (const name of REQUIRED_TABLES) {
       expect(tableNames(db)).toContain(name);
     }
 
     // full down: all revert; even the lineage + milestone columns are gone
-    expect(migrateDown(db)).toBe(9);
+    expect(migrateDown(db)).toBe(MIGRATION_COUNT);
     expect(currentVersion(db)).toBe(-1);
     expect(tableNames(db)).not.toContain('events');
     expect(tableNames(db)).not.toContain('tasks');
@@ -81,8 +88,8 @@ describe('migrations', () => {
     expect(tableNames(db)).not.toContain('project_brands');
 
     // up again — and a second up is a no-op
-    expect(migrateUp(db)).toBe(9);
-    expect(currentVersion(db)).toBe(8);
+    expect(migrateUp(db)).toBe(MIGRATION_COUNT);
+    expect(currentVersion(db)).toBe(TOP_VERSION);
     expect(migrateUp(db)).toBe(0);
     db.close();
   });
@@ -90,8 +97,9 @@ describe('migrations', () => {
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
-    // revert only above version 1 → 0002..0008 (FTS, pairings, companion, brand, external ref, whatsapp, cascade)
-    expect(migrateDown(db, 1)).toBe(7);
+    // revert everything above version 1 (FTS, pairings, companion, brand,
+    // external ref, whatsapp, cascade, project-ts index, …)
+    expect(migrateDown(db, 1)).toBe(TOP_VERSION - 1);
     expect(currentVersion(db)).toBe(1);
     expect(tableNames(db)).not.toContain('memory_entries_fts');
     expect(tableNames(db)).not.toContain('channel_pairings');
@@ -1500,6 +1508,534 @@ describe('brand memory + preview approvals (ADR-0020)', () => {
     expect(rows[0]?.contentHash).toBe('hash-2');
     // never visible from another project
     expect(store.listPreviewApprovals(b.projectId)).toEqual([]);
+  });
+});
+
+// ── ADR-0044: the board — activating the dormant write path ──────────────────
+describe('the task board (ADR-0044)', () => {
+  function ctx(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    return { projectId, conversationId: store.createConversation({ projectId }).id };
+  }
+
+  it('creates a task with owner, due date, priority and an order key', () => {
+    const c = ctx();
+    const { taskId } = store.createTask({
+      ...c,
+      title: 'File the permit',
+      owner: 'Dana',
+      dueDate: '2026-09-01',
+      priority: 'high',
+      orderKey: 'a0',
+    });
+    const t = store.listTasks({ projectId: c.projectId }).find((x) => x.id === taskId);
+    expect(t).toMatchObject({
+      owner: 'Dana',
+      dueDate: '2026-09-01',
+      priority: 'high',
+      orderKey: 'a0',
+      blockedReason: null,
+    });
+  });
+
+  it('moves a card between columns — the drag, as one event on one row', () => {
+    const c = ctx();
+    const { taskId } = store.createTask({ ...c, title: 'x', status: 'later', orderKey: 'a0' });
+    store.updateTask({ ...c, taskId, status: 'now', orderKey: 'a5' });
+
+    const t = store.listTasks({ projectId: c.projectId })[0];
+    expect(t?.status).toBe('now');
+    expect(t?.orderKey).toBe('a5');
+    // exactly one task.updated — no sibling re-indexing
+    const updates = store.getEvents(c.conversationId).filter((e) => e.type === 'task.updated');
+    expect(updates).toHaveLength(1);
+  });
+
+  it('CLEARS a field with null, and leaves it alone when absent', () => {
+    const c = ctx();
+    const { taskId } = store.createTask({
+      ...c,
+      title: 'x',
+      owner: 'Dana',
+      priority: 'high',
+      blockedReason: 'waiting on the permit',
+    });
+
+    // absent = leave alone
+    store.updateTask({ ...c, taskId, title: 'y' });
+    let t = store.listTasks({ projectId: c.projectId })[0];
+    expect(t?.owner).toBe('Dana');
+    expect(t?.blockedReason).toBe('waiting on the permit');
+
+    // null = clear (un-assign, unblock)
+    store.updateTask({ ...c, taskId, owner: null, blockedReason: null });
+    t = store.listTasks({ projectId: c.projectId })[0];
+    expect(t?.owner).toBeNull();
+    expect(t?.blockedReason).toBeNull();
+    expect(t?.priority).toBe('high'); // untouched
+  });
+
+  it('models "Waiting" WITHOUT widening the status enum', () => {
+    const c = ctx();
+    const { taskId } = store.createTask({ ...c, title: 'x', status: 'now' });
+    store.updateTask({ ...c, taskId, blockedReason: 'the arts council has not replied' });
+
+    const t = store.listTasks({ projectId: c.projectId })[0];
+    // still a legal status — the enum is untouched (SQLite cannot alter a CHECK)
+    expect(t?.status).toBe('now');
+    // …and yet it is unambiguously in the Waiting column, with the REASON
+    expect(t?.blockedReason).toBe('the arts council has not replied');
+  });
+
+  it('rejects a bad date and a bad priority at the SQL layer', () => {
+    const c = ctx();
+    expect(() => store.createTask({ ...c, title: 'x', dueDate: '3rd of March' })).toThrow();
+    expect(() =>
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypassing the type to test the CHECK
+      store.createTask({ ...c, title: 'y', priority: 'urgent' as any }),
+    ).toThrow();
+  });
+
+  it('orders the board by order key, with an unranked task last', () => {
+    const c = ctx();
+    store.createTask({ ...c, title: 'never dragged' });
+    store.createTask({ ...c, title: 'second', orderKey: 'b' });
+    store.createTask({ ...c, title: 'first', orderKey: 'a' });
+
+    expect(store.listTasks({ projectId: c.projectId }).map((t) => t.title)).toEqual([
+      'first',
+      'second',
+      'never dragged',
+    ]);
+  });
+
+  it('replays a pre-0044 task.created event (no board fields) unchanged', () => {
+    const c = ctx();
+    store.appendEvent(
+      unsealed(c.projectId, c.conversationId, 'task.created', {
+        taskId: newId(),
+        projectId: c.projectId,
+        conversationId: c.conversationId,
+        title: 'legacy task',
+      }),
+    );
+    const t = store.listTasks({ projectId: c.projectId })[0];
+    expect(t?.title).toBe('legacy task');
+    expect(t?.owner).toBeNull();
+    expect(t?.priority).toBeNull();
+    expect(t?.orderKey).toBeNull();
+  });
+});
+
+// ── ADR-0044: the charter (constraints as fuel) ──────────────────────────────
+describe('the charter (ADR-0044)', () => {
+  function ctx(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    return { projectId, conversationId: store.createConversation({ projectId }).id };
+  }
+
+  it('persists the finish line, constraints and decision rights', () => {
+    const c = ctx();
+    store.upsertBrief({
+      ...c,
+      goal: 'Run the Unity Festival',
+      successCriteria: ['500 attendees'],
+      scope: [],
+      noScope: [],
+      finishLine: 'the festival happens and books at $15K net',
+      constraints: [
+        { kind: 'budget', text: '$15K net', hard: true },
+        { kind: 'resource', text: 'one organizer', hard: false },
+      ],
+      decisionRights: [{ area: 'vendor list', approver: 'the arts council' }],
+    });
+
+    const b = store.getBrief(c.projectId);
+    expect(b?.finishLine).toBe('the festival happens and books at $15K net');
+    expect(b?.constraints).toEqual([
+      { kind: 'budget', text: '$15K net', hard: true },
+      { kind: 'resource', text: 'one organizer', hard: false },
+    ]);
+    expect(b?.decisionRights).toEqual([{ area: 'vendor list', approver: 'the arts council' }]);
+  });
+
+  it('defaults to an EMPTY charter, never an invented one', () => {
+    const c = ctx();
+    store.upsertBrief({ ...c, goal: 'Ship v1', successCriteria: [], scope: [], noScope: [] });
+    const b = store.getBrief(c.projectId);
+    expect(b?.finishLine).toBeNull();
+    expect(b?.constraints).toEqual([]);
+    expect(b?.decisionRights).toEqual([]);
+  });
+
+  it('is a FULL-document upsert — a later write without a charter clears it', () => {
+    const c = ctx();
+    store.upsertBrief({
+      ...c,
+      goal: 'g',
+      successCriteria: [],
+      scope: [],
+      noScope: [],
+      finishLine: 'done when shipped',
+      constraints: [{ kind: 'date', text: 'by October', hard: true }],
+    });
+    // ADR-0018's brief semantics: the event carries the WHOLE document, so
+    // replaying the log must rebuild the row verbatim — which means an update
+    // that omits the charter really does drop it. Callers must send it back.
+    store.upsertBrief({ ...c, goal: 'g2', successCriteria: [], scope: [], noScope: [] });
+    const b = store.getBrief(c.projectId);
+    expect(b?.goal).toBe('g2');
+    expect(b?.finishLine).toBeNull();
+    expect(b?.constraints).toEqual([]);
+  });
+
+  it('replays a pre-0044 brief.updated event (no charter fields) unchanged', () => {
+    const c = ctx();
+    // exactly the payload shape shipped before ADR-0044
+    store.appendEvent(
+      unsealed(c.projectId, c.conversationId, 'brief.updated', {
+        projectId: c.projectId,
+        goal: 'legacy goal',
+        successCriteria: ['x'],
+        scope: [],
+        noScope: [],
+      }),
+    );
+    const b = store.getBrief(c.projectId);
+    expect(b?.goal).toBe('legacy goal');
+    expect(b?.constraints).toEqual([]); // the DEFAULT '[]', not a crash
+    expect(b?.decisionRights).toEqual([]);
+    expect(b?.finishLine).toBeNull();
+  });
+});
+
+// ── ADR-0044: the Inbox — the one triage queue ───────────────────────────────
+describe('inbox (ADR-0044)', () => {
+  function ctx(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    return { projectId, conversationId: store.createConversation({ projectId }).id };
+  }
+
+  it('captures a proposal as PENDING — it is not project truth yet', () => {
+    const c = ctx();
+    const { itemId } = store.captureInboxItem({
+      ...c,
+      origin: 'agent',
+      text: 'the venue deposit is due March 3rd',
+      suggestedKind: 'task',
+      suggested: { title: 'Pay the venue deposit', dueDate: '2026-03-03' },
+      rationale: 'the operator committed to a date',
+      confidence: 'high',
+    });
+
+    const item = store.getInboxItem(itemId);
+    expect(item?.status).toBe('pending');
+    expect(item?.origin).toBe('agent');
+    expect(item?.suggestedKind).toBe('task');
+    expect(item?.suggested).toEqual({ title: 'Pay the venue deposit', dueDate: '2026-03-03' });
+    expect(item?.confidence).toBe('high');
+    // and crucially: nothing landed in the real aggregate
+    expect(store.listTasks({ projectId: c.projectId })).toHaveLength(0);
+  });
+
+  it('records a promotion and what it BECAME', () => {
+    const c = ctx();
+    const { itemId } = store.captureInboxItem({ ...c, origin: 'user', text: 'book the band' });
+    const { taskId } = store.createTask({ ...c, title: 'Book the band' });
+    store.triageInboxItem({ ...c, itemId, promotedKind: 'task', promotedId: taskId });
+
+    const item = store.getInboxItem(itemId);
+    expect(item?.status).toBe('triaged');
+    expect(item?.promotedKind).toBe('task');
+    expect(item?.promotedId).toBe(taskId);
+  });
+
+  it('REFUSES a silent promotion — a triage must name what it became', () => {
+    const c = ctx();
+    const { itemId } = store.captureInboxItem({ ...c, origin: 'user', text: 'x' });
+    // Bypass the store API and emit the event with a promotion that names nothing.
+    expect(() =>
+      store.db.prepare("UPDATE inbox_items SET status = 'triaged' WHERE id = ?").run(itemId),
+    ).toThrow(/CHECK constraint/);
+    expect(store.getInboxItem(itemId)?.status).toBe('pending');
+  });
+
+  it('REFUSES a silent dismissal — a reason is required', () => {
+    const c = ctx();
+    const { itemId } = store.captureInboxItem({ ...c, origin: 'user', text: 'x' });
+    expect(() =>
+      store.db.prepare("UPDATE inbox_items SET status = 'dismissed' WHERE id = ?").run(itemId),
+    ).toThrow(/CHECK constraint/);
+
+    // …and with a reason it settles cleanly.
+    store.dismissInboxItem({ ...c, itemId, reason: 'already handled offline' });
+    const item = store.getInboxItem(itemId);
+    expect(item?.status).toBe('dismissed');
+    expect(item?.dismissReason).toBe('already handled offline');
+  });
+
+  it('lists the pending queue for a project, oldest first', () => {
+    const c = ctx();
+    const a = store.captureInboxItem({ ...c, origin: 'user', text: 'first' });
+    store.captureInboxItem({ ...c, origin: 'lane', text: 'second' });
+    store.dismissInboxItem({ ...c, itemId: a.itemId, reason: 'nope' });
+
+    const pending = store.listInboxItems({ projectId: c.projectId, status: 'pending' });
+    expect(pending.map((i) => i.text)).toEqual(['second']);
+    expect(store.listInboxItems({ projectId: c.projectId })).toHaveLength(2);
+  });
+
+  it('carries provenance to the exact message that produced it', () => {
+    const c = ctx();
+    const user = store.recordUserMessage({ ...c, text: 'the deposit is due March 3rd' });
+    const { itemId } = store.captureInboxItem({
+      ...c,
+      origin: 'agent',
+      text: 'deposit due March 3rd',
+      sourceMessageId: user.message.id,
+    });
+    expect(store.getInboxItem(itemId)?.sourceMessageId).toBe(user.message.id);
+  });
+});
+
+// ── ADR-0044: views are projections (the executable fitness function) ────────
+describe('projection rebuild', () => {
+  /** Every table whose SOLE writer is applyEventProjection. */
+  const DERIVED_TABLES = [
+    'messages',
+    'tasks',
+    'decisions',
+    'open_questions',
+    'risks',
+    'milestones',
+    'project_briefs',
+    'project_brands',
+    'preview_approvals',
+    'memory_entries',
+    'lanes',
+    'connectors',
+    'inbox_items',
+    'phases',
+    'project_publications',
+  ];
+
+  function snapshot(): Record<string, unknown[]> {
+    const out: Record<string, unknown[]> = {};
+    for (const t of DERIVED_TABLES) {
+      out[t] = store.db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all();
+    }
+    out.conversations = store.db
+      .prepare('SELECT id, archived_at FROM conversations ORDER BY rowid')
+      .all();
+    return out;
+  }
+
+  /** A project exercising every event-derived aggregate at once. */
+  function populate(): { projectId: string; conversationId: string } {
+    const projectId = project();
+    const conversationId = store.createConversation({ projectId, title: 'main' }).id;
+    const c = { projectId, conversationId };
+
+    const user = store.recordUserMessage({ ...c, text: 'ship the festival' });
+    store.recordAgentMessage({ ...c, text: 'on it' });
+
+    store.upsertBrief({
+      ...c,
+      goal: 'Run the Unity Festival',
+      audience: 'the town',
+      successCriteria: ['500 attendees', '$15K net'],
+      scope: ['the event'],
+      noScope: ['a second stage'],
+      finishLine: 'the festival happens and books at $15K net',
+      constraints: [{ kind: 'budget', text: '$15K net', hard: true }],
+      decisionRights: [{ area: 'vendors', approver: 'the arts council' }],
+    });
+    store.upsertBrand({ ...c, name: 'Unity', palette: ['warm'] });
+    store.approvePreview({ ...c, previewId: 'html-preview:x', contentHash: 'abc123' });
+
+    const { phaseId } = store.createPhase({ ...c, title: 'Permits phase', orderKey: 'n' });
+    store.updatePhase({ ...c, phaseId, status: 'active' });
+    const { milestoneId } = store.createMilestone({
+      ...c,
+      title: 'Permits',
+      targetDate: '2026-09-01',
+    });
+    const { taskId } = store.createTask({
+      ...c,
+      title: 'File the permit',
+      milestoneId,
+      owner: 'Dana',
+      dueDate: '2026-09-01',
+      priority: 'high',
+      orderKey: 'a0',
+      phaseId,
+      certainty: 'stated',
+    });
+    store.updateTask({
+      ...c,
+      taskId,
+      status: 'later',
+      title: 'File the permit (renamed)',
+      orderKey: 'a5',
+      blockedReason: 'waiting on the council',
+    });
+    store.updateTask({
+      ...c,
+      taskId,
+      blockedReason: null,
+      owner: null,
+      reason: 'the council replied',
+      derivedFrom: [{ kind: 'decision', label: 'Riverside Park it is' }],
+    });
+    const done = store.createTask({ ...c, title: 'Book the band' });
+    store.completeTask({ ...c, taskId: done.taskId });
+
+    const { decisionId } = store.recordDecision({
+      ...c,
+      text: 'Riverside Park',
+      sourceMessageId: user.message.id,
+    });
+    store.supersedeDecision({ ...c, supersedesId: decisionId, text: 'Town Square instead' });
+
+    const q = store.openQuestion({ ...c, text: 'who signs the permit?' });
+    store.resolveQuestion({ ...c, questionId: q.questionId, resolvedByDecisionId: decisionId });
+    const q2 = store.openQuestion({ ...c, text: 'insurance?' });
+    store.dropQuestion({ ...c, questionId: q2.questionId, reason: 'handled offline' });
+
+    const r = store.openRisk({ ...c, text: 'rain', severity: 'high' });
+    store.resolveRisk({ ...c, riskId: r.riskId, resolution: 'tent booked' });
+
+    store.putMemoryEntry({
+      ...c,
+      scope: 'project',
+      content: 'vendor prefers cash',
+      source: 'chat',
+    });
+    store.completeMilestone({ ...c, milestoneId });
+
+    // the Inbox, in all three terminal states (ADR-0044) — so replay-equivalence
+    // covers the new aggregate too, not just the ADR-0018 ones.
+    store.captureInboxItem({
+      ...c,
+      origin: 'agent',
+      text: 'deposit due March 3rd',
+      suggestedKind: 'task',
+      suggested: { title: 'Pay the deposit' },
+      confidence: 'high',
+    });
+    const promoted = store.captureInboxItem({ ...c, origin: 'lane', text: 'lane found a task' });
+    store.triageInboxItem({
+      ...c,
+      itemId: promoted.itemId,
+      promotedKind: 'task',
+      promotedId: done.taskId,
+    });
+    const junk = store.captureInboxItem({ ...c, origin: 'user', text: 'noise' });
+    store.dismissInboxItem({ ...c, itemId: junk.itemId, reason: 'not relevant' });
+    store.activateProject({ ...c, phaseCount: 1, milestoneCount: 1, taskCount: 2 });
+    return c;
+  }
+
+  it('replays the whole log into an IDENTICAL read model (views are projections)', () => {
+    const { projectId, conversationId } = populate();
+    store.appendEvent(unsealed(projectId, conversationId, 'conversation.archived', {}));
+
+    const before = snapshot();
+    const { events } = store.rebuildProjections();
+    const after = snapshot();
+
+    expect(events).toBeGreaterThan(15); // the log really was replayed
+    expect(after).toEqual(before);
+  });
+
+  it('is idempotent — rebuilding twice changes nothing', () => {
+    populate();
+    store.rebuildProjections();
+    const once = snapshot();
+    store.rebuildProjections();
+    expect(snapshot()).toEqual(once);
+  });
+
+  it('leaves the append-only decisions trigger armed afterwards', () => {
+    const { projectId } = populate();
+    store.rebuildProjections();
+    // The rebuild opens ADR-0038's per-project gate to clear `decisions`, then
+    // clears it. If it leaked, decisions would silently become deletable.
+    expect(() =>
+      store.db.prepare('DELETE FROM decisions WHERE project_id = ?').run(projectId),
+    ).toThrow(/append-only/);
+    expect(
+      store.db.prepare("SELECT * FROM settings WHERE key = 'cascade.project.delete'").get(),
+    ).toBeUndefined();
+  });
+
+  it('does NOT delete non-derived state (projects and conversations survive)', () => {
+    const c = populate();
+    store.updateSetting({ ...c, key: 'providers.role.main', value: { provider: 'mock' } });
+    store.rebuildProjections();
+
+    // projects/conversations are created by DIRECT insert, not by the reducer —
+    // a rebuild must never touch them, or it would delete what the log lacks.
+    expect(store.listProjects()).toHaveLength(1);
+    expect(store.listConversations(c.projectId)).toHaveLength(1);
+    // settings ARE event-sourced (settings.updated), so they survive by replay.
+    expect(store.getSetting('providers.role.main')).toEqual({ provider: 'mock' });
+  });
+
+  it('rolls the read model back if a replay fails (one transaction)', () => {
+    const { projectId } = populate();
+    const before = snapshot();
+    const eventCount = store.db.prepare('SELECT count(*) AS n FROM events').get() as { n: number };
+
+    // Corrupt one stored payload so re-projecting it throws mid-replay. (This
+    // makes the row permanently unparseable, so assert on raw SQL below — a
+    // typed read of it would now throw too, which is itself correct behavior.)
+    store.db
+      .prepare(
+        'UPDATE events SET payload_json = \'{"taskId":"nope"}\' WHERE type = \'task.created\'',
+      )
+      .run();
+    expect(() => store.rebuildProjections()).toThrow();
+
+    // Everything is exactly as it was — no half-rebuilt store.
+    expect(snapshot()).toEqual(before);
+    expect(store.listTasks({ projectId })).toHaveLength(2);
+    expect(store.db.prepare('SELECT count(*) AS n FROM events').get()).toEqual(eventCount);
+  });
+});
+
+describe('project timeline index (ADR-0044 / migration 0009)', () => {
+  it('restores idx_events_project_ts, which the 0007 table rebuild dropped', () => {
+    const idx = store.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_project_ts'")
+      .get();
+    expect(idx).toBeDefined();
+  });
+
+  it('uses the index for the project-timeline read instead of scanning', () => {
+    const plan = store.db
+      .prepare(
+        'EXPLAIN QUERY PLAN SELECT * FROM events WHERE project_id = ? ORDER BY ts DESC, rowid DESC LIMIT ?',
+      )
+      .all('p', 10) as { detail: string }[];
+    expect(plan.map((r) => r.detail).join(' ')).toContain('idx_events_project_ts');
+  });
+});
+
+describe('corrupt DB quarantine on open (ST3)', () => {
+  it('a non-database file is moved aside and open throws — not a crash-loop', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'amrita-corrupt-'));
+    const path = join(dir, 'amrita.db');
+    // Bytes that are definitely not a SQLite file.
+    writeFileSync(path, 'this is not a database, it is garbage\n');
+    expect(() => openStore({ path, spillDir: join(dir, 'artifacts') })).toThrow(/corrupt/i);
+    // The garbage file was quarantined, so the ORIGINAL path is now free for a
+    // fresh store on the next start (which is exactly how the crash-loop breaks).
+    expect(existsSync(path)).toBe(false);
+    const moved = readdirSync(dir).find((f) => f.startsWith('amrita.db.corrupt.'));
+    expect(moved).toBeDefined();
+    expect(readFileSync(join(dir, moved as string), 'utf8')).toContain('garbage');
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

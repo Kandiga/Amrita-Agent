@@ -1,8 +1,8 @@
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
-import type { AmritaEvent, WsServerFrame } from '@amrita/protocol';
-import { WebSocketServer } from 'ws';
+import { type AmritaEvent, type WsServerFrame, isProjectDomainEvent } from '@amrita/protocol';
+import { type WebSocket, WebSocketServer } from 'ws';
 import { requestToken, tokensMatch } from './auth.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
@@ -12,9 +12,39 @@ function wsFrame(frame: WsServerFrame): string {
   return JSON.stringify(frame);
 }
 
+/** WS liveness + resource bounds (stability audit). */
+const WS_MAX_CONNECTIONS = 512;
+const WS_HEARTBEAT_MS = 30_000;
+/** If a client's outbound buffer passes this, it cannot keep up — drop it rather
+ *  than let the daemon buffer without bound (OOM). */
+const WS_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+/** Cap replay-on-connect; older history is fetched via GET /events, not the socket. */
+const WS_MAX_REPLAY = 1000;
+
+type LiveSocket = WebSocket & { isAlive?: boolean };
+
+/**
+ * Send unless the socket is falling behind. A slow/stalled reader otherwise makes
+ * the daemon buffer every event forever; past the cap we terminate it (it will
+ * reconnect and replay). Returns false if the socket was dropped.
+ */
+function safeSend(ws: WebSocket, data: string): boolean {
+  if (ws.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+    ws.terminate();
+    return false;
+  }
+  ws.send(data);
+  return true;
+}
+
 /** Wrap a sealed event as its wire frame (every event payload is an object). */
 function eventFrame(ev: AmritaEvent): WsServerFrame {
   return { t: 'event', event: ev };
+}
+
+/** A project-scoped domain change (ADR-0044). No cursor — see the ADR. */
+function projectEventFrame(ev: AmritaEvent): WsServerFrame {
+  return { t: 'project-event', event: ev };
 }
 
 /**
@@ -23,10 +53,11 @@ function eventFrame(ev: AmritaEvent): WsServerFrame {
  * ever carries a secret value (the RPC/kernel layer already guarantees that).
  *
  *   GET  /health                                  → kernel health (always public)
+ *   GET  /p/<slug>                                 → the public hub (ADR-0045, PUBLIC)
  *   POST /rpc                                      → async JSON-RPC dispatch        [auth]
  *   GET  /events?conversationId=&sinceSeq=         → replay persisted events        [auth]
  *   GET  /lanes/<id>/workspace[/<path>]            → lane workspace files (ADR-0039) [auth]
- *   WS   /events/ws?conversationId=&sinceSeq=      → replay + live fan-out          [auth]
+ *   WS   /events/ws?conversationId=&sinceSeq=&projectId= → replay + live fan-out     [auth]
  *
  * When `authToken` is set, every route except `GET /health` requires a matching
  * bearer token (`Authorization: Bearer …`, or `?token=` for the browser WS that
@@ -46,6 +77,64 @@ export interface RunningHttpServer {
 }
 
 const MAX_BODY_BYTES = 1_000_000;
+
+/**
+ * A minimal per-IP rate limit for the ONE public route (ADR-0045). Not a security
+ * boundary — it is there so the public hub cannot be used to hammer the daemon that
+ * also serves the private app.
+ */
+const PUBLIC_WINDOW_MS = 60_000;
+const PUBLIC_MAX_HITS = 60;
+// Hard cap so a flood of distinct source addresses (cheap over IPv6) cannot grow
+// this map without bound and exhaust the daemon that also serves the private app.
+const PUBLIC_MAX_KEYS = 10_000;
+const publicHits = new Map<string, { count: number; resetAt: number }>();
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/**
+ * The rate-limit key for a public hit.
+ *
+ * The daemon binds loopback, so the internet reaches `/p/` only through the
+ * bundled proxy (`deploy/serve-web.mjs`) — which means `remoteAddress` is
+ * `127.0.0.1` for EVERY visitor. Keyed on that alone, all strangers share one
+ * bucket (a self-inflicted 429 storm) and the "per-IP" cap protects nothing.
+ *
+ * So when — and ONLY when — the peer is our own loopback proxy, trust the
+ * **rightmost** `x-forwarded-for` hop: that entry is the one the proxy itself
+ * appended, so a client cannot spoof it by pre-seeding the header. From any
+ * non-loopback peer the header is ignored entirely.
+ */
+export function publicRateKey(req: IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? 'unknown';
+  if (LOOPBACK.has(peer)) {
+    const xff = req.headers['x-forwarded-for'];
+    const raw = Array.isArray(xff) ? xff[xff.length - 1] : xff;
+    const last = raw?.split(',').pop()?.trim();
+    if (last) return last;
+  }
+  return peer;
+}
+
+export function allowPublicHit(ip: string, now = Date.now()): boolean {
+  const hit = publicHits.get(ip);
+  if (!hit || now > hit.resetAt) {
+    // Evict expired windows before admitting a new key, so the steady-state size
+    // is bounded by distinct sources seen in the last window.
+    if (publicHits.size >= PUBLIC_MAX_KEYS) {
+      for (const [k, v] of publicHits) if (now > v.resetAt) publicHits.delete(k);
+      // Hard cap: if a distinct-IP flood (cheap over IPv6) fills the map with
+      // still-live windows and eviction frees nothing, refuse rather than grow
+      // without bound. Fail-closed — a 429 is the right answer to a flood.
+      if (publicHits.size >= PUBLIC_MAX_KEYS) return false;
+    }
+    publicHits.set(ip, { count: 1, resetAt: now + PUBLIC_WINDOW_MS });
+    return true;
+  }
+  if (hit.count >= PUBLIC_MAX_HITS) return false;
+  hit.count++;
+  return true;
+}
 
 /**
  * Browser CORS (integration Phase 7): the Cinema SPA is a different origin, so
@@ -86,17 +175,25 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let aborted = false;
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => {
+      if (aborted) return;
       size += c.length;
       if (size > MAX_BODY_BYTES) {
+        // PAUSE, don't destroy: destroying the socket first means the 400/413 can
+        // never be written. Stop reading (so nothing more is buffered) and let the
+        // caller send a structured error and end the response normally.
+        aborted = true;
+        req.pause();
         reject(new Error('request body too large'));
-        req.destroy();
         return;
       }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => {
+      if (!aborted) resolve(Buffer.concat(chunks).toString('utf8'));
+    });
     req.on('error', reject);
   });
 }
@@ -143,6 +240,50 @@ async function handleHttp(
       return;
     }
     serveLaneWorkspace(kernel, res, laneId, decodeURIComponent(ticketMatch[3] ?? ''));
+    return;
+  }
+
+  /**
+   * ADR-0045: the public stakeholder hub. THE FIRST HOLE EVER PUNCHED IN THE AUTH
+   * GATE, and it is deliberately the dumbest component in the system:
+   *
+   *   - it executes ZERO SQL — it reads pre-rendered bytes from one fixed directory;
+   *   - the slug is regex-validated BEFORE any path is constructed;
+   *   - the resolved path is re-checked to be inside the publish directory;
+   *   - the CSP forbids every outbound channel, so a published page cannot phone
+   *     home or call back into the daemon;
+   *   - a missing page and a revoked page are indistinguishable (both 404) — the
+   *     404 must not become an oracle for "this project exists".
+   *
+   * Rate-limited per IP, so the public route cannot be used to load-test the daemon
+   * that also serves the private app.
+   */
+  const pubMatch = /^\/p\/([A-Za-z0-9_-]{16,64})$/.exec(url.pathname);
+  if (method === 'GET' && pubMatch) {
+    const ip = publicRateKey(req);
+    if (!allowPublicHit(ip)) {
+      res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('slow down');
+      return;
+    }
+    const html = kernel.readPublishedHub(pubMatch[1] ?? '');
+    if (!html) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('not found');
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy':
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
+      'x-robots-tag': 'noindex, nofollow',
+      // No caching: a revoke must take effect immediately, and the page is served
+      // locally and cheaply, so there is nothing to gain by letting a copy linger.
+      'cache-control': 'no-store',
+    });
+    res.end(html);
     return;
   }
 
@@ -323,7 +464,14 @@ function serveLaneWorkspace(
   }
   const type = WORKSPACE_TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream';
   res.writeHead(200, { 'content-type': type, ...WORKSPACE_SECURITY_HEADERS });
-  res.end(readFileSync(target));
+  // Stream rather than readFileSync so a large artifact does not pull its whole
+  // size into heap; an I/O error mid-stream tears the response down instead of
+  // throwing unhandled (pipe does not forward the source's error).
+  const stream = createReadStream(target);
+  stream.on('error', () => {
+    res.destroyed || res.writableEnded ? undefined : res.destroy();
+  });
+  stream.pipe(res);
 }
 
 /** Start the HTTP/WS server. Resolves once listening; `port` is the bound port. */
@@ -335,15 +483,47 @@ export function startHttpServer(
   const authToken = opts.authToken ?? '';
   const server = createServer((req, res) => {
     handleHttp(kernel, req, res, authToken).catch(() => {
-      if (!res.headersSent)
+      if (!res.headersSent) {
         sendJson(res, 500, { error: { code: 'internal', message: 'internal error' } });
+      } else if (!res.writableEnded && !res.destroyed) {
+        // Headers already flushed — we cannot change the status. Tear the response
+        // down so it does not hang the connection (and the client) forever.
+        res.destroy();
+      }
     });
   });
 
   const wss = new WebSocketServer({ noServer: true });
+
+  // Heartbeat: a TCP connection can go half-open (client vanishes, no close event)
+  // and leak its subscription + buffered memory forever. Ping every tick; a socket
+  // that missed the previous pong is dead — terminate it (fires 'close' → cleanup).
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients as Set<LiveSocket>) {
+      if (client.isAlive === false) {
+        client.terminate();
+        continue;
+      }
+      client.isAlive = false;
+      try {
+        client.ping();
+      } catch {
+        /* terminating */
+      }
+    }
+  }, WS_HEARTBEAT_MS);
+  heartbeat.unref?.();
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname !== '/events/ws') {
+      socket.destroy();
+      return;
+    }
+    // Cap total concurrent sockets so a connection flood cannot exhaust memory /
+    // amplify every event's fan-out without bound.
+    if (wss.clients.size >= WS_MAX_CONNECTIONS) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -358,30 +538,58 @@ export function startHttpServer(
       }
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      const live = ws as LiveSocket;
+      live.isAlive = true;
+      ws.on('pong', () => {
+        live.isAlive = true;
+      });
       const conversationId = url.searchParams.get('conversationId');
       if (!conversationId) {
         ws.close(1008, 'conversationId is required');
         return;
       }
       let lastSeq = Number(url.searchParams.get('sinceSeq') ?? '0') || 0;
+      // Bounded replay: a fresh connect with sinceSeq=0 would otherwise pull an
+      // entire long conversation into memory at once. Cap it; the client falls
+      // back to GET /events for anything older than the window.
+      let replayed = 0;
       for (const ev of kernel.listEvents(conversationId, lastSeq)) {
-        ws.send(wsFrame(eventFrame(ev)));
+        if (replayed >= WS_MAX_REPLAY) break; // older history is fetched via GET /events
+        if (!safeSend(ws, wsFrame(eventFrame(ev)))) return;
         lastSeq = ev.seq;
+        replayed += 1;
       }
-      ws.send(wsFrame({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
+      safeSend(ws, wsFrame({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
+
+      // ADR-0044: an optional project subscription. The board must update when a
+      // task changes ANYWHERE in the project — a second tab, the CLI, Telegram,
+      // the Scribe — not only in the conversation this socket happens to watch.
+      const projectId = url.searchParams.get('projectId');
 
       // Live fan-out: forward newly appended events for this conversation.
       const unsubscribe = kernel.store.subscribe((ev) => {
         if (ev.conversationId === conversationId && ev.seq > lastSeq) {
           lastSeq = ev.seq;
-          ws.send(wsFrame(eventFrame(ev)));
+          safeSend(ws, wsFrame(eventFrame(ev)));
+          return;
+        }
+        // A domain change elsewhere in the same project. Sent WITHOUT a cursor —
+        // `seq` is per-conversation, so a project-wide stream has no global
+        // sequence. It is a notification: the client refetches the projection.
+        if (
+          projectId &&
+          ev.projectId === projectId &&
+          ev.conversationId !== conversationId &&
+          isProjectDomainEvent(ev.type)
+        ) {
+          safeSend(ws, wsFrame(projectEventFrame(ev)));
         }
       });
       // Stream-only fan-out (model.delta): ephemeral, seq 0, never replayed —
       // forwarded as-is without touching lastSeq.
       const unsubscribeStream = kernel.subscribeStream((ev) => {
         if (ev.conversationId === conversationId) {
-          ws.send(wsFrame(eventFrame(ev)));
+          safeSend(ws, wsFrame(eventFrame(ev)));
         }
       });
       const cleanup = () => {
@@ -393,8 +601,15 @@ export function startHttpServer(
     });
   });
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    // A bind failure (EADDRINUSE, EACCES) otherwise throws as an uncaught
+    // exception with a raw stack and no clean exit. Reject so the caller can
+    // report it honestly and exit deliberately. Listener is removed once we are
+    // listening, so a later runtime socket error never rejects a settled promise.
+    const onListenError = (err: NodeJS.ErrnoException) => reject(err);
+    server.on('error', onListenError);
     server.listen(opts.port ?? 0, host, () => {
+      server.removeListener('error', onListenError);
       const addr = server.address();
       const port = typeof addr === 'object' && addr ? addr.port : (opts.port ?? 0);
       resolve({
@@ -403,6 +618,13 @@ export function startHttpServer(
         host,
         close: () =>
           new Promise<void>((res) => {
+            // server.close() fires its callback only once EVERY connection is gone.
+            // A persistent /events/ws socket never closes on its own, so without
+            // terminating live clients first the callback never runs and systemd
+            // SIGKILLs the daemon after the full 90s stop-timeout — hanging every
+            // restart/deploy. Force each socket shut, then stop accepting new ones.
+            clearInterval(heartbeat);
+            for (const ws of wss.clients) ws.terminate();
             wss.close();
             server.close(() => res());
           }),
