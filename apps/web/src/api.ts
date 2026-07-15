@@ -277,6 +277,25 @@ export class RpcClient {
     return this.call<LaneCancelResultLite>('lanes.cancel', { laneId });
   }
 
+  /** Open an interactive tmux session for an agent (ADR-0049). Gated by approval. */
+  openSession(conversationId: string, kind: string, goal: string): Promise<LaneStartResultLite> {
+    return this.call<LaneStartResultLite>('lanes.start', {
+      conversationId,
+      goal,
+      kind,
+      real: true,
+      detach: true,
+    });
+  }
+
+  sessionSend(laneId: string, text: string): Promise<{ laneId: string; sent: boolean }> {
+    return this.call('lanes.session.send', { laneId, text });
+  }
+
+  sessionFinish(laneId: string): Promise<{ laneId: string; finished: boolean }> {
+    return this.call('lanes.session.finish', { laneId });
+  }
+
   // ── project knowledge (typed wrappers; auth header is applied by call()) ───
 
   tasksCreate(params: {

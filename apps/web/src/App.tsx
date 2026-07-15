@@ -42,6 +42,7 @@ import { PhasesPanel } from './components/PhasesPanel.tsx';
 import { RetroPanel } from './components/RetroPanel.tsx';
 import { ReviewPanel } from './components/ReviewPanel.tsx';
 import { RuntimePanel } from './components/RuntimePanel.tsx';
+import { SessionsPanel } from './components/SessionsPanel.tsx';
 import { SettingsRuntimeHub } from './components/SettingsRuntimeHub.tsx';
 import { QuestionsPanel, RisksPanel } from './components/SettleListPanel.tsx';
 import { StatusStrip } from './components/StatusStrip.tsx';
@@ -65,6 +66,7 @@ import {
   transcriptMessages,
 } from './live-transcript.ts';
 import { buildSandboxedPreview } from './sandbox.ts';
+import { type SessionPanes, emptySessions, reduceSessionPane } from './session-state.ts';
 import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
 import { buildSurfaceArtifacts } from './surface.ts';
 
@@ -100,7 +102,7 @@ type ChatResult = {
 };
 
 /** Center-stage views. Chat is not a stage — it lives in the right panel. */
-type StageView = 'canvas' | 'project' | 'brain' | 'settings';
+type StageView = 'canvas' | 'project' | 'brain' | 'claude' | 'codex' | 'settings';
 /** Mobile is single-pane: chat is a tab alongside the stage views. */
 type MobileView = 'chat' | StageView;
 
@@ -124,6 +126,8 @@ const STAGE_TABS: { id: Exclude<StageView, 'settings'>; label: string; hint: str
   { id: 'canvas', label: 'Canvas', hint: 'everything Amrita builds, live' },
   { id: 'project', label: 'Project', hint: 'brief, tasks, decisions, lanes' },
   { id: 'brain', label: 'Brain', hint: 'the maintained knowledge harness' },
+  { id: 'claude', label: 'Claude', hint: 'live Claude Code sessions (ADR-0049)' },
+  { id: 'codex', label: 'Codex', hint: 'live Codex sessions (ADR-0049)' },
 ];
 
 function extractArray<T>(value: unknown, keys: string[]): T[] {
@@ -192,6 +196,7 @@ export function App() {
   const [tokenDraft, setTokenDraft] = useState('');
   const [unauthorized, setUnauthorized] = useState(false);
   const [lanes, setLanes] = useState<LanesState>(emptyLanes());
+  const [sessions, setSessions] = useState<SessionPanes>(emptySessions());
   const [realExecAvailable, setRealExecAvailable] = useState(false);
   const [doctor, setDoctor] = useState<DoctorReportLite | null>(null);
   const [decisions, setDecisions] = useState<DecisionRowLite[]>([]);
@@ -347,6 +352,7 @@ export function App() {
     if (!conversationId) return;
     setTranscript(emptyTranscript());
     setLanes(emptyLanes());
+    setSessions(emptySessions());
     setActivity([]);
     setPending([]);
     setStreamState('connecting');
@@ -357,6 +363,7 @@ export function App() {
         onEvent: (ev) => {
           setTranscript((s) => reduceEvent(s, ev));
           setLanes((s) => reduceLaneEvent(s, ev));
+          setSessions((s) => reduceSessionPane(s, ev)); // ADR-0049 live pane
           setActivity((s) => pushActivity(s, ev));
           if (ev.type.startsWith('approval.')) void loadApprovals();
           // ADR-0044: the Scribe writes AFTER the turn, so its proposals (and any
@@ -1155,6 +1162,18 @@ export function App() {
                 onError={reportError}
                 accessSlot={accessSection}
                 focusAccess={unauthorized}
+              />
+            </div>
+          ) : stageView === 'claude' || stageView === 'codex' ? (
+            <div className="stage-sessions">
+              <SessionsPanel
+                agent={stageView === 'claude' ? 'claude' : 'codex'}
+                lanes={laneViews}
+                conversationId={conversationId ?? ''}
+                sessions={sessions}
+                approvals={pendingApprovals}
+                realExecAvailable={realExecAvailable}
+                onError={reportError}
               />
             </div>
           ) : stageView === 'brain' ? (
