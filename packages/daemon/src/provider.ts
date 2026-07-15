@@ -489,15 +489,24 @@ const CLAUDE_CLI_TIMEOUT_MS =
 const CLAUDE_CHAT_ATTEMPTS = 3;
 
 /**
- * Chat-CLI arg fences that make `claude -p` a REPLY, not an agentic build. Without
- * them a "build me a game" chat turn makes the CLI actually build (Bash/Write/Edit)
- * for minutes and overrun the timeout, and its MCP servers can hang on interactive
- * auth. So (verified on the host): `--strict-mcp-config` (no MCP), `--max-turns 1`
- * (one turn), and a READ-ONLY tool allowlist (the lane runner's proven set) so the
- * brain can read but never build — that is what a lane/session is for (ADR-0048).
+ * Chat-CLI arg fences that make `claude -p` a REPLY, not an agentic build. `claude`
+ * is an AGENT: given ANY tools it decides to USE them (explore the filesystem, then
+ * build) BEFORE answering, and `--max-turns 1` then cuts it off mid-cycle with an
+ * `error_max_turns`. That exploration time is unbounded and swings from ~8s to the
+ * full timeout with the cwd (the daemon runs from `/`), the (minimal systemd) env,
+ * and the input size — the live 420s chat hang. A read-only allowlist did NOT fix
+ * it: an *allowed* tool is still a tool the agent reaches for, and a *disallowed*
+ * one is still requested (then denied) — either way it spends its one turn on
+ * tool-use and errors out (all verified on the host). The only fence that makes the
+ * brain a pure, bounded, single-turn TEXT completion is removing tools ENTIRELY:
+ * `--tools ""` (verified: subtype:success, num_turns:1, stop:end_turn, ~8s, immune
+ * to cwd/env/input). Architecturally right, not a hack: the manager REPLIES and
+ * DELEGATES; execution tools live in the session/lane, never in her chat brain
+ * (ADR-0048). `--strict-mcp-config` also drops MCP servers (they hang on interactive
+ * auth); `--max-turns 1` is a belt-and-suspenders cap a tool-less turn never reaches.
  */
 const CHAT_CLI_ARGS_HEAD = ['-p', '--strict-mcp-config', '--max-turns', '1'] as const;
-const CHAT_CLI_ARGS_TAIL = ['--allowedTools', 'Read', 'Grep', 'Glob', 'LS'] as const;
+const CHAT_CLI_ARGS_TAIL = ['--tools', ''] as const;
 
 const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
