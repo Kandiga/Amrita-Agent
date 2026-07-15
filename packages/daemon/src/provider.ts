@@ -541,9 +541,23 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
       }
       if (r.status !== 0 || !parsed || parsed.is_error === true || parsed.subtype !== 'success') {
         const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
-        const hint =
-          combined.includes('login') || combined.includes('auth') || combined.includes('api key')
-            ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
+        // Be specific: a bare "auth" substring also matches transient errors (rate
+        // limits, overload, 5xx), which mislabelled them as a login problem. Only a
+        // clear login signal gets the "log in" hint; a rate limit gets "retry".
+        const looksLikeLogin =
+          combined.includes('logged in') ||
+          combined.includes('log in') ||
+          combined.includes('/login') ||
+          combined.includes('unauthenticated') ||
+          combined.includes('invalid api key');
+        const looksLikeRateLimit =
+          combined.includes('rate limit') ||
+          combined.includes('overloaded') ||
+          combined.includes('429');
+        const hint = looksLikeLogin
+          ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
+          : looksLikeRateLimit
+            ? 'the claude CLI hit a rate limit or overload — wait a moment and retry'
             : 'the claude CLI returned an error (run `claude` interactively to inspect)';
         throw new ProviderError('provider_error', `claude-code turn failed: ${hint}`);
       }
@@ -623,9 +637,23 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
       const parsed = result as ClaudeCliResult | null;
       if (r.status !== 0 || !parsed || parsed.is_error === true || parsed.subtype !== 'success') {
         const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
-        const hint =
-          combined.includes('login') || combined.includes('auth') || combined.includes('api key')
-            ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
+        // Be specific: a bare "auth" substring also matches transient errors (rate
+        // limits, overload, 5xx), which mislabelled them as a login problem. Only a
+        // clear login signal gets the "log in" hint; a rate limit gets "retry".
+        const looksLikeLogin =
+          combined.includes('logged in') ||
+          combined.includes('log in') ||
+          combined.includes('/login') ||
+          combined.includes('unauthenticated') ||
+          combined.includes('invalid api key');
+        const looksLikeRateLimit =
+          combined.includes('rate limit') ||
+          combined.includes('overloaded') ||
+          combined.includes('429');
+        const hint = looksLikeLogin
+          ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
+          : looksLikeRateLimit
+            ? 'the claude CLI hit a rate limit or overload — wait a moment and retry'
             : 'the claude CLI returned an error (run `claude` interactively to inspect)';
         throw new ProviderError('provider_error', `claude-code turn failed: ${hint}`);
       }
