@@ -48,6 +48,21 @@ export function MilestonesPanel({
     }
   }
 
+  /**
+   * Move a milestone's status. Setting `active` is the one that matters: until a
+   * milestone is active, companion.ts's `milestone-plan` next-action never fires,
+   * because it looks for `status === 'active'` and nothing could ever set it.
+   */
+  async function setStatus(milestoneId: string, status: 'active' | 'dropped'): Promise<void> {
+    if (!writeCtx) return;
+    try {
+      await client.milestoneUpdate({ ...writeCtx, milestoneId, status });
+      onChanged();
+    } catch (e) {
+      onError(e);
+    }
+  }
+
   return (
     <section className="card">
       <h2>Milestones</h2>
@@ -95,9 +110,33 @@ export function MilestonesPanel({
                 </small>
               </div>
               {m.status !== 'done' && m.status !== 'dropped' ? (
-                <button type="button" className="task-complete" onClick={() => void complete(m.id)}>
-                  Done
-                </button>
+                <div className="milestone-actions">
+                  {m.status === 'planned' ? (
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => void setStatus(m.id, 'active')}
+                      title="Make this the milestone Amrita plans around"
+                    >
+                      Activate
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="task-complete"
+                    onClick={() => void complete(m.id)}
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void setStatus(m.id, 'dropped')}
+                    title="Drop this milestone"
+                  >
+                    Drop
+                  </button>
+                </div>
               ) : null}
             </div>
           );

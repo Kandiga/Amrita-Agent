@@ -1,10 +1,20 @@
+import type { CharterStatusWire } from '@amrita/protocol';
 import { useState } from 'react';
 import type { BriefLite } from '../api.ts';
+import {
+  constraintLabel,
+  formatConstraints,
+  formatDecisionRights,
+  parseConstraints,
+  parseDecisionRights,
+} from '../charter.ts';
 import { client } from '../client.ts';
 import { type WriteCtx, textDir } from '../lib.ts';
 
 interface BriefPanelProps {
   brief: BriefLite | null;
+  /** The COMPUTED critique (ADR-0045) — never a model's opinion. */
+  charter?: CharterStatusWire | null;
   writeCtx: WriteCtx | null;
   onChanged: () => void;
   onError: (e: unknown) => void;
@@ -17,14 +27,30 @@ function parseLines(s: string): string[] {
     .filter((l) => l.length > 0);
 }
 
-/** The project brief: view + full-document edit form (ADR-0018). */
-export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelProps) {
+/**
+ * The project brief + charter: view and full-document edit form (ADR-0018/0044).
+ *
+ * `brief.updated` carries the WHOLE document, so this form must send every field
+ * back — including the charter. Omitting one does not leave it alone, it CLEARS
+ * it (a store test pins that behavior). Hence `startEdit` seeds all of them.
+ */
+export function BriefPanel({ brief, charter, writeCtx, onChanged, onError }: BriefPanelProps) {
   const [editing, setEditing] = useState(false);
   const [goal, setGoal] = useState('');
   const [audience, setAudience] = useState('');
   const [criteria, setCriteria] = useState('');
   const [scope, setScope] = useState('');
   const [noScope, setNoScope] = useState('');
+  const [finishLine, setFinishLine] = useState('');
+  const [constraints, setConstraints] = useState('');
+  const [rights, setRights] = useState('');
+  /**
+   * ADR-0045: the brief `version` as it was when this edit STARTED. The brief is a
+   * full-document upsert, so saving over a version someone else already changed
+   * would not lose a field — it would wipe their whole charter. Send it back and
+   * the daemon refuses a stale save.
+   */
+  const [seenVersion, setSeenVersion] = useState<number | null>(null);
 
   function startEdit(): void {
     setGoal(brief?.goal ?? '');
@@ -32,6 +58,10 @@ export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelPr
     setCriteria((brief?.successCriteria ?? []).join('\n'));
     setScope((brief?.scope ?? []).join('\n'));
     setNoScope((brief?.noScope ?? []).join('\n'));
+    setFinishLine(brief?.finishLine ?? '');
+    setConstraints(formatConstraints(brief?.constraints ?? []));
+    setRights(formatDecisionRights(brief?.decisionRights ?? []));
+    setSeenVersion(brief?.version ?? null);
     setEditing(true);
   }
 
@@ -45,6 +75,11 @@ export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelPr
         successCriteria: parseLines(criteria),
         scope: parseLines(scope),
         noScope: parseLines(noScope),
+        // full-document: always send the charter back, or it is cleared
+        ...(finishLine.trim() ? { finishLine: finishLine.trim() } : {}),
+        constraints: parseConstraints(constraints),
+        decisionRights: parseDecisionRights(rights),
+        ...(seenVersion !== null ? { expectedVersion: seenVersion } : {}),
       });
       setEditing(false);
       onChanged();
@@ -53,9 +88,11 @@ export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelPr
     }
   }
 
+  const findings = charter?.findings ?? [];
+
   return (
     <section className="card">
-      <h2>Brief</h2>
+      <h2>Charter</h2>
       {editing ? (
         <form
           className="brief-form"
@@ -98,6 +135,28 @@ export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelPr
             placeholder={'Out of scope — one per line'}
             rows={2}
           />
+          <input
+            value={finishLine}
+            onChange={(e) => setFinishLine(e.target.value)}
+            dir={textDir(finishLine)}
+            placeholder="Done means… (the finish line)"
+          />
+          <textarea
+            value={constraints}
+            onChange={(e) => setConstraints(e.target.value)}
+            dir={textDir(constraints)}
+            placeholder={
+              'Constraints — one per line\nbudget: $15K net (hard)\ndate: third Saturday of October (hard)'
+            }
+            rows={3}
+          />
+          <textarea
+            value={rights}
+            onChange={(e) => setRights(e.target.value)}
+            dir={textDir(rights)}
+            placeholder={'Who approves what — one per line\nvendor list -> the arts council'}
+            rows={2}
+          />
           <div className="brief-actions">
             <button type="submit" disabled={!goal.trim()}>
               Save brief
@@ -132,8 +191,42 @@ export function BriefPanel({ brief, writeCtx, onChanged, onError }: BriefPanelPr
               <strong>Out:</strong> {brief.noScope.join(' · ')}
             </p>
           ) : null}
+          {brief.finishLine ? (
+            <p className="brief-scope" dir={textDir(brief.finishLine)}>
+              <strong>Done means:</strong> {brief.finishLine}
+            </p>
+          ) : null}
+          {brief.constraints.length > 0 ? (
+            <p className="brief-scope">
+              <strong>Constraints:</strong>{' '}
+              {brief.constraints.map((c) => constraintLabel(c)).join(' · ')}
+            </p>
+          ) : null}
+          {brief.decisionRights.length > 0 ? (
+            <p className="brief-scope">
+              <strong>Approvals:</strong>{' '}
+              {brief.decisionRights.map((r) => `${r.area} → ${r.approver}`).join(' · ')}
+            </p>
+          ) : null}
+          {/* ודאות / חוסר / סתירה — computed, not guessed (ADR-0045). */}
+          {findings.length > 0 && (
+            <ul className="charter-findings">
+              {findings.slice(0, 4).map((f) => (
+                <li key={`${f.kind}:${f.field}:${f.detail}`} className="charter-finding">
+                  <span className={`charter-mark ${f.kind}`}>
+                    {f.kind === 'missing'
+                      ? 'missing'
+                      : f.kind === 'unconfirmed'
+                        ? 'unconfirmed'
+                        : 'conflict'}
+                  </span>
+                  <span dir="auto">{f.detail}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           <button type="button" onClick={startEdit}>
-            Edit brief
+            Edit charter
           </button>
         </div>
       ) : (

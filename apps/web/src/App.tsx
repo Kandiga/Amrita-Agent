@@ -1,5 +1,14 @@
+import {
+  type CharterStatusWire,
+  type ChatFocus,
+  type InboxItemRowWire,
+  type PhaseRowWire,
+  type TaskRowWire,
+  isProjectDomainEvent,
+} from '@amrita/protocol';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type ActivityLine, currentActivity, pushActivity } from './activity.ts';
+import { extractAgentArtifacts, extractStreamingArtifact } from './agent-canvas.ts';
 import {
   type AmritaEventLite,
   type CompanionState,
@@ -12,22 +21,34 @@ import {
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import { client } from './client.ts';
 import { nextActions } from './companion.ts';
+import { ActivationPanel } from './components/ActivationPanel.tsx';
 import { ApprovalsPanel } from './components/ApprovalsPanel.tsx';
+import { BoardPanel } from './components/BoardPanel.tsx';
 import { BrainPanel } from './components/BrainPanel.tsx';
 import { BrandPanel } from './components/BrandPanel.tsx';
 import { BriefPanel } from './components/BriefPanel.tsx';
+import { CanvasFrame } from './components/CanvasFrame.tsx';
+import { CinemaPanel } from './components/CinemaPanel.tsx';
 import { ClaudeEcosystemPanel } from './components/ClaudeEcosystemPanel.tsx';
 import { DecisionsPanel } from './components/DecisionsPanel.tsx';
+import { FreeCanvas, type FreeCanvasArtifact } from './components/FreeCanvas.tsx';
+import { HubPanel } from './components/HubPanel.tsx';
+import { InboxPanel } from './components/InboxPanel.tsx';
 import { LanesPanel } from './components/LanesPanel.tsx';
 import { MemoryPanel } from './components/MemoryPanel.tsx';
 import { MilestonesPanel } from './components/MilestonesPanel.tsx';
 import { NextActionsPanel } from './components/NextActionsPanel.tsx';
+import { PhasesPanel } from './components/PhasesPanel.tsx';
+import { RetroPanel } from './components/RetroPanel.tsx';
+import { ReviewPanel } from './components/ReviewPanel.tsx';
 import { RuntimePanel } from './components/RuntimePanel.tsx';
 import { SettingsRuntimeHub } from './components/SettingsRuntimeHub.tsx';
 import { QuestionsPanel, RisksPanel } from './components/SettleListPanel.tsx';
+import { StatusStrip } from './components/StatusStrip.tsx';
 import { SurfacePanel } from './components/SurfacePanel.tsx';
 import { TasksPanel } from './components/TasksPanel.tsx';
 import { TimelinePanel } from './components/TimelinePanel.tsx';
+import { WorkspacePanel } from './components/WorkspacePanel.tsx';
 import {
   type LanesState,
   emptyLanes,
@@ -47,7 +68,13 @@ import { buildSandboxedPreview } from './sandbox.ts';
 import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
 import { buildSurfaceArtifacts } from './surface.ts';
 
-type Project = { id: string; slug: string; name: string };
+type Project = {
+  id: string;
+  slug: string;
+  name: string;
+  activatedAt?: string | null;
+  root?: string | null;
+};
 type Conversation = {
   id: string;
   projectId: string;
@@ -62,7 +89,8 @@ type Provider = {
   envReady?: boolean;
   streaming?: boolean;
 };
-type Task = { id: string; title: string; status?: string; milestoneId?: string | null };
+/** The board reads real task rows (ADR-0044), not a hand-rolled subset. */
+type Task = TaskRowWire;
 type ChatResult = {
   conversationId: string;
   text: string;
@@ -83,6 +111,14 @@ const STREAM_LABELS: Record<StreamState, string> = {
   error: 'Offline',
   closed: 'Disconnected',
 };
+
+/** Board / List / Timeline are three PROJECTIONS of the same rows (ADR-0044). */
+type ProjectView = 'board' | 'list' | 'timeline';
+const PROJECT_VIEWS: { id: ProjectView; label: string }[] = [
+  { id: 'board', label: 'Board' },
+  { id: 'list', label: 'List' },
+  { id: 'timeline', label: 'Timeline' },
+];
 
 const STAGE_TABS: { id: Exclude<StageView, 'settings'>; label: string; hint: string }[] = [
   { id: 'canvas', label: 'Canvas', hint: 'everything Amrita builds, live' },
@@ -132,31 +168,13 @@ function WorkspaceFrame({
   );
 }
 
-/** The live-canvas frame: same Stage-B sandbox as every preview (ADR-0020). */
-function CanvasFrame({ html, title }: { html: string; title: string }) {
-  const sandboxed = buildSandboxedPreview({
-    kind: 'html-preview',
-    id: 'canvas',
-    projectId: 'canvas',
-    title,
-    html,
-  });
-  return (
-    <iframe
-      className="canvas-frame"
-      title={title}
-      sandbox={sandboxed.sandbox}
-      srcDoc={sandboxed.srcDoc}
-    />
-  );
-}
-
 function titleFor(c: Conversation): string {
   return c.title || `Conversation ${c.id.slice(0, 8)}`;
 }
 
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [newProjectName, setNewProjectName] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript());
@@ -177,6 +195,19 @@ export function App() {
   const [realExecAvailable, setRealExecAvailable] = useState(false);
   const [doctor, setDoctor] = useState<DoctorReportLite | null>(null);
   const [decisions, setDecisions] = useState<DecisionRowLite[]>([]);
+  /** The Inbox — pending proposals awaiting triage (ADR-0044). */
+  const [inbox, setInbox] = useState<InboxItemRowWire[]>([]);
+  const [capture, setCapture] = useState('');
+  /** The computed charter critique (ADR-0045). */
+  const [charter, setCharter] = useState<CharterStatusWire | null>(null);
+  /** The project's own phases — the board's columns (ADR-0045). */
+  const [phases, setPhases] = useState<PhaseRowWire[]>([]);
+  /**
+   * What the operator has open (ADR-0045). Sent with the next chat turn so the
+   * conversation is about the thing on screen: "אם פתחת סיכון, היא יודעת שאתה
+   * מדבר על הסיכון."
+   */
+  const [focus, setFocus] = useState<ChatFocus | null>(null);
   // ── project companion (ADR-0018/0020) ──
   const [companion, setCompanion] = useState<CompanionState | null>(null);
   const [timeline, setTimeline] = useState<AmritaEventLite[]>([]);
@@ -184,6 +215,13 @@ export function App() {
   const [roleInfo, setRoleInfo] = useState<RoleResolutionLite[]>([]);
   /** The center stage: live canvas (default), project board, brain, or settings. */
   const [stageView, setStageView] = useState<StageView>('canvas');
+  /** Which projection of the task rows the Project stage is showing. */
+  const [projectView, setProjectView] = useState<ProjectView>('board');
+  /**
+   * Today, as YYYY-MM-DD. Read ONCE here and passed down, so the board module
+   * itself stays clock-free (and therefore deterministic and testable).
+   */
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
   /** Live backstage feed (Hermes-style): what runs, waits, or thinks now. */
@@ -192,6 +230,15 @@ export function App() {
   const [projectLoading, setProjectLoading] = useState(false);
   /** The open live-canvas artifact id, or null (gallery). */
   const [canvasId, setCanvasId] = useState<string | null>(null);
+  /** The selected free-canvas build card — the next instruction targets it (Phase 3). */
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  /** A throttled copy of the streaming draft — the live-build card re-renders from
+   *  this so it updates in smooth ~300ms chunks, not on every token (flicker). */
+  const [previewDraft, setPreviewDraft] = useState('');
+  const previewThrottle = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({
+    last: 0,
+    timer: null,
+  });
   /** Lane-scoped workspace view tickets (ADR-0039 amendment), by laneId. */
   const [workspaceTickets, setWorkspaceTickets] = useState<Record<string, string>>({});
   /** The Claude Ecosystem drawer (ADR-0043) — quiet launcher, opens on demand. */
@@ -214,6 +261,13 @@ export function App() {
   // any manual replay both feed it, de-duped by event id.
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
+  // The conversation/project the UI is CURRENTLY on. Async handlers capture these
+  // at call time and compare against the live value before writing state, so a
+  // reply or a load that finishes after the user switched away is dropped instead
+  // of corrupting the new view (stability audit: cross-conversation fold, switch race).
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+  const loadSeq = useRef(0);
 
   // A 401/403 surfaces the Access section instead of a raw error line.
   function reportError(e: unknown): void {
@@ -234,6 +288,8 @@ export function App() {
     () => projects.find((p) => p.slug === projectSlug),
     [projects, projectSlug],
   );
+  /** Stable id for the stream effect: the socket must not churn on every render. */
+  const streamProjectId = selectedProject?.id;
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === provider),
     [providers, provider],
@@ -251,21 +307,22 @@ export function App() {
 
   // Stage-A native surface: deterministic artifacts derived from typed state
   // (docs/strategy/native-interactive-surface.md). Empty project = empty surface.
-  const surfaceArtifacts = useMemo(
-    () =>
-      selectedProject
-        ? buildSurfaceArtifacts({
-            projectId: selectedProject.id,
-            brief: companion?.brief ?? null,
-            brand: companion?.brand ?? null,
-            milestones: companion?.milestones ?? [],
-            tasks,
-            lanes: laneViews,
-            previewApprovals: companion?.previewApprovals ?? [],
-          })
-        : [],
-    [selectedProject, companion, tasks, laneViews],
-  );
+  const surfaceArtifacts = useMemo(() => {
+    if (!selectedProject) return [];
+    const base = buildSurfaceArtifacts({
+      projectId: selectedProject.id,
+      brief: companion?.brief ?? null,
+      brand: companion?.brand ?? null,
+      milestones: companion?.milestones ?? [],
+      tasks,
+      lanes: laneViews,
+      previewApprovals: companion?.previewApprovals ?? [],
+    });
+    // CANVAS-1: HTML the agent builds in chat becomes a live canvas artifact, so
+    // "ask for something and watch it land" actually works.
+    const built = extractAgentArtifacts(messages, selectedProject.id);
+    return [...base, ...built];
+  }, [selectedProject, companion, tasks, laneViews, messages]);
 
   // Rule-based next-best actions over typed state — never an LLM guess.
   const companionActions = useMemo(
@@ -302,13 +359,23 @@ export function App() {
           setLanes((s) => reduceLaneEvent(s, ev));
           setActivity((s) => pushActivity(s, ev));
           if (ev.type.startsWith('approval.')) void loadApprovals();
+          // ADR-0044: the Scribe writes AFTER the turn, so its proposals (and any
+          // question it auto-opened) arrive on the stream, not in the turn result.
+          if (isProjectDomainEvent(ev.type)) refreshProject();
         },
+        // A domain change ELSEWHERE in this project (another tab, the CLI,
+        // Telegram). No cursor — it is a notification, so we refetch (ADR-0044).
+        onProjectEvent: () => refreshProject(),
         onState: (s) => setStreamState(s),
       },
-      { sinceSeq: 0, ...(authToken ? { token: authToken } : {}) },
+      {
+        sinceSeq: 0,
+        ...(streamProjectId ? { projectId: streamProjectId } : {}),
+        ...(authToken ? { token: authToken } : {}),
+      },
     );
     return () => handle?.close();
-  }, [conversationId, authToken]);
+  }, [conversationId, authToken, streamProjectId]);
 
   // The stage is live: when Amrita produces a NEW openable artifact mid-session,
   // the canvas opens on it by itself — the Screenshot-Brief "she builds, you watch"
@@ -331,24 +398,36 @@ export function App() {
 
   async function refreshBase() {
     setError('');
-    const [projectResult, providerResult, healthResult, doctorResult] = await Promise.all([
-      client.call('project.list'),
+    // project.list is the AUTH probe: a 401 here must propagate so the caller shows
+    // the token screen. The diagnostics below are best-effort — a failing doctor or
+    // health probe must not blank the projects tree (it used to be all-or-nothing).
+    const projectResult = await client.call('project.list');
+    const [providerResult, healthResult, doctorResult] = await Promise.allSettled([
       client.call('providers.list'),
       client.call('health'),
       client.call<DoctorReportLite>('doctor'),
     ]);
     const nextProjects = extractArray<Project>(projectResult, ['projects']);
     setProjects(nextProjects);
-    setProviders(extractArray<Provider>(providerResult, ['providers']));
-    const health = healthResult as { lanes?: { realExecution?: boolean } };
-    setRealExecAvailable(!!health.lanes?.realExecution);
-    setDoctor(doctorResult);
-    setUnauthorized(false); // a successful load means the token (if any) is accepted
+    setUnauthorized(false); // a successful project.list means the token is accepted
+    if (providerResult.status === 'fulfilled')
+      setProviders(extractArray<Provider>(providerResult.value, ['providers']));
+    if (healthResult.status === 'fulfilled') {
+      const health = healthResult.value as { lanes?: { realExecution?: boolean } };
+      setRealExecAvailable(!!health.lanes?.realExecution);
+    }
+    if (doctorResult.status === 'fulfilled') setDoctor(doctorResult.value as DoctorReportLite);
     if (nextProjects.length > 0 && !nextProjects.some((p) => p.slug === projectSlug))
       setProjectSlug(nextProjects[0]?.slug ?? 'system');
   }
 
   async function ensureProjectAndLoad(slug: string) {
+    // A monotonic token: if the operator clicks a second project while this one is
+    // still loading, the older call's late setStates are dropped, so two concurrent
+    // loads cannot interleave and flip the UI back to the wrong project.
+    loadSeq.current += 1;
+    const myLoad = loadSeq.current;
+    const current = () => loadSeq.current === myLoad;
     // Optimistic: the click responds NOW; data streams in behind the skeleton.
     setProjectSlug(slug);
     setProjectLoading(true);
@@ -356,12 +435,17 @@ export function App() {
     setCanvasId(null);
     knownArtifactIds.current = null;
     setDeleteArm(null);
+    // A selection belongs to the project you made it in — never let it ride into
+    // another project's chat.turn (its ids resolve against the new project and
+    // render nothing, but the app state would be lying about what you're discussing).
+    setFocus(null);
     setBusy(true);
     try {
       const ensured = (await client.call('project.ensure', {
         slug,
         name: slug === 'system' ? 'System' : slug,
       })) as { project?: Project } | Project;
+      if (!current()) return;
       const project =
         'project' in ensured && ensured.project ? ensured.project : (ensured as Project);
       // A freshly ensured project (e.g. `system` on a brand-new DB) must join
@@ -369,6 +453,7 @@ export function App() {
       setProjects((old) => (old.some((p) => p.id === project.id) ? old : [...old, project]));
       setProjectSlug(project.slug);
       const listResult = await client.call('conversation.list', { projectId: project.id });
+      if (!current()) return;
       const list = extractArray<Conversation>(listResult, ['conversations']);
       setConversations(list);
       const firstLive = list.find((c) => !c.archivedAt);
@@ -378,14 +463,37 @@ export function App() {
         loadTasks(project.id),
         loadDecisions(project.id),
         loadCompanion(project.id),
+        loadInbox(project.id),
         loadApprovals(),
       ]);
     } catch (e) {
-      reportError(e);
+      if (current()) reportError(e);
     } finally {
-      setBusy(false);
-      setProjectLoading(false);
+      if (current()) {
+        setBusy(false);
+        setProjectLoading(false);
+      }
     }
+  }
+
+  /**
+   * Create a NEW named project from the app. ensureProjectAndLoad already does the
+   * full create+select via project.ensure; the only thing missing was an entry
+   * point — without it a fresh DB is stuck on the reserved `system` project.
+   * The slug is derived from the name (lowercased, spaces→dashes) so the operator
+   * only types a human name.
+   */
+  async function createProject(): Promise<void> {
+    const name = (newProjectName ?? '').trim();
+    if (!name) return;
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48) || `project-${Date.now()}`;
+    setNewProjectName(null);
+    await ensureProjectAndLoad(slug);
   }
 
   async function createConversation(projectId = selectedProject?.id) {
@@ -403,6 +511,8 @@ export function App() {
 
   function openConversation(id: string) {
     // Switching the id resets the transcript and reopens the stream (effect above).
+    // A card selection is scoped to the session it was made in; drop it on switch.
+    setFocus(null);
     setConversationId(id);
   }
 
@@ -482,28 +592,88 @@ export function App() {
     }
   }
 
+  // These are fired un-awaited from the debounced refreshProject; a transient
+  // failure must surface as a banner (and keep the last-known projection), never
+  // an unhandled rejection.
   async function loadTasks(projectId = selectedProject?.id) {
     if (!projectId) return;
-    const result = await client.call('tasks.list', { projectId });
-    setTasks(extractArray<Task>(result, ['tasks']));
+    try {
+      const result = await client.call('tasks.list', { projectId });
+      setTasks(extractArray<Task>(result, ['tasks']));
+    } catch (e) {
+      reportError(e);
+    }
   }
 
   async function loadDecisions(projectId = selectedProject?.id) {
     if (!projectId) return;
-    setDecisions(await client.decisionsList({ projectId }));
+    try {
+      setDecisions(await client.decisionsList({ projectId }));
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  async function loadInbox(projectId = selectedProject?.id) {
+    if (!projectId) return;
+    try {
+      setInbox(await client.inboxList({ projectId, status: 'pending' }));
+    } catch (e) {
+      reportError(e);
+    }
+  }
+
+  /**
+   * Refetch every project projection after a domain change (ADR-0044).
+   *
+   * Debounced, because one turn can land a burst of events (the Scribe files
+   * several proposals at once) and each of them would otherwise trigger a full
+   * reload. A refetch is idempotent, so coalescing them is always safe.
+   */
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function refreshProject(): void {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      void loadTasks();
+      void loadInbox();
+      void loadCompanion(); // also reloads the charter status and the phases
+      void loadDecisions();
+    }, 120);
+  }
+
+  /** Quick capture → the Inbox. Never straight into project truth (ADR-0044). */
+  async function captureToInbox(): Promise<void> {
+    const text = capture.trim();
+    if (!text || !writeCtx) return;
+    setCapture('');
+    try {
+      await client.inboxCapture({ ...writeCtx, text });
+      await loadInbox();
+    } catch (e) {
+      setCapture(text); // give the operator their words back
+      reportError(e);
+    }
   }
 
   /** Load the Project Brain aggregate, activity timeline, and model resolution. */
   async function loadCompanion(projectId = selectedProject?.id) {
     if (!projectId) return;
-    const [state, events, roles] = await Promise.all([
-      client.companionGet(projectId),
-      client.timelineList(projectId, 30),
-      client.providersRoles(projectId),
-    ]);
-    setCompanion(state);
-    setTimeline(events);
-    setRoleInfo(roles.roles);
+    try {
+      const [state, events, roles, charterStatus, phaseList] = await Promise.all([
+        client.companionGet(projectId),
+        client.timelineList(projectId, 30),
+        client.providersRoles(projectId),
+        client.charterStatus(projectId),
+        client.phasesList(projectId),
+      ]);
+      setCompanion(state);
+      setTimeline(events);
+      setRoleInfo(roles.roles);
+      setCharter(charterStatus);
+      setPhases(phaseList);
+    } catch (e) {
+      reportError(e);
+    }
   }
 
   async function loadApprovals(): Promise<void> {
@@ -531,6 +701,63 @@ export function App() {
       ? a
       : null;
   }, [surfaceArtifacts, canvasId]);
+
+  // Every HTML build becomes a movable card on the free canvas (Live Canvas). A
+  // multi-page site or several variations produce several cards at once. The
+  // in-progress build (streaming) is a live "building…" card, prepended so the
+  // operator watches it take shape before Amrita finishes (Phase 2).
+  const buildCards: FreeCanvasArtifact[] = useMemo(() => {
+    const done = surfaceArtifacts
+      .filter(
+        (a): a is Extract<typeof a, { kind: 'html-preview' | 'design-page' }> =>
+          a.kind === 'html-preview' || a.kind === 'design-page',
+      )
+      .map((a) => ({
+        id: a.id,
+        title: a.title,
+        kindLabel: a.kind === 'design-page' ? 'design' : 'build',
+        html: a.html,
+      }));
+    const streaming = extractStreamingArtifact(previewDraft);
+    return streaming
+      ? [
+          {
+            id: streaming.id,
+            title: streaming.title,
+            kindLabel: 'build',
+            html: streaming.html,
+            building: true,
+          },
+          ...done,
+        ]
+      : done;
+  }, [surfaceArtifacts, previewDraft]);
+
+  // Throttle the streaming draft into `previewDraft` so the live-build card
+  // re-renders in ~300ms chunks (watch the layers appear), not on every token.
+  // When the turn finishes (draft cleared), drop the preview immediately.
+  useEffect(() => {
+    const d = transcript.draft ?? '';
+    const st = previewThrottle.current;
+    if (!d) {
+      if (st.timer) clearTimeout(st.timer);
+      st.timer = null;
+      setPreviewDraft('');
+      return;
+    }
+    const THROTTLE = 300;
+    const now = Date.now();
+    const wait = Math.max(0, THROTTLE - (now - st.last));
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(() => {
+      st.last = Date.now();
+      st.timer = null;
+      setPreviewDraft(d);
+    }, wait);
+    return () => {
+      if (st.timer) clearTimeout(st.timer);
+    };
+  }, [transcript.draft]);
 
   // Mint the read-only view ticket when a workspace canvas opens (once per lane).
   // biome-ignore lint/correctness/useExhaustiveDependencies: reportError is a stable module-level pattern here; tickets key on the lane.
@@ -583,7 +810,8 @@ export function App() {
     setError('');
     const text = draft.trim();
     setDraft('');
-    const optimistic: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text };
+    const optimisticId = `local-${Date.now()}`;
+    const optimistic: ChatMessage = { id: optimisticId, role: 'user', text };
     setPending((old) => [...old, optimistic]);
     try {
       const result = await client.call<ChatResult>('chat.turn', {
@@ -592,13 +820,27 @@ export function App() {
         // 'auto' = the role resolver decides (project > global binding > auto),
         // so the bound brain answers. An explicit pick still always wins.
         ...(provider === 'auto' ? { role: 'main' } : { provider }),
+        ...(focus ? { focus } : {}),
       });
       setLastTurn(`${result.provider} · ${result.model} · ${formatUsage(result.usage)}`);
       // Fallback replay: if the live socket is offline, this still lands the turn;
       // when it is live, the reducer de-dupes the overlap by event id.
       const replay = await client.events(result.conversationId, transcriptRef.current.lastSeq);
+      // Guard against a switch mid-await: if the operator moved to another
+      // conversation, folding THIS conversation's events into the now-different
+      // transcript would corrupt it. Drop the result — the new conversation loads
+      // its own history, and this turn is safely in the store either way.
+      if (conversationIdRef.current !== result.conversationId) return;
       setTranscript((s) => foldEvents(s, replay));
+      // On success the echoed user message is in `replay`; prune the optimistic
+      // twin so `pending` does not grow unbounded across a session.
+      setPending((old) => old.filter((m) => m.id !== optimisticId));
     } catch (e) {
+      // The turn never committed: no `message.user` event exists, so the optimistic
+      // bubble would otherwise linger forever, looking sent. Roll it back and give
+      // the operator their words back — exactly the quick-capture restore pattern.
+      setPending((old) => old.filter((m) => m.id !== optimisticId));
+      setDraft((d) => (d ? d : text));
       reportError(e);
     } finally {
       setBusy(false);
@@ -663,7 +905,43 @@ export function App() {
           </div>
         </div>
         <section className="sidebar-projects">
-          <h2>Projects</h2>
+          <div className="sidebar-projects-head">
+            <h2>Projects</h2>
+            <button
+              type="button"
+              className="new-project-btn"
+              title="Create a new project"
+              aria-label="Create a new project"
+              onClick={() => setNewProjectName((v) => (v === null ? '' : null))}
+            >
+              +
+            </button>
+          </div>
+          {newProjectName !== null ? (
+            <form
+              className="new-project-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void createProject();
+              }}
+            >
+              <input
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                dir={textDir(newProjectName)}
+                placeholder="Project name…"
+                aria-label="New project name"
+                // biome-ignore lint/a11y/noAutofocus: the field only exists once the operator opens it
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setNewProjectName(null);
+                }}
+              />
+              <button type="submit" disabled={!newProjectName.trim()}>
+                Create
+              </button>
+            </form>
+          ) : null}
           <div className="list project-tree">
             {projects.map((p) => {
               const active = p.slug === projectSlug;
@@ -881,94 +1159,215 @@ export function App() {
               />
             </div>
           ) : stageView === 'project' ? (
-            <div className="stage-project">
+            /* The project control room (ADR-0044). The charter states what this
+               project is for; the Inbox is where new truth arrives; the board /
+               list / timeline are three PROJECTIONS of the same rows, so they can
+               never disagree. Runtime and brand are real but secondary — they sit
+               behind a disclosure rather than shouting from an 11-card grid. */
+            <div className="project-room">
+              {/* Four indicators that change a decision — not twenty numbers (ADR-0045). */}
+              <StatusStrip
+                activated={!!selectedProject?.activatedAt}
+                tasks={tasks}
+                milestones={companion?.milestones ?? []}
+                risks={companion?.risks ?? []}
+                today={today}
+              />
               <NextActionsPanel actions={companionActions} />
               <BriefPanel
                 brief={companion?.brief ?? null}
+                charter={charter}
                 writeCtx={writeCtx}
                 onChanged={() => void loadCompanion()}
                 onError={reportError}
               />
-              <BrandPanel
-                brand={companion?.brand ?? null}
+              <InboxPanel
+                items={inbox}
                 writeCtx={writeCtx}
-                onChanged={() => void loadCompanion()}
+                onChanged={refreshProject}
                 onError={reportError}
               />
-              <RuntimePanel doctor={doctor} />
-              <section className="card">
-                <h2>Provider status</h2>
-                <div className="provider-row">
-                  <strong>{selectedProvider?.id ?? provider}</strong>
-                  <span>{selectedProvider?.available === false ? 'unavailable' : 'available'}</span>
-                </div>
-                <p>
-                  configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
-                  {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
-                </p>
-                <p>
-                  {selectedProvider?.streaming
-                    ? 'streams replies live (model.delta)'
-                    : 'replies arrive whole — live streaming for this provider is not built yet'}
-                </p>
-                {roleInfo.length > 0 ? (
-                  <p className="role-line">
-                    {roleInfo
-                      .map(
-                        (r) =>
-                          `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
-                            r.via === 'project' ? ' [project]' : r.via === 'auto' ? ' [auto]' : ''
-                          }`,
-                      )
-                      .join(' · ')}
-                  </p>
-                ) : null}
-              </section>
-              <MemoryPanel
+              <ReviewPanel
                 projectId={selectedProject?.id}
+                onRaised={refreshProject}
+                onError={reportError}
+              />
+
+              {/* Not a plan yet? Then no empty board — a proposal, or a nudge back
+                  to the conversation (ADR-0045). */}
+              <ActivationPanel
+                charter={charter}
+                activatedAt={selectedProject?.activatedAt ?? null}
                 writeCtx={writeCtx}
+                onActivated={() => {
+                  void refreshBase();
+                  refreshProject();
+                }}
                 onError={reportError}
               />
-              <TasksPanel
-                tasks={tasks}
-                milestones={companion?.milestones ?? []}
-                writeCtx={writeCtx}
-                onChanged={() => void loadTasks()}
-                onError={reportError}
-              />
-              <MilestonesPanel
-                milestones={companion?.milestones ?? []}
-                tasks={tasks}
-                writeCtx={writeCtx}
-                onChanged={() => void loadCompanion()}
-                onError={reportError}
-              />
-              <QuestionsPanel
-                items={companion?.questions ?? []}
-                writeCtx={writeCtx}
-                onChanged={() => void loadCompanion()}
-                onError={reportError}
-              />
-              <RisksPanel
-                items={companion?.risks ?? []}
-                writeCtx={writeCtx}
-                onChanged={() => void loadCompanion()}
-                onError={reportError}
-              />
-              <DecisionsPanel
-                decisions={decisions}
-                writeCtx={writeCtx}
-                onChanged={() => void loadDecisions()}
-                onError={reportError}
-              />
-              <LanesPanel
-                lanes={laneViews}
-                conversationId={conversationId}
-                realExecAvailable={realExecAvailable}
-                onError={reportError}
-              />
-              <TimelinePanel events={timeline} />
+
+              <nav className="project-views" aria-label="Project view">
+                {PROJECT_VIEWS.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    className={projectView === v.id ? 'active' : ''}
+                    aria-pressed={projectView === v.id}
+                    onClick={() => setProjectView(v.id)}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </nav>
+
+              {projectView === 'board' ? (
+                <BoardPanel
+                  tasks={tasks}
+                  phases={phases}
+                  writeCtx={writeCtx}
+                  today={today}
+                  focusedIds={focus?.kind === 'task' ? focus.ids : []}
+                  onFocus={(ids) => setFocus(ids.length > 0 ? { kind: 'task', ids } : null)}
+                  onChanged={refreshProject}
+                  onError={reportError}
+                />
+              ) : projectView === 'timeline' ? (
+                <TimelinePanel events={timeline} />
+              ) : (
+                <div className="project-cards">
+                  <TasksPanel
+                    tasks={tasks}
+                    milestones={companion?.milestones ?? []}
+                    writeCtx={writeCtx}
+                    onChanged={refreshProject}
+                    onError={reportError}
+                  />
+                  <MilestonesPanel
+                    milestones={companion?.milestones ?? []}
+                    tasks={tasks}
+                    writeCtx={writeCtx}
+                    onChanged={() => void loadCompanion()}
+                    onError={reportError}
+                  />
+                  <QuestionsPanel
+                    items={companion?.questions ?? []}
+                    writeCtx={writeCtx}
+                    onChanged={() => void loadCompanion()}
+                    onError={reportError}
+                  />
+                  <RisksPanel
+                    items={companion?.risks ?? []}
+                    writeCtx={writeCtx}
+                    onChanged={() => void loadCompanion()}
+                    onError={reportError}
+                  />
+                  <DecisionsPanel
+                    decisions={decisions}
+                    writeCtx={writeCtx}
+                    onChanged={() => void loadDecisions()}
+                    onError={reportError}
+                  />
+                </div>
+              )}
+
+              {/* The two doors out of the project: one to strangers, one to the next
+                  project. Both are hand-operated, and both say what they cost. */}
+              <div className="project-cards">
+                <HubPanel
+                  projectId={selectedProject?.id}
+                  writeCtx={writeCtx}
+                  onError={reportError}
+                />
+                <RetroPanel
+                  projectId={selectedProject?.id}
+                  writeCtx={writeCtx}
+                  onError={reportError}
+                />
+              </div>
+
+              <details className="project-more">
+                <summary>Runtime, brand and delegated lanes</summary>
+                <div className="project-cards">
+                  <WorkspacePanel
+                    projectId={selectedProject?.id}
+                    root={selectedProject?.root ?? null}
+                    writeCtx={writeCtx}
+                    onChanged={() => void refreshBase()}
+                    onError={reportError}
+                  />
+                  <PhasesPanel
+                    phases={phases}
+                    writeCtx={writeCtx}
+                    onChanged={refreshProject}
+                    onError={reportError}
+                  />
+                  <CinemaPanel conversationId={conversationId} onError={reportError} />
+                  <LanesPanel
+                    lanes={laneViews}
+                    conversationId={conversationId}
+                    realExecAvailable={realExecAvailable}
+                    onError={reportError}
+                  />
+                  <BrandPanel
+                    brand={companion?.brand ?? null}
+                    writeCtx={writeCtx}
+                    onChanged={() => void loadCompanion()}
+                    onError={reportError}
+                  />
+                  <MemoryPanel
+                    projectId={selectedProject?.id}
+                    writeCtx={writeCtx}
+                    onError={reportError}
+                  />
+                  <RuntimePanel doctor={doctor} />
+                  <section className="card">
+                    <h2>Provider status</h2>
+                    <div className="provider-row">
+                      <strong>{selectedProvider?.id ?? provider}</strong>
+                      <span>
+                        {selectedProvider?.available === false ? 'unavailable' : 'available'}
+                      </span>
+                    </div>
+                    <p>
+                      configured: {selectedProvider?.configuredAccounts ?? 0} · env:{' '}
+                      {selectedProvider?.envReady ? 'ready' : 'not needed / missing'}
+                    </p>
+                    <p>
+                      {selectedProvider?.streaming
+                        ? 'streams replies live (model.delta)'
+                        : 'replies arrive whole — live streaming for this provider is not built yet'}
+                    </p>
+                    {roleInfo.length > 0 ? (
+                      <p className="role-line">
+                        {roleInfo
+                          .map(
+                            (r) =>
+                              `${r.role} → ${r.resolvesTo}${r.model ? ` (${r.model})` : ''}${
+                                r.via === 'project'
+                                  ? ' [project]'
+                                  : r.via === 'auto'
+                                    ? ' [auto]'
+                                    : ''
+                              }`,
+                          )
+                          .join(' · ')}
+                      </p>
+                    ) : null}
+                  </section>
+                </div>
+              </details>
             </div>
+          ) : buildCards.length > 0 ? (
+            <FreeCanvas
+              conversationId={conversationId}
+              artifacts={buildCards}
+              selectedId={selectedArtifactId}
+              onSelect={(id, title) => {
+                // Select a build → the next instruction is about THAT build (ADR-0047).
+                setSelectedArtifactId(id);
+                setFocus({ kind: 'artifact', ids: [], label: title });
+              }}
+            />
           ) : canvasArtifact ? (
             <section className="canvas-panel" aria-label="Live canvas">
               <header className="canvas-head">
@@ -1027,7 +1426,9 @@ export function App() {
               <p className="canvas-live-note">
                 {canvasArtifact.kind === 'workspace-preview'
                   ? 'Live build — real files the lane is writing in its workspace, refreshed as it works; scripts run inside the sandbox only.'
-                  : "Live canvas — re-renders from this project's typed state (brief · brand · milestones); confined to the zero-network sandbox."}
+                  : canvasArtifact.id.startsWith('agent-html:')
+                    ? 'Built by Amrita in this chat — running live inside the zero-network sandbox (no filesystem, no network).'
+                    : "Live canvas — re-renders from this project's typed state (brief · brand · milestones); confined to the zero-network sandbox."}
               </p>
             </section>
           ) : (
@@ -1171,6 +1572,28 @@ export function App() {
             {error}
           </div>
         ) : null}
+        {/* Quick capture (ADR-0044). It lives in the chat column, next to the
+            composer, because capture belongs where you are already typing — and
+            it goes to the Inbox, never straight into project truth. */}
+        <form
+          className="quick-capture"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void captureToInbox();
+          }}
+        >
+          <input
+            value={capture}
+            onChange={(e) => setCapture(e.target.value)}
+            dir={textDir(capture)}
+            placeholder="Quick capture → Inbox"
+            aria-label="Quick capture to the Inbox"
+            disabled={!writeCtx}
+          />
+          <button type="submit" disabled={!writeCtx || !capture.trim()}>
+            Capture
+          </button>
+        </form>
         <div className="eco-launcher-row">
           <button
             type="button"
@@ -1193,6 +1616,25 @@ export function App() {
           lanes={laneViews}
           onError={reportError}
         />
+        {focus && (focus.kind === 'artifact' ? !!focus.label : focus.ids.length > 0) && (
+          <div className="focus-chip">
+            <span>
+              {focus.kind === 'artifact'
+                ? `Talking about “${focus.label}”`
+                : `Talking about ${focus.ids.length} ${focus.kind}${focus.ids.length === 1 ? '' : 's'}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setFocus(null);
+                setSelectedArtifactId(null);
+              }}
+              aria-label="Stop focusing on the selection"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <form
           className="composer"
           onSubmit={(e) => {
@@ -1214,7 +1656,11 @@ export function App() {
             placeholder="Message Amrita…"
             rows={2}
           />
-          <button type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
+          <button
+            type="submit"
+            disabled={busy || !draft.trim() || !conversationId}
+            aria-label="Send message"
+          >
             {busy ? '…' : '↑'}
           </button>
         </form>

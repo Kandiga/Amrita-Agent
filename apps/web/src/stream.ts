@@ -39,6 +39,16 @@ export type StreamState = 'connecting' | 'open' | 'reconnecting' | 'error' | 'cl
 export interface StreamHandlers {
   /** Every event frame (replayed and live), in arrival order. */
   onEvent(ev: AmritaEventLite): void;
+  /**
+   * A domain change elsewhere in the SAME project (ADR-0044) — a task dragged in
+   * another tab, a Scribe proposal, a CLI write.
+   *
+   * It carries NO cursor: `seq` is per-conversation, so a project-wide stream has
+   * no global sequence. Treat it as a notification and REFETCH the projection;
+   * missing one is harmless (the next re-syncs), replaying one is harmless (a
+   * refetch is idempotent).
+   */
+  onProjectEvent?(ev: AmritaEventLite): void;
   /** Connection-state transitions, for a status pill. */
   onState?(state: StreamState): void;
   /** The server finished replaying history (fires on every (re)connect). */
@@ -47,6 +57,11 @@ export interface StreamHandlers {
 
 export interface StreamOptions {
   sinceSeq?: number;
+  /**
+   * Also subscribe to PROJECT-scoped domain changes (ADR-0044) — what makes the
+   * board update when a card is dragged in another tab, or the CLI writes a task.
+   */
+  projectId?: string;
   /** HTTP(S) origin of the daemon (converted to ws/wss). Empty → page origin. */
   baseUrl?: string;
   /** Auth token, appended as `?token=` (browser WS cannot set headers). */
@@ -117,6 +132,7 @@ export function openEventStream(
       conversationId,
       sinceSeq: String(lastSeq),
     });
+    if (opts.projectId) params.set('projectId', opts.projectId);
     if (opts.token) params.set('token', opts.token);
     return `${wsBase}/events/ws?${params.toString()}`;
   };
@@ -163,6 +179,10 @@ export function openEventStream(
       if (frame.t === 'event') {
         if (frame.event.seq > lastSeq) lastSeq = frame.event.seq;
         handlers.onEvent(frame.event);
+      } else if (frame.t === 'project-event') {
+        // Deliberately does NOT touch `lastSeq`: this event belongs to another
+        // conversation, and the cursor is per-conversation.
+        handlers.onProjectEvent?.(frame.event);
       } else {
         handlers.onReplayed?.(frame.sinceSeq);
       }
@@ -177,12 +197,39 @@ export function openEventStream(
     };
   }
 
+  // After maxRetries the socket gives up ('error') forever — a laptop that slept or
+  // a dropped Wi-Fi would then never live-update again until a manual reload. When
+  // the network or the tab comes back, reset the retry budget and reconnect now.
+  const revive = (): void => {
+    if (closed) return;
+    if (state === 'error' || state === 'reconnecting') {
+      retries = 0;
+      if (timer !== null) {
+        clearT(timer);
+        timer = null;
+      }
+      connect();
+    }
+  };
+  const onVisible = (): void => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') revive();
+  };
+  const hasWindow = typeof window !== 'undefined';
+  if (hasWindow) {
+    window.addEventListener('online', revive);
+    document?.addEventListener?.('visibilitychange', onVisible);
+  }
+
   connect();
 
   return {
     close(): void {
       closed = true;
       if (timer !== null) clearT(timer);
+      if (hasWindow) {
+        window.removeEventListener('online', revive);
+        document?.removeEventListener?.('visibilitychange', onVisible);
+      }
       const socket = ws;
       ws = null;
       setState('closed');

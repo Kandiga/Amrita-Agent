@@ -133,8 +133,8 @@ export function LanesPanel({ lanes, conversationId, realExecAvailable, onError }
         >
           <input
             type="checkbox"
-            checked={real}
-            disabled={dryRun}
+            checked={real && realExecAvailable}
+            disabled={dryRun || !realExecAvailable}
             onChange={(e) => setReal(e.target.checked)}
           />
           Run for real {realExecAvailable ? '' : '(daemon opt-in required)'}

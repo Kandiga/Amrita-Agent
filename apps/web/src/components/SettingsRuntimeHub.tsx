@@ -17,6 +17,10 @@ import {
   connectorBadgeClass,
   groupCatalog,
 } from '../providers-view.ts';
+import { AccountsPanel } from './AccountsPanel.tsx';
+import { ChannelsPanel } from './ChannelsPanel.tsx';
+import { PreferencesPanel } from './PreferencesPanel.tsx';
+import { SystemBrainPanel } from './SystemBrainPanel.tsx';
 
 const ROLES = PROVIDER_ROLES;
 type Role = ProviderRole;
@@ -143,8 +147,29 @@ export function SettingsRuntimeHub({
 
   /** claude.ai-style settings sub-navigation (left nav on desktop). */
   const [section, setSection] = useState<
-    'brain' | 'providers' | 'runtimes' | 'connectors' | 'access'
+    | 'brain'
+    | 'providers'
+    | 'accounts'
+    | 'runtimes'
+    | 'connectors'
+    | 'channels'
+    | 'preferences'
+    | 'system'
+    | 'access'
   >('brain');
+  // Discovered models per role, populated from providers.models when a provider is
+  // picked — turns the free-text model box into a real (still typable) picker.
+  const [models, setModels] = useState<Record<Role, string[]>>({ fast: [], main: [], deep: [] });
+
+  const discoverModels = useCallback(async (role: Role, provider: string) => {
+    if (!provider) return;
+    try {
+      const res = await client.providersModels(provider);
+      setModels((m) => ({ ...m, [role]: res.models }));
+    } catch {
+      setModels((m) => ({ ...m, [role]: [] })); // honest: no discovery, keep free-text
+    }
+  }, []);
 
   // A 401 anywhere lands the user exactly where the fix lives.
   useEffect(() => {
@@ -154,8 +179,16 @@ export function SettingsRuntimeHub({
   const NAV: { id: typeof section; label: string; hint: string }[] = [
     { id: 'brain', label: 'Amrita brain', hint: 'which model thinks for each role' },
     { id: 'providers', label: 'Providers', hint: 'every brain Amrita knows, honest states' },
+    {
+      id: 'accounts',
+      label: 'Accounts',
+      hint: 'provider accounts + local endpoint (env names only)',
+    },
     { id: 'runtimes', label: 'Coding runtimes', hint: 'Claude Code and friends' },
     { id: 'connectors', label: 'Connectors', hint: 'sources like GitHub' },
+    { id: 'channels', label: 'Channels', hint: 'Telegram, WhatsApp, web' },
+    { id: 'preferences', label: 'Preferences', hint: 'how Amrita behaves during a turn' },
+    { id: 'system', label: 'Global Amrita', hint: 'system brain health + self-audit' },
     ...(accessSlot
       ? [{ id: 'access' as const, label: 'Access', hint: 'runtime token for this browser' }]
       : []),
@@ -239,12 +272,11 @@ export function SettingsRuntimeHub({
                   <div className="hub-role-controls">
                     <select
                       value={draft.provider}
-                      onChange={(e) =>
-                        setDrafts((d) => ({
-                          ...d,
-                          [role]: { ...d[role], provider: e.target.value },
-                        }))
-                      }
+                      onChange={(e) => {
+                        const provider = e.target.value;
+                        setDrafts((d) => ({ ...d, [role]: { ...d[role], provider } }));
+                        void discoverModels(role, provider);
+                      }}
                     >
                       <option value="">choose provider…</option>
                       {status.providers.map((p) => {
@@ -258,11 +290,19 @@ export function SettingsRuntimeHub({
                     </select>
                     <input
                       value={draft.model}
+                      list={`models-${role}`}
                       onChange={(e) =>
                         setDrafts((d) => ({ ...d, [role]: { ...d[role], model: e.target.value } }))
                       }
-                      placeholder="model (optional)"
+                      placeholder={
+                        models[role].length > 0 ? 'model (pick or type)' : 'model (optional)'
+                      }
                     />
+                    <datalist id={`models-${role}`}>
+                      {models[role].map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
                   </div>
                   <div className="hub-role-actions">
                     <button
@@ -453,6 +493,12 @@ export function SettingsRuntimeHub({
             </div>
           </section>
         ) : null}
+        {section === 'accounts' ? <AccountsPanel writeCtx={writeCtx} onError={onError} /> : null}
+        {section === 'channels' ? <ChannelsPanel writeCtx={writeCtx} onError={onError} /> : null}
+        {section === 'preferences' ? (
+          <PreferencesPanel writeCtx={writeCtx} onError={onError} />
+        ) : null}
+        {section === 'system' ? <SystemBrainPanel onError={onError} /> : null}
       </div>
     </div>
   );

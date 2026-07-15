@@ -8,14 +8,24 @@
  */
 
 import {
+  type AccountRowWire,
+  type ChannelStatusEntryWire,
+  type CharterStatusWire,
+  type ChatFocus,
   type ChatTurnResultWire,
+  type CinemaMandateRowWire,
   type CodingRuntimeStatusWire,
   type CompanionStateWire,
   type ConnectorStatusReport,
+  type DecisionRight,
   type DecisionRowWire,
   type DoctorCheck,
   type DoctorReport,
   type HarnessTopology,
+  type HubPreviewWire,
+  type InboxItemRowWire,
+  type InboxKind,
+  type InboxStatus,
   type KnowledgeGap,
   type KnowledgeRecord,
   type KnowledgeSource,
@@ -25,23 +35,35 @@ import {
   type MaintenanceEvent,
   type MemoryEntryRowWire,
   type MilestoneRowWire,
+  type ModelDiscoveryResultWire,
   type OpenQuestionRowWire,
+  type PairingRowWire,
   type PendingApprovalWire,
+  type PhaseRowWire,
+  type ProbeEndpointResultWire,
   type ProjectBrain,
   type ProjectBrandRowWire,
   type ProjectBriefRowWire,
+  type ProjectConstraint,
   type ProjectContextWire,
   type ProviderCatalogEntryWire,
+  type ProviderConfigStatus,
   type ProviderRole,
+  type RetroPacketWire,
+  type ReviewPacketWire,
   type RiskRowWire,
   type RoleResolution,
+  type RouteVerdictWire,
   type RuntimeStatusWire,
   type SkillStatus,
+  type SystemAuditResultWire,
+  type SystemHealthResultWire,
   parseRpcResult,
   rpcResponseSchema,
   sealedEventShellSchema,
 } from '@amrita/protocol';
 import { z } from 'zod';
+import type { TriageTarget } from './triage.ts';
 
 export type FetchLike = typeof fetch;
 
@@ -163,6 +185,12 @@ export interface BriefUpdateParams {
   successCriteria?: string[];
   scope?: string[];
   noScope?: string[];
+  /** The charter (ADR-0044). Full-document upsert: omit these and they are CLEARED. */
+  finishLine?: string;
+  constraints?: ProjectConstraint[];
+  decisionRights?: DecisionRight[];
+  /** ADR-0045: a stale full-document write would WIPE the charter someone else wrote. */
+  expectedVersion?: number;
 }
 
 const eventsReplySchema = z.object({ events: z.array(sealedEventShellSchema).default([]) });
@@ -260,12 +288,84 @@ export class RpcClient {
     return this.call<{ taskId: string }>('tasks.create', params);
   }
 
+  /**
+   * ADR-0044: the board write path. `store.updateTask` existed and was tested
+   * since ADR-0018 with zero callers — this is the client end of the missing wire.
+   * For each field: omit = leave alone, `null` = clear.
+   */
+  tasksUpdate(params: {
+    projectId: string;
+    conversationId: string;
+    taskId: string;
+    status?: 'now' | 'later' | 'done' | 'dropped';
+    title?: string;
+    body?: string;
+    milestoneId?: string | null;
+    owner?: string | null;
+    dueDate?: string | null;
+    priority?: 'low' | 'normal' | 'high' | null;
+    orderKey?: string;
+    blockedReason?: string | null;
+    /** ADR-0045: the row `version` this client last saw. Stale ⇒ `conflict`. */
+    expectedVersion?: number;
+    phaseId?: string | null;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('tasks.update', params);
+  }
+
   tasksComplete(params: {
     projectId: string;
     conversationId: string;
     taskId: string;
   }): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('tasks.complete', params);
+  }
+
+  /**
+   * The daemon has exposed `projects.milestones.update` since ADR-0018; the web
+   * client never had a wrapper, so a milestone could never be set `active` from
+   * the UI — which silently disabled the `milestone-plan` rule in companion.ts.
+   */
+  milestoneUpdate(params: {
+    projectId: string;
+    conversationId: string;
+    milestoneId: string;
+    title?: string;
+    description?: string;
+    status?: 'planned' | 'active' | 'done' | 'dropped';
+    targetDate?: string | null;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.milestones.update', params);
+  }
+
+  // ── the Inbox — the one triage queue (ADR-0044) ────────────────────────────
+
+  inboxList(params: { projectId: string; status?: InboxStatus }): Promise<InboxItemRowWire[]> {
+    return this.call<InboxItemRowWire[]>('inbox.list', params);
+  }
+
+  inboxCapture(params: {
+    projectId: string;
+    conversationId: string;
+    text: string;
+  }): Promise<{ itemId: string }> {
+    return this.call<{ itemId: string }>('inbox.capture', params);
+  }
+
+  /** Promote an item into a REAL aggregate. `target` is the typed command payload. */
+  inboxTriage(
+    params: { projectId: string; conversationId: string; itemId: string } & TriageTarget,
+  ): Promise<{ promotedKind: InboxKind; promotedId: string }> {
+    return this.call<{ promotedKind: InboxKind; promotedId: string }>('inbox.triage', params);
+  }
+
+  inboxDismiss(params: {
+    projectId: string;
+    conversationId: string;
+    itemId: string;
+    reason: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('inbox.dismiss', params);
   }
 
   decisionsList(params: { projectId?: string } = {}): Promise<DecisionRowLite[]> {
@@ -297,6 +397,234 @@ export class RpcClient {
 
   briefUpdate(params: BriefUpdateParams): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('projects.brief.update', params);
+  }
+
+  /** ADR-0045: the computed critique — missing / unconfirmed / contradictory. */
+  charterStatus(projectId: string): Promise<CharterStatusWire> {
+    return this.call<CharterStatusWire>('projects.charter.status', { projectId });
+  }
+
+  /** The project's own phases — where the board's columns come from (ADR-0045). */
+  phasesList(projectId: string): Promise<PhaseRowWire[]> {
+    return this.call<PhaseRowWire[]>('projects.phases.list', { projectId });
+  }
+
+  /**
+   * Bind the project's working folder (ADR-0045). The browser NEVER picks a path —
+   * it sends one, and the daemon validates it against its allowed-roots allowlist.
+   */
+  setProjectRoot(params: {
+    projectId: string;
+    conversationId: string;
+    root: string | null;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.setRoot', params);
+  }
+
+  /** What can actually be done with this task right now (derived, never stored). */
+  taskRoute(taskId: string): Promise<RouteVerdictWire> {
+    return this.call<RouteVerdictWire>('tasks.route', { taskId });
+  }
+
+  // ── the public hub (ADR-0045) ──────────────────────────────────────────────
+
+  /** Preview the PUBLIC view. Reading it publishes nothing. */
+  hubPreview(projectId: string): Promise<HubPreviewWire> {
+    return this.call<HubPreviewWire>('projects.hub.preview', { projectId });
+  }
+
+  /** Publish — approval-gated, and effectively irreversible. */
+  hubPublish(params: {
+    projectId: string;
+    conversationId: string;
+  }): Promise<{ slug: string; contentHash: string; url: string }> {
+    return this.call('projects.hub.publish', params);
+  }
+
+  hubRevoke(params: {
+    projectId: string;
+    conversationId: string;
+    reason: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.hub.revoke', params);
+  }
+
+  /** The weekly review packet. Reading it changes nothing. */
+  review(projectId: string): Promise<ReviewPacketWire> {
+    return this.call<ReviewPacketWire>('projects.review', { projectId });
+  }
+
+  /**
+   * Run the review now, instead of waiting for the scheduler.
+   *
+   * It raises Inbox proposals and says one thing in the conversation. It closes
+   * nothing, publishes nothing and moves nothing — so this button is safe to press.
+   */
+  reviewRun(projectId: string): Promise<{ raised: number }> {
+    return this.call<{ raised: number }>('projects.review.run', { projectId });
+  }
+
+  // ── the retrospective (ADR-0045) ───────────────────────────────────────────
+
+  retro(projectId: string): Promise<RetroPacketWire> {
+    return this.call<RetroPacketWire>('projects.retro', { projectId });
+  }
+
+  retroRun(params: { projectId: string; conversationId: string }): Promise<{ lessons: string[] }> {
+    return this.call('projects.retro.run', params);
+  }
+
+  /**
+   * Promote ONE lesson into organizational memory — the only path by which anything
+   * crosses out of a project. There is deliberately no bulk version.
+   */
+  retroPromote(params: {
+    projectId: string;
+    conversationId: string;
+    lesson: string;
+  }): Promise<{ entryId: string }> {
+    return this.call('projects.retro.promote', params);
+  }
+
+  // ── settings / preferences (WP5) ───────────────────────────────────────────
+  // The generic KV path the daemon reads for context.pack / scribe / scheduler.
+  // Values are non-secret booleans/strings only; secrets never travel this way.
+
+  settingGet(key: string): Promise<{ value: unknown }> {
+    return this.call<{ value: unknown }>('settings.get', { key });
+  }
+
+  settingUpdate(params: {
+    projectId: string;
+    conversationId: string;
+    key: string;
+    value: unknown;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('settings.update', params);
+  }
+
+  // ── provider model discovery + endpoint probe (WP5) ────────────────────────
+
+  /** Live /models probe with a curated fallback — turns the model field into a picker. */
+  providersModels(provider: string): Promise<ModelDiscoveryResultWire> {
+    return this.call<ModelDiscoveryResultWire>('providers.models', { provider });
+  }
+
+  probeEndpoint(params: { baseUrl: string; keyEnv?: string }): Promise<ProbeEndpointResultWire> {
+    return this.call<ProbeEndpointResultWire>('providers.probeEndpoint', params);
+  }
+
+  // ── provider accounts (WP5) — env-var NAMES only, never secret values ───────
+
+  accountsList(): Promise<AccountRowWire[]> {
+    return this.call<AccountRowWire[]>('accounts.list', {});
+  }
+
+  accountsConnect(params: {
+    projectId: string;
+    conversationId: string;
+    provider: string;
+    authMode?: string;
+    label?: string;
+  }): Promise<{ accountId: string }> {
+    return this.call<{ accountId: string }>('accounts.connect', params);
+  }
+
+  /** Point an account at the ENV VAR NAME that holds its secret. The name, never the value. */
+  accountBindSecretRef(params: { accountId: string; envName: string }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('accounts.bindSecretRef', params);
+  }
+
+  accountConfigStatus(accountId: string): Promise<{ status: ProviderConfigStatus | null }> {
+    return this.call<{ status: ProviderConfigStatus | null }>('accounts.configStatus', {
+      accountId,
+    });
+  }
+
+  // ── channels (WP5) — honest per-channel readiness + pairing ────────────────
+
+  channelsList(): Promise<ChannelStatusEntryWire[]> {
+    return this.call<ChannelStatusEntryWire[]>('channels.list', {});
+  }
+
+  pairingCreate(params: {
+    projectId: string;
+    conversationId?: string;
+    channel?: 'web' | 'telegram' | 'whatsapp';
+  }): Promise<PairingRowWire> {
+    return this.call<PairingRowWire>('channels.pairing.create', params);
+  }
+
+  pairingList(channel?: 'web' | 'telegram' | 'whatsapp'): Promise<PairingRowWire[]> {
+    return this.call<PairingRowWire[]>('channels.pairing.list', channel ? { channel } : {});
+  }
+
+  // ── Global Amrita / System Brain (WP5, ADR-0036) ───────────────────────────
+
+  systemHealth(): Promise<SystemHealthResultWire> {
+    return this.call<SystemHealthResultWire>('system.health', {});
+  }
+
+  /** The self-maintenance audit. `record:true` writes findings; default is read-only. */
+  systemAudit(record = false): Promise<SystemAuditResultWire> {
+    return this.call<SystemAuditResultWire>('system.audit', { record });
+  }
+
+  // ── phases after activation (WP5) ──────────────────────────────────────────
+
+  phaseCreate(params: {
+    projectId: string;
+    conversationId: string;
+    title: string;
+    description?: string;
+  }): Promise<{ phaseId: string }> {
+    return this.call<{ phaseId: string }>('projects.phases.create', params);
+  }
+
+  phaseUpdate(params: {
+    projectId: string;
+    conversationId: string;
+    phaseId: string;
+    title?: string;
+    description?: string;
+    status?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('projects.phases.update', params);
+  }
+
+  // ── Cinema module delegation (WP9, ADR-0029) — honest, bridge-gated ────────
+
+  /** Provider rows for the Cinema module. Throws / errors when the bridge is absent. */
+  cinemaProviders(): Promise<unknown> {
+    return this.call<unknown>('cinema.providers', {});
+  }
+
+  /** Open/resolved mandates — a LOCAL read over this daemon's own events; no bridge needed. */
+  cinemaMandateList(conversationId: string, openOnly = false): Promise<CinemaMandateRowWire[]> {
+    return this.call<CinemaMandateRowWire[]>('cinema.mandate.list', { conversationId, openOnly });
+  }
+
+  /** Hand the task to a supervised lane — approval, budget and receipt all apply. */
+  delegateTask(params: {
+    projectId: string;
+    conversationId: string;
+    taskId: string;
+  }): Promise<{ laneId: string; status: string }> {
+    return this.call('tasks.delegate', params);
+  }
+
+  /**
+   * The operator approves Amrita's proposal and the project becomes a plan.
+   * Nothing is created until this is called (ADR-0045).
+   */
+  activateProject(params: {
+    projectId: string;
+    conversationId: string;
+    phases: { title: string; description?: string }[];
+    milestones?: { title: string; targetDate?: string }[];
+    tasks?: { title: string; phaseIndex?: number }[];
+  }): Promise<{ phaseIds: string[]; milestoneIds: string[]; taskIds: string[] }> {
+    return this.call('projects.activate', params);
   }
 
   approvalsList(): Promise<OperatorApprovalLite[]> {

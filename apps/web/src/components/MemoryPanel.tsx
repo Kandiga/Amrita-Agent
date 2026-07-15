@@ -19,6 +19,7 @@ export function MemoryPanel({ projectId, writeCtx, onError }: MemoryPanelProps) 
   const [results, setResults] = useState<MemoryEntryLite[]>([]);
   const [searched, setSearched] = useState(false);
   const [remember, setRemember] = useState('');
+  const [justSaved, setJustSaved] = useState(false);
 
   async function search(): Promise<void> {
     if (!query.trim()) return;
@@ -39,6 +40,9 @@ export function MemoryPanel({ projectId, writeCtx, onError }: MemoryPanelProps) 
     try {
       await client.memoryPut({ ...writeCtx, scope: 'project', content: remember.trim() });
       setRemember('');
+      // The write is real but otherwise invisible (no list, no re-search) — confirm it.
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2000);
     } catch (e) {
       onError(e);
     }
@@ -80,6 +84,11 @@ export function MemoryPanel({ projectId, writeCtx, onError }: MemoryPanelProps) 
           Save
         </button>
       </form>
+      {justSaved ? (
+        <p className="pref-copy">
+          <small>Saved to project memory.</small>
+        </p>
+      ) : null}
     </section>
   );
 }

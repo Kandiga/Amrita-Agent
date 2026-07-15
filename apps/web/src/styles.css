@@ -618,10 +618,22 @@ code {
   width: 100%;
   margin: 0 auto;
 }
+/* Claude-Design canvas backdrop: a subtle warm dot-grid, so artifacts read as
+   objects floating on a design surface (like claude.ai's artifact canvas). */
+.canvas-grid,
+.stage-gallery,
+.canvas-panel {
+  background-color: var(--pampas);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--stone) 26%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
 .stage-gallery {
   overflow-y: auto;
   padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
-  background: var(--ivory);
 }
 .stage-gallery > * {
   max-width: 64rem;
@@ -1786,7 +1798,6 @@ code {
 .canvas-panel {
   display: flex;
   flex-direction: column;
-  background: var(--ivory);
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -1840,18 +1851,34 @@ code {
   color: var(--slate);
   font-size: 13px;
 }
+/* The artifact floats as a framed card on the grid (claude.ai artifact look):
+   inset, rounded, bordered, with a soft shadow so the grid shows around it. */
 .canvas-frame {
   flex: 1;
-  width: 100%;
-  border: none;
-  background: #101013;
+  width: calc(100% - 32px);
+  margin: 16px auto 8px;
+  border: 1px solid var(--border-mid);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 10px 34px rgba(40, 32, 24, 0.12);
+}
+.canvas-toolarge {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  margin: 16px;
+  text-align: center;
+  color: var(--slate);
+  background: var(--ivory);
+  border: 1px dashed var(--border-mid);
+  border-radius: 14px;
 }
 .canvas-live-note {
   margin: 0;
   padding: 7px 14px calc(7px + env(safe-area-inset-bottom));
   font-size: 11px;
   color: var(--stone);
-  border-top: 1px solid var(--border);
 }
 
 /* ── settings as a full page (claude.ai pattern: left sub-nav + content) ─── */
@@ -2396,5 +2423,879 @@ code {
   }
   .eco-launcher-row {
     padding: 0 12px 6px;
+  }
+}
+
+/* ── the Inbox — the one triage queue (ADR-0044) ───────────────────────────── */
+/* Uses the existing card/badge/row language. No new accent: clay only. */
+
+.inbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inbox-item {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inbox-text {
+  margin: 0;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.inbox-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--stone);
+}
+
+/* The Scribe's reason for proposing this — the audit trail, in the UI. */
+.inbox-rationale {
+  margin: 0;
+  font-size: 12px;
+  color: var(--slate);
+  font-style: italic;
+}
+
+.inbox-actions,
+.inbox-dismiss {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.inbox-actions select {
+  flex: 0 0 auto;
+}
+
+.inbox-actions input,
+.inbox-dismiss input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.inbox-dismiss button.ghost {
+  background: transparent;
+  color: var(--stone);
+  border: 1px solid var(--border);
+}
+
+.inbox-dismiss button.ghost:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--stone);
+}
+
+/* Quick capture, in the chat column beside the composer. */
+.quick-capture {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+
+.quick-capture input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Visually hidden but available to screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── the project control room + board (ADR-0044) ───────────────────────────── */
+/* Calm by default: charter, inbox, one projection at a time. No second accent —
+   clay only, per DESIGN.md. */
+
+.project-room {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* The old auto-fill masonry, kept ONLY for the list view and the disclosure. */
+.project-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.project-views {
+  display: flex;
+  gap: 6px;
+}
+
+.project-views button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--slate);
+  border-radius: var(--r-pill);
+  padding: 4px 14px;
+}
+
+.project-views button.active {
+  background: var(--clay);
+  border-color: var(--clay);
+  color: var(--paper);
+}
+
+.project-more > summary {
+  cursor: pointer;
+  color: var(--stone);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.project-more > summary:hover {
+  color: var(--ink);
+}
+
+.project-more .project-cards {
+  margin-top: 10px;
+}
+
+/* The board itself. */
+.board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.board-column {
+  background: var(--ivory);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.board-column-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.board-column-head small {
+  color: var(--stone);
+  font-size: 11px;
+}
+
+.board-count {
+  color: var(--stone);
+  font-weight: 400;
+}
+
+.board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.board-task {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: grab;
+}
+
+.board-task.busy {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.board-task-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.board-task-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.board-task-meta .chip {
+  font-size: 11px;
+  color: var(--slate);
+  background: var(--pampas);
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+}
+
+.board-task-meta .chip.overdue,
+.board-task-meta .chip.prio-high {
+  color: var(--clay-strong);
+  background: color-mix(in srgb, var(--clay) 12%, transparent);
+}
+
+.board-task-blocked {
+  margin: 0;
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.board-task-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.board-task-actions select {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+/* Narrow: the board becomes a single column of stacked columns. Drag is not a
+   mobile primitive — the move-to-column select is the real contract there. */
+@media (max-width: 900px) {
+  .board {
+    grid-template-columns: 1fr;
+  }
+  .board-task {
+    cursor: default;
+  }
+}
+
+/* ADR-0045: a conflict is shown, never swallowed. */
+.board-task-conflict {
+  margin: 0;
+  font-size: 11px;
+  color: var(--clay-strong);
+  background: color-mix(in srgb, var(--clay) 10%, transparent);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+}
+.board-task-conflict button {
+  background: none;
+  border: none;
+  color: var(--clay-strong);
+  text-decoration: underline;
+  padding: 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+/* ADR-0045: an inferred fact is a hypothesis, and must look like one. */
+.board-task-meta .chip.inferred,
+.charter-mark.unconfirmed {
+  color: var(--stone);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+/* The charter findings — certainty / missing / contradiction. */
+.charter-findings {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.charter-finding {
+  font-size: 12px;
+  color: var(--slate);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.charter-mark {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+  flex: 0 0 auto;
+}
+.charter-mark.missing {
+  color: var(--stone);
+  background: var(--pampas);
+}
+.charter-mark.contradiction {
+  color: var(--clay-strong);
+  background: color-mix(in srgb, var(--clay) 12%, transparent);
+}
+
+/* The status strip (ADR-0045): four indicators, not twenty numbers. */
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: baseline;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--ivory);
+  font-size: 12px;
+  color: var(--slate);
+}
+.status-health {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: var(--r-pill);
+  padding: 2px 10px;
+  background: var(--pampas);
+  color: var(--stone);
+}
+.status-health.on-track {
+  color: var(--ok);
+}
+.status-health.at-risk,
+.status-health.blocked {
+  color: var(--clay-strong);
+  background: color-mix(in srgb, var(--clay) 12%, transparent);
+}
+.status-strip em {
+  color: var(--stone);
+  font-style: normal;
+}
+.status-counts {
+  margin-inline-start: auto;
+  color: var(--stone);
+}
+
+/* A focused card — Amrita knows this is what you are looking at. */
+.board-task.focused {
+  border-color: var(--clay);
+  box-shadow: 0 0 0 1px var(--clay);
+}
+.board-task-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: start;
+  cursor: pointer;
+  width: 100%;
+}
+.board-task-why {
+  margin: 0;
+  font-size: 11px;
+  color: var(--stone);
+  font-style: italic;
+}
+
+/* Execution routes (ADR-0045): honest about what Amrita can and cannot do. */
+.board-task-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  font-size: 11px;
+}
+.route-chip {
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+  background: var(--pampas);
+  color: var(--slate);
+}
+.route-chip.delegate {
+  color: var(--ok);
+}
+.route-chip.needs-connector,
+.route-chip.needs-approval {
+  color: var(--clay-strong);
+  background: color-mix(in srgb, var(--clay) 12%, transparent);
+}
+.route-detail {
+  color: var(--stone);
+}
+.route-risk {
+  width: 100%;
+  color: var(--clay-strong);
+}
+.route-ask {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--stone);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: start;
+}
+
+/* ── the weekly review, the hub and the retro (ADR-0045) ───────────────────── */
+
+/* Three lists that all say the same kind of thing — a mark, then a sentence.
+   They share the charter's marks on purpose: "overdue" and "contradiction" are
+   the same weight of bad news, and should not need two visual vocabularies. */
+.review-list,
+.retro-findings,
+.hub-ms {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--slate);
+}
+.review-list li,
+.retro-findings li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.review-recs {
+  margin: 10px 0 0;
+  padding-inline-start: 18px;
+  font-size: 12px;
+  color: var(--slate);
+}
+.review-raised {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--stone);
+}
+
+/* The hub preview IS the public object — so it gets a frame that says "outside". */
+.hub-preview {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: var(--ivory);
+}
+.hub-preview strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.hub-preview p {
+  margin: 4px 0;
+  font-size: 13px;
+  color: var(--slate);
+}
+.hub-fin,
+.hub-prog,
+.hub-phases {
+  font-size: 12px !important;
+  color: var(--stone) !important;
+}
+.hub-live {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--slate);
+  margin: 0;
+}
+.hub-note {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--stone);
+}
+
+.retro-outcome {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.retro-h3 {
+  margin: 14px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* The one warning in the product that is about another project. */
+.retro-warn {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--stone);
+}
+.retro-lessons {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.retro-lessons li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--slate);
+}
+
+/* The selection-aware-chat indicator: what Amrita thinks you're pointing at,
+   and the only place in the chat column to let go of it (WP1). */
+.focus-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  margin: 0 12px 6px;
+  padding: 3px 6px 3px 10px;
+  font-size: 11px;
+  color: var(--slate);
+  background: color-mix(in srgb, var(--clay) 10%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+.focus-chip button {
+  border: none;
+  background: transparent;
+  color: var(--stone);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.focus-chip button:hover {
+  color: var(--clay-strong);
+}
+
+/* Milestone row actions (WP3): Activate / Done / Drop sit together. */
+.milestone-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+/* Sidebar "+ New project" (WP4) — the entry point a fresh DB was missing. */
+.sidebar-projects-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.new-project-btn {
+  border: 1px solid var(--border);
+  background: var(--ivory);
+  color: var(--slate);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.new-project-btn:hover {
+  border-color: var(--clay);
+  color: var(--clay-strong);
+}
+.new-project-form {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+.new-project-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Working-folder (setRoot) control (WP4). */
+.workspace-root {
+  margin: 0 0 8px;
+  font-size: 12px;
+  word-break: break-all;
+}
+.workspace-root code {
+  background: var(--pampas);
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+}
+
+/* Preferences toggles (WP5). */
+.pref-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.pref-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pref-copy small {
+  color: var(--stone);
+}
+.pref-switch {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--pampas);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.pref-switch.on {
+  background: color-mix(in srgb, var(--clay) 55%, transparent);
+  border-color: var(--clay);
+}
+.pref-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pref-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ivory);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  transition: left 0.15s ease;
+}
+.pref-switch.on .pref-knob {
+  left: 20px;
+}
+
+/* Channels + System-brain rows (WP5) reuse one row shape. */
+.channel-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--ivory);
+}
+.channel-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.channel-copy small {
+  color: var(--stone);
+}
+.channel-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.channel-pairings {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--slate);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Error-boundary fallback (stability): a crash shows this, not a white page. */
+.app-crash {
+  max-width: 32rem;
+  margin: 15vh auto;
+  padding: 2rem;
+  text-align: center;
+  color: var(--slate);
+}
+.app-crash h1 {
+  font-size: 1.3rem;
+  margin-bottom: 0.5rem;
+}
+.app-crash button {
+  margin-top: 1rem;
+}
+
+/* ── the free canvas (Live Canvas): movable/resizable build cards ─────────── */
+.free-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background-color: var(--pampas);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--stone) 26%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+  touch-action: none;
+}
+.canvas-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--border-mid);
+  border-radius: 14px;
+  box-shadow: 0 10px 34px rgba(40, 32, 24, 0.14);
+  overflow: hidden;
+  min-width: 240px;
+}
+.canvas-card.selected {
+  border-color: var(--clay);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--clay) 45%, transparent), 0 12px 40px
+    rgba(40, 32, 24, 0.18);
+}
+.canvas-card-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+.canvas-card.minimized .canvas-card-bar {
+  border-bottom: none;
+}
+.canvas-card-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--stone);
+  background: var(--pampas);
+  border-radius: var(--r-pill);
+  padding: 2px 7px;
+  flex: 0 0 auto;
+}
+.canvas-card-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 13px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-card-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.canvas-card-actions button {
+  border: 1px solid var(--border-mid);
+  background: var(--ivory);
+  color: var(--slate);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.canvas-card-body {
+  position: relative;
+  overflow: hidden;
+}
+/* Inside a card the frame is full-bleed — the CARD is the frame. */
+.canvas-card-body .canvas-frame,
+.canvas-card-body .canvas-toolarge {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.canvas-card-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 50%,
+    color-mix(in srgb, var(--stone) 45%, transparent) 50%
+  );
+  border-bottom-right-radius: 14px;
+}
+/* a soft "building…" pulse on the card kind badge while it streams */
+.canvas-card [data-building="true"] .canvas-card-kind,
+.canvas-card-kind:empty {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Mobile: a free canvas is not a touch primitive — stack cards full-width. */
+@media (max-width: 720px) {
+  .canvas-card {
+    position: static !important;
+    width: auto !important;
+    margin: 12px;
+    z-index: auto !important;
+  }
+  .canvas-card-bar {
+    cursor: default;
+  }
+  .canvas-card-resize {
+    display: none;
+  }
+  .free-canvas {
+    overflow-y: auto;
   }
 }
