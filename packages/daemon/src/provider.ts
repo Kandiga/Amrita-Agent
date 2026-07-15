@@ -488,6 +488,17 @@ const CLAUDE_CLI_TIMEOUT_MS =
  *  logout keeps failing and surfaces the login hint after these are exhausted. */
 const CLAUDE_CHAT_ATTEMPTS = 3;
 
+/**
+ * Chat-CLI arg fences that make `claude -p` a REPLY, not an agentic build. Without
+ * them a "build me a game" chat turn makes the CLI actually build (Bash/Write/Edit)
+ * for minutes and overrun the timeout, and its MCP servers can hang on interactive
+ * auth. So (verified on the host): `--strict-mcp-config` (no MCP), `--max-turns 1`
+ * (one turn), and a READ-ONLY tool allowlist (the lane runner's proven set) so the
+ * brain can read but never build — that is what a lane/session is for (ADR-0048).
+ */
+const CHAT_CLI_ARGS_HEAD = ['-p', '--strict-mcp-config', '--max-turns', '1'] as const;
+const CHAT_CLI_ARGS_TAIL = ['--allowedTools', 'Read', 'Grep', 'Glob', 'LS'] as const;
+
 const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -568,7 +579,14 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
       // the agentic tool loop and build things itself — that is what a lane/session is
       // for. Without it a "build me a game" chat turn spawns a full Claude Code build
       // that overruns the chat timeout (ADR-0048; "chat = structural, no tools").
-      const args = ['-p', '--max-turns', '1', '--output-format', 'json', '--model', req.model];
+      const args = [
+        ...CHAT_CLI_ARGS_HEAD,
+        '--output-format',
+        'json',
+        '--model',
+        req.model,
+        ...CHAT_CLI_ARGS_TAIL,
+      ];
       let lastHint = 'the claude CLI returned an error (run `claude` interactively to inspect)';
       for (let attempt = 1; attempt <= CLAUDE_CHAT_ATTEMPTS; attempt++) {
         const r = await exec(
@@ -626,17 +644,14 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
      */
     async generateStream(req: ChatRequest, onDelta: (text: string) => void): Promise<ChatResponse> {
       const args = [
-        '-p',
-        // Reply in one turn; do not run the agentic build loop in a chat turn — a
-        // lane/session does the building (ADR-0048). See the note in generate().
-        '--max-turns',
-        '1',
+        ...CHAT_CLI_ARGS_HEAD,
         '--output-format',
         'stream-json',
         '--include-partial-messages',
         '--verbose',
         '--model',
         req.model,
+        ...CHAT_CLI_ARGS_TAIL,
       ];
       let lastHint = 'the claude CLI returned an error (run `claude` interactively to inspect)';
       for (let attempt = 1; attempt <= CLAUDE_CHAT_ATTEMPTS; attempt++) {

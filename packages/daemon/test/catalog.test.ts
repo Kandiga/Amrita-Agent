@@ -222,8 +222,10 @@ describe('chat through the new providers', () => {
     expect(turn.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
     // the kernel prefers the STREAMING path now (model.delta live)
     expect(seen.args).toEqual([
+      // no MCP (hangs on auth) + one turn + read-only tools: a chat reply, not an
+      // agentic build (ADR-0048). The read-only allowlist is the lane runner's set.
       '-p',
-      // --max-turns 1: a chat reply is one turn, never an agentic build loop (ADR-0048)
+      '--strict-mcp-config',
       '--max-turns',
       '1',
       '--output-format',
@@ -232,6 +234,11 @@ describe('chat through the new providers', () => {
       '--verbose',
       '--model',
       'sonnet',
+      '--allowedTools',
+      'Read',
+      'Grep',
+      'Glob',
+      'LS',
     ]);
     expect(seen.input).toContain('hello from amrita');
   });
