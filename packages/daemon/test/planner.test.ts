@@ -104,4 +104,15 @@ describe('the Planner delegates build intent to a session (ADR-0048)', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(spawnedLanes()).toHaveLength(0);
   });
+
+  it('the Conclusion Capsule reflects the session and reading it writes NOTHING (ADR-0048)', async () => {
+    await turn('build me a login page');
+    await new Promise((r) => setTimeout(r, 30));
+    const before = kernel.listEvents(ctx.conversationId, 0).length;
+    const capsule = kernel.getConclusionCapsule(ctx.conversationId);
+    expect(capsule.progress.length).toBeGreaterThan(0); // the session shows up
+    expect(['blocked', 'running']).toContain(capsule.status);
+    // the capsule is DERIVED — reading it appends no event, it is never a write path.
+    expect(kernel.listEvents(ctx.conversationId, 0).length).toBe(before);
+  });
 });

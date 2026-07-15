@@ -695,6 +695,12 @@ export const METHODS: Record<string, RpcMethod> = {
   ),
   'lanes.get': def(z.object({ laneId: z.string() }), (k, p) => k.getLane(p.laneId) ?? null),
 
+  // ── the Conclusion Capsule (ADR-0048): a derived, read-only view — what Amrita
+  //    shows the operator instead of code and logs. Never a write path.
+  'orchestration.capsule': def(z.object({ conversationId: z.string() }), (k, p) =>
+    k.getConclusionCapsule(p.conversationId),
+  ),
+
   // ── operator approvals (ADR-0021) ─────────────────────────────────────────
   'approvals.list': def(z.object({}).optional(), (k) => k.listPendingApprovals()),
   'approvals.resolve': def(

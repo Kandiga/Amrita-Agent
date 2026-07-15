@@ -193,6 +193,47 @@ export const doctorReportSchema = z.object({
 });
 export type DoctorReport = z.infer<typeof doctorReportSchema>;
 
+/**
+ * The Conclusion Capsule (ADR-0048) — what Amrita shows the operator INSTEAD of code
+ * and logs: Progress / Decisions / Risks / Conflicts / Validation / Next-Actions,
+ * each item provenance-linked to the exact lane / task / decision / inbox / approval
+ * it came from. This is a DERIVED VIEW delivered as an RPC RESULT (like DoctorReport)
+ * — it NEVER enters the event log and is never a write path.
+ */
+export const capsuleProvenanceSchema = z
+  .object({
+    kind: z.enum(['lane', 'task', 'decision', 'risk', 'inbox', 'approval', 'event']),
+    /** The event id / row id this item came from — the clickable link. */
+    ref: z.string(),
+    label: z.string().max(200).optional(),
+  })
+  .strict();
+
+export const capsuleItemSchema = z
+  .object({
+    text: z.string().min(1).max(500),
+    provenance: z.array(capsuleProvenanceSchema).max(8),
+  })
+  .strict();
+
+export const conclusionCapsuleSchema = z
+  .object({
+    conversationId: idSchema,
+    laneId: idSchema.optional(),
+    groupId: idSchema.optional(),
+    status: z.enum(['idle', 'running', 'blocked', 'review', 'done', 'aborted']),
+    progress: z.array(capsuleItemSchema).max(20),
+    decisions: z.array(capsuleItemSchema).max(20),
+    risks: z.array(capsuleItemSchema).max(20),
+    conflicts: z.array(capsuleItemSchema).max(20),
+    validation: z.array(capsuleItemSchema).max(20),
+    nextActions: z.array(capsuleItemSchema).max(20),
+    rev: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ConclusionCapsule = z.infer<typeof conclusionCapsuleSchema>;
+export type CapsuleItem = z.infer<typeof capsuleItemSchema>;
+
 export const codingRuntimeStateSchema = z.enum([
   'ready',
   'installed_unauthenticated',
@@ -671,6 +712,7 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   ping: z.object({ pong: z.literal(true) }),
   health: kernelHealthSchema,
   doctor: doctorReportSchema,
+  'orchestration.capsule': conclusionCapsuleSchema,
 
   'project.ensure': projectRowSchema,
   'project.get': projectRowSchema.nullable(),

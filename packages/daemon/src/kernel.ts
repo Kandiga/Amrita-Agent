@@ -12,10 +12,12 @@ import {
   type ChatFocus,
   type CinemaMandate,
   type CinemaMandateReport,
+  type ConclusionCapsule,
   type ConnectorStatusReport,
   type ConversationRow,
   type HarnessTopology,
   type KnowledgeSource,
+  type LaneExit,
   type MergeReport,
   type ProjectBrain,
   type ProjectContextWire,
@@ -75,6 +77,7 @@ import {
   issueCinemaMandate,
   listCinemaMandates,
 } from './cinema-mandates.ts';
+import { type CapsuleLane, buildConclusionCapsule } from './conclusion-capsule.ts';
 import { connectorStatuses } from './connectors.ts';
 import {
   AMRITA_CAPABILITIES,
@@ -3027,6 +3030,65 @@ export class AmritaKernel {
 
   getLane(laneId: string): LaneRow | undefined {
     return this.store.getLane(laneId);
+  }
+
+  /**
+   * The Conclusion Capsule for a conversation (ADR-0048) — the derived view Amrita
+   * shows instead of code and logs. Read-only: assembled fresh from the lanes, their
+   * merge reports, the lane-origin Inbox proposals and pending approvals. It never
+   * writes and never becomes an event (a stealth write path is forbidden).
+   */
+  getConclusionCapsule(conversationId: string): ConclusionCapsule {
+    const conv = this.store.getConversation(conversationId);
+    const lanes: CapsuleLane[] = this.store.listLanes({ conversationId }).map((row) => {
+      let goal = '';
+      try {
+        goal = (JSON.parse(row.mandateJson) as { goal?: string }).goal ?? '';
+      } catch {
+        goal = '';
+      }
+      const report = row.mergeJson
+        ? (JSON.parse(row.mergeJson) as {
+            exit?: LaneExit;
+            summary?: string;
+            decisions?: string[];
+            followUps?: string[];
+            tasks?: string[];
+          })
+        : null;
+      return {
+        laneId: row.id,
+        kind: row.kind,
+        status: row.status,
+        goal,
+        ...(report?.exit ? { exit: report.exit } : {}),
+        ...(report?.summary ? { summary: report.summary } : {}),
+        decisions: report?.decisions ?? [],
+        followUps: report?.followUps ?? [],
+        tasks: report?.tasks ?? [],
+      };
+    });
+
+    const inbox = conv
+      ? this.store
+          .listInboxItems({ projectId: conv.projectId, status: 'pending' })
+          .filter(
+            (i) =>
+              i.origin === 'lane' &&
+              (i.conversationId === conversationId || i.conversationId === null),
+          )
+          .map((i) => ({ id: i.id, text: i.text, suggestedKind: i.suggestedKind }))
+      : [];
+
+    const approvals = this.listPendingApprovals()
+      .filter((a) => a.conversationId === conversationId)
+      .map((a) => ({
+        approvalId: a.approvalId,
+        action: a.action,
+        ...(a.laneId ? { laneId: a.laneId } : {}),
+      }));
+
+    return buildConclusionCapsule({ conversationId, lanes, inbox, approvals });
   }
 
   /** Append a lane lifecycle event (laneId on the envelope, so the projection keys on it). */
