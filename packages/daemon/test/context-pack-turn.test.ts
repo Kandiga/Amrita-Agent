@@ -141,15 +141,16 @@ describe('the context pack reaches the model (ADR-0044)', () => {
     expect(msgs.every((m) => m.role !== 'system')).toBe(true);
   });
 
-  it('still tells her about the live canvas on a brand-new project, but no project state', async () => {
+  it('tells her to delegate to a session (not dump code) on a brand-new project, no invented state', async () => {
     const seen: { body?: Record<string, unknown> } = {};
     const { conversationId } = openKernel(seen);
     await kernel.runChatTurn({ conversationId, text: 'build me a game', provider: 'anthropic' });
     const system = String(seen.body?.system ?? '');
-    // CANVAS-1: the canvas capability is always present, so "build me a game" on a
-    // fresh project lands on the canvas instead of files + http.server.
-    expect(system).toContain('live canvas');
-    expect(system).toContain('```html');
+    // ADR-0048 (everything to a session, default ON): the orchestrator preamble is
+    // always present, so "build me a game" is delegated to a managed session — she
+    // no longer prints a complete HTML document as the chat reply.
+    expect(system).toContain('execution arms');
+    expect(system).not.toContain('```html');
     // …but there is no invented project state.
     expect(system).not.toContain('## Charter');
     expect(system).not.toContain('## Tasks');

@@ -68,6 +68,7 @@ import {
   type TaskStatus,
   openStore,
 } from '@amrita/store';
+import { resolveAgent } from './agent-select.ts';
 import { type CharterFinding, auditCharter, readyToActivate } from './charter-audit.ts';
 import {
   completeCinemaMandate,
@@ -77,11 +78,18 @@ import {
 import { connectorStatuses } from './connectors.ts';
 import {
   AMRITA_CAPABILITIES,
+  AMRITA_ORCHESTRATOR,
   CONTEXT_PACK_SETTING,
+  ORCHESTRATION_SETTING,
   buildProjectContextPack,
 } from './context-pack.ts';
 import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
-import { type RouteVerdict, routeFor } from './execution-route.ts';
+import {
+  type RouteVerdict,
+  classifyIntent,
+  looksLikeBuildIntent,
+  routeFor,
+} from './execution-route.ts';
 import { fetchGithubIssues } from './github.ts';
 import {
   HARNESS_TOPOLOGY,
@@ -90,6 +98,7 @@ import {
   cinemaKnowledgeSource,
 } from './harness.ts';
 import { type PublicHub, SLUG_RE, buildPublicHub, contentHash, renderPublicHub } from './hub.ts';
+import { buildMandateFromChat } from './mandate-synth.ts';
 import {
   type ChatMessage,
   type ChatProvider,
@@ -1369,6 +1378,20 @@ export class AmritaKernel {
       /* the turn is already persisted; the Scribe is best-effort */
     }
 
+    // ADR-0048: the Planner is the Scribe's sibling. Where the Scribe turns a turn
+    // into Inbox proposals, the Planner turns a BUILD/RESEARCH request into a
+    // delegated execution session — so Amrita supervises instead of writing code in
+    // chat. Off the reply path, best-effort: a failure here never fails the turn.
+    try {
+      await this.runPlanner({
+        projectId,
+        conversationId: input.conversationId,
+        userText: input.text,
+      });
+    } catch {
+      /* the turn is already persisted; the Planner is best-effort */
+    }
+
     return {
       turnId,
       provider: providerId,
@@ -2450,6 +2473,51 @@ export class AmritaKernel {
   }
 
   /**
+   * The Planner (ADR-0048) — the sibling of the Scribe. It turns a BUILD/RESEARCH
+   * request into a delegated execution session, so Amrita supervises instead of
+   * writing code in chat. Gated three ways: the kill-switch (default ON), a cheap
+   * intent gate (only delegatable build/research), and a working folder (no root ⇒
+   * no session; Amrita's reply already says so). If no coding runtime is ready it
+   * opens NOTHING and stays honest. `startLane` is the single spawn path — it mints
+   * the laneId, jails the workspace (ADR-0039) and gates real execution on operator
+   * approval (ADR-0021); `detach` so this never blocks the already-sent reply.
+   */
+  private async runPlanner(input: {
+    projectId: string;
+    conversationId: string;
+    userText: string;
+  }): Promise<void> {
+    if (this.getSetting(ORCHESTRATION_SETTING) === false) return;
+    if (!looksLikeBuildIntent(input.userText)) return;
+    const project = this.store.getProject(input.projectId);
+    if (!project?.root) return;
+
+    const { intent } = classifyIntent(input.userText);
+    const runtimes = await this.getCodingRuntimes();
+    const agent = resolveAgent({ intent, runtimes, realExecution: this.realLaneExecution });
+    if (agent.kind === 'human') return;
+
+    const mandate = buildMandateFromChat({
+      laneId: newId(),
+      requestText: input.userText,
+      brief: this.store.getBrief(input.projectId) ?? null,
+      memory: this.store.listMemoryEntries(input.projectId),
+      decisions: this.store.listDecisions({ projectId: input.projectId }),
+      budget: { maxMinutes: 30 },
+    });
+
+    await this.startLane({
+      conversationId: input.conversationId,
+      goal: mandate.goal,
+      kind: agent.kind,
+      contextPack: mandate.contextPack,
+      budget: mandate.budget,
+      approvals: mandate.approvals,
+      detach: true,
+    });
+  }
+
+  /**
    * Derive the maintained Project Brain — normalized records (with provenance
    * and links), gaps, maintenance timeline, counts. A deterministic projection
    * over event-sourced state + manually-captured memory (no new storage).
@@ -2499,10 +2567,12 @@ export class AmritaKernel {
       sources: brain.sources,
       context,
     });
-    // The canvas capability is a property of Amrita, not the project, so it goes
-    // on EVERY turn — even a stateless one, which is exactly when someone says
-    // "build me a game" on a fresh project and expects it on the canvas.
-    return pack ? `${AMRITA_CAPABILITIES}\n\n${pack}` : AMRITA_CAPABILITIES;
+    // The preamble is a property of Amrita, not the project, so it goes on EVERY
+    // turn. When orchestration is on (default), she delegates builds to a session
+    // (AMRITA_ORCHESTRATOR); the kill-switch reverts to the legacy inline canvas.
+    const preamble =
+      this.getSetting(ORCHESTRATION_SETTING) === false ? AMRITA_CAPABILITIES : AMRITA_ORCHESTRATOR;
+    return pack ? `${preamble}\n\n${pack}` : preamble;
   }
 
   getProjectBrain(projectId: string, now: string = new Date().toISOString()): ProjectBrain {
