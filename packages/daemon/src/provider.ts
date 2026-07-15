@@ -483,6 +483,56 @@ const CLAUDE_CLI_TIMEOUT_MS =
     ? Number(process.env.AMRITA_CHAT_CLI_TIMEOUT_MS)
     : 300_000;
 
+/** Attempts (including the first) for a transient chat failure. A concurrent
+ *  token-refresh race or a brief rate-limit/overload self-heals on retry; a genuine
+ *  logout keeps failing and surfaces the login hint after these are exhausted. */
+const CLAUDE_CHAT_ATTEMPTS = 3;
+
+const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Classify a FAILED claude CLI result: is it worth retrying, and what to tell the
+ * operator if it never recovers. Auth-shaped errors are treated as RETRYABLE because
+ * concurrent claude calls race on the subscription token refresh and one gets a
+ * spurious 401 even though the token is valid (verified) — a retry after the refresh
+ * settles succeeds. A real logout simply keeps failing and surfaces the login hint.
+ */
+export function classifyClaudeFailure(
+  stdout: string,
+  stderr: string,
+): { retryable: boolean; hint: string } {
+  const c = `${stdout}\n${stderr}`.toLowerCase();
+  const rate =
+    c.includes('rate limit') ||
+    c.includes('overloaded') ||
+    c.includes('429') ||
+    c.includes('529') ||
+    c.includes('503');
+  const authish =
+    c.includes('unauthenticated') ||
+    c.includes('invalid api key') ||
+    c.includes('logged in') ||
+    c.includes('log in') ||
+    c.includes('/login') ||
+    c.includes('401');
+  if (rate) {
+    return {
+      retryable: true,
+      hint: 'the claude CLI hit a rate limit or overload — wait a moment and retry',
+    };
+  }
+  if (authish) {
+    return {
+      retryable: true,
+      hint: 'the claude CLI is not logged in — run `claude` once and log in, then retry',
+    };
+  }
+  return {
+    retryable: false,
+    hint: 'the claude CLI returned an error (run `claude` interactively to inspect)',
+  };
+}
+
 /** Flatten a transcript into one prompt for the single-shot `claude -p` call. */
 export function flattenTranscript(messages: ChatMessage[]): string {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.text);
@@ -519,56 +569,53 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
       // for. Without it a "build me a game" chat turn spawns a full Claude Code build
       // that overruns the chat timeout (ADR-0048; "chat = structural, no tools").
       const args = ['-p', '--max-turns', '1', '--output-format', 'json', '--model', req.model];
-      const r = await exec('claude', args, flattenTranscript(req.messages), CLAUDE_CLI_TIMEOUT_MS);
-      if (r.status === null) {
-        // Honest classification (never conflated): a timeout is not a missing CLI.
-        if (r.failure === 'timeout') {
+      let lastHint = 'the claude CLI returned an error (run `claude` interactively to inspect)';
+      for (let attempt = 1; attempt <= CLAUDE_CHAT_ATTEMPTS; attempt++) {
+        const r = await exec(
+          'claude',
+          args,
+          flattenTranscript(req.messages),
+          CLAUDE_CLI_TIMEOUT_MS,
+        );
+        if (r.status === null) {
+          // A timeout / missing CLI is not retryable here (honest classification).
+          if (r.failure === 'timeout') {
+            throw new ProviderError(
+              'provider_error',
+              `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+            );
+          }
           throw new ProviderError(
-            'provider_error',
-            `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+            'provider_unavailable',
+            'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
           );
         }
-        throw new ProviderError(
-          'provider_unavailable',
-          'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
-        );
+        let parsed: ClaudeCliResult | null = null;
+        try {
+          parsed = JSON.parse(r.stdout) as ClaudeCliResult;
+        } catch {
+          parsed = null;
+        }
+        if (r.status === 0 && parsed && parsed.is_error !== true && parsed.subtype === 'success') {
+          return {
+            text: parsed.result ?? '',
+            finishReason: parsed.stop_reason ?? 'stop',
+            usage: {
+              inputTokens: parsed.usage?.input_tokens ?? 0,
+              outputTokens: parsed.usage?.output_tokens ?? 0,
+            },
+          };
+        }
+        const { retryable, hint } = classifyClaudeFailure(r.stdout, r.stderr);
+        lastHint = hint;
+        // Self-heal a transient (token-race / rate-limit) failure with a backoff.
+        if (retryable && attempt < CLAUDE_CHAT_ATTEMPTS) {
+          await sleepMs(1200 * attempt);
+          continue;
+        }
+        break;
       }
-      let parsed: ClaudeCliResult | null = null;
-      try {
-        parsed = JSON.parse(r.stdout) as ClaudeCliResult;
-      } catch {
-        parsed = null;
-      }
-      if (r.status !== 0 || !parsed || parsed.is_error === true || parsed.subtype !== 'success') {
-        const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
-        // Be specific: a bare "auth" substring also matches transient errors (rate
-        // limits, overload, 5xx), which mislabelled them as a login problem. Only a
-        // clear login signal gets the "log in" hint; a rate limit gets "retry".
-        const looksLikeLogin =
-          combined.includes('logged in') ||
-          combined.includes('log in') ||
-          combined.includes('/login') ||
-          combined.includes('unauthenticated') ||
-          combined.includes('invalid api key');
-        const looksLikeRateLimit =
-          combined.includes('rate limit') ||
-          combined.includes('overloaded') ||
-          combined.includes('429');
-        const hint = looksLikeLogin
-          ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
-          : looksLikeRateLimit
-            ? 'the claude CLI hit a rate limit or overload — wait a moment and retry'
-            : 'the claude CLI returned an error (run `claude` interactively to inspect)';
-        throw new ProviderError('provider_error', `claude-code turn failed: ${hint}`);
-      }
-      return {
-        text: parsed.result ?? '',
-        finishReason: parsed.stop_reason ?? 'stop',
-        usage: {
-          inputTokens: parsed.usage?.input_tokens ?? 0,
-          outputTokens: parsed.usage?.output_tokens ?? 0,
-        },
-      };
+      throw new ProviderError('provider_error', `claude-code turn failed: ${lastHint}`);
     },
 
     /**
@@ -591,80 +638,77 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
         '--model',
         req.model,
       ];
-      let result: ClaudeCliResult | null = null;
-      const seeLine = (line: string): void => {
-        let ev: unknown;
-        try {
-          ev = JSON.parse(line);
-        } catch {
-          return; // hook noise / partial line — never fatal
-        }
-        const e = ev as {
-          type?: string;
-          event?: { type?: string; delta?: { type?: string; text?: string } };
+      let lastHint = 'the claude CLI returned an error (run `claude` interactively to inspect)';
+      for (let attempt = 1; attempt <= CLAUDE_CHAT_ATTEMPTS; attempt++) {
+        let result: ClaudeCliResult | null = null;
+        let streamedAny = false;
+        const seeLine = (line: string): void => {
+          let ev: unknown;
+          try {
+            ev = JSON.parse(line);
+          } catch {
+            return; // hook noise / partial line — never fatal
+          }
+          const e = ev as {
+            type?: string;
+            event?: { type?: string; delta?: { type?: string; text?: string } };
+          };
+          if (e.type === 'stream_event' && e.event?.type === 'content_block_delta') {
+            const delta = e.event.delta;
+            if (delta?.type === 'text_delta' && delta.text) {
+              streamedAny = true;
+              onDelta(delta.text);
+            }
+          } else if (e.type === 'result') {
+            result = ev as ClaudeCliResult;
+          }
         };
-        if (e.type === 'stream_event' && e.event?.type === 'content_block_delta') {
-          const delta = e.event.delta;
-          if (delta?.type === 'text_delta' && delta.text) onDelta(delta.text);
-        } else if (e.type === 'result') {
-          result = ev as ClaudeCliResult;
-        }
-      };
-      const r = await exec(
-        'claude',
-        args,
-        flattenTranscript(req.messages),
-        CLAUDE_CLI_TIMEOUT_MS,
-        seeLine,
-      );
-      if (r.status === null) {
-        if (r.failure === 'timeout') {
+        const r = await exec(
+          'claude',
+          args,
+          flattenTranscript(req.messages),
+          CLAUDE_CLI_TIMEOUT_MS,
+          seeLine,
+        );
+        if (r.status === null) {
+          if (r.failure === 'timeout') {
+            throw new ProviderError(
+              'provider_error',
+              `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+            );
+          }
           throw new ProviderError(
-            'provider_error',
-            `claude-code turn timed out after ${Math.round(CLAUDE_CLI_TIMEOUT_MS / 1000)}s — long turns can exceed the budget; raise AMRITA_CHAT_CLI_TIMEOUT_MS or retry`,
+            'provider_unavailable',
+            'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
           );
         }
-        throw new ProviderError(
-          'provider_unavailable',
-          'the `claude` CLI was not found on the daemon PATH — install with `npm install -g @anthropic-ai/claude-code`',
-        );
+        if (result === null) {
+          // exec impls that buffer (test fakes) never call onLine — scan stdout.
+          for (const line of r.stdout.split('\n')) seeLine(line);
+        }
+        // TS can't see assignments made inside the seeLine closure — re-widen.
+        const parsed = result as ClaudeCliResult | null;
+        if (r.status === 0 && parsed && parsed.is_error !== true && parsed.subtype === 'success') {
+          return {
+            text: parsed.result ?? '',
+            finishReason: parsed.stop_reason ?? 'stop',
+            usage: {
+              inputTokens: parsed.usage?.input_tokens ?? 0,
+              outputTokens: parsed.usage?.output_tokens ?? 0,
+            },
+          };
+        }
+        const { retryable, hint } = classifyClaudeFailure(r.stdout, r.stderr);
+        lastHint = hint;
+        // Retry a transient failure ONLY if nothing streamed yet — otherwise the
+        // client already saw partial text and a retry would duplicate it.
+        if (retryable && !streamedAny && attempt < CLAUDE_CHAT_ATTEMPTS) {
+          await sleepMs(1200 * attempt);
+          continue;
+        }
+        break;
       }
-      if (result === null) {
-        // exec impls that buffer (test fakes) never call onLine — scan stdout.
-        for (const line of r.stdout.split('\n')) seeLine(line);
-      }
-      // TS can't see assignments made inside the seeLine closure — re-widen.
-      const parsed = result as ClaudeCliResult | null;
-      if (r.status !== 0 || !parsed || parsed.is_error === true || parsed.subtype !== 'success') {
-        const combined = `${r.stdout}\n${r.stderr}`.toLowerCase();
-        // Be specific: a bare "auth" substring also matches transient errors (rate
-        // limits, overload, 5xx), which mislabelled them as a login problem. Only a
-        // clear login signal gets the "log in" hint; a rate limit gets "retry".
-        const looksLikeLogin =
-          combined.includes('logged in') ||
-          combined.includes('log in') ||
-          combined.includes('/login') ||
-          combined.includes('unauthenticated') ||
-          combined.includes('invalid api key');
-        const looksLikeRateLimit =
-          combined.includes('rate limit') ||
-          combined.includes('overloaded') ||
-          combined.includes('429');
-        const hint = looksLikeLogin
-          ? 'the claude CLI is not logged in — run `claude` once and log in, then retry'
-          : looksLikeRateLimit
-            ? 'the claude CLI hit a rate limit or overload — wait a moment and retry'
-            : 'the claude CLI returned an error (run `claude` interactively to inspect)';
-        throw new ProviderError('provider_error', `claude-code turn failed: ${hint}`);
-      }
-      return {
-        text: parsed.result ?? '',
-        finishReason: parsed.stop_reason ?? 'stop',
-        usage: {
-          inputTokens: parsed.usage?.input_tokens ?? 0,
-          outputTokens: parsed.usage?.output_tokens ?? 0,
-        },
-      };
+      throw new ProviderError('provider_error', `claude-code turn failed: ${lastHint}`);
     },
   };
 }
