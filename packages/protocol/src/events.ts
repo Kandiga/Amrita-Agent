@@ -292,6 +292,10 @@ export const eventPayloads = {
   'lane.merge_report': mergeReportSchema,
   'lane.completed': z.object({ laneId: idSchema, exit: z.string() }).strict(),
   'lane.aborted': z.object({ laneId: idSchema, reason: z.string() }).strict(),
+  // STREAM ONLY — the live tmux pane snapshot (ADR-0049), never persisted (like
+  // model.delta). For human observation on the Canvas; domain truth comes from the
+  // workspace files, not the screen. Redacted of secret-shaped content by the runner.
+  'lane.pane': z.object({ laneId: idSchema, text: z.string() }).strict(),
 
   // module mandates (ADR-0029): Amrita → Cinema delegation. Issued/resolved
   // are the only lifecycle events — progress stays module-local by design.
@@ -716,7 +720,10 @@ export type EventPayloads = typeof eventPayloads;
 export type EventType = keyof EventPayloads;
 
 /** Event types that may be emitted on the live stream but MUST NOT be persisted. */
-export const STREAM_ONLY_TYPES: ReadonlySet<EventType> = new Set<EventType>(['model.delta']);
+export const STREAM_ONLY_TYPES: ReadonlySet<EventType> = new Set<EventType>([
+  'model.delta',
+  'lane.pane',
+]);
 
 export const eventTypeSchema = z.enum(Object.keys(eventPayloads) as [EventType, ...EventType[]]);
 

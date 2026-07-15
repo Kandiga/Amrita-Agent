@@ -86,6 +86,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ADR-0049: re-attach to any interactive tmux session that survived the restart
+  // (or honestly abort the ones whose session is gone). Best-effort — a probe hiccup
+  // must never stop the daemon from serving.
+  kernel
+    .resumeTmuxSessions()
+    .then(({ resumed, aborted }) => {
+      if (resumed || aborted) {
+        process.stdout.write(`amritad: sessions resumed ${resumed}, aborted ${aborted}\n`);
+      }
+    })
+    .catch(() => {});
+
   // Telegram operator runner (ADR-0021): strictly opt-in, refuses to start
   // without the token env var AND a non-empty owner allowlist. Never fakes.
   let telegramRunner: { stop(): Promise<void> } | null = null;

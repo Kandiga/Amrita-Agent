@@ -381,11 +381,13 @@ describe('entity event taxonomy (WO#1.2)', () => {
     expect(() => parseEvent(sealed('question.dropped', { questionId: newId() }))).toThrow();
   });
 
-  it('keeps model.delta the only stream-only event across the whole taxonomy', () => {
-    expect([...STREAM_ONLY_TYPES]).toEqual(['model.delta']);
+  it('keeps the stream-only set to exactly model.delta and lane.pane', () => {
+    const streamOnly = ['model.delta', 'lane.pane'];
+    expect([...STREAM_ONLY_TYPES]).toEqual(streamOnly);
     for (const t of Object.keys(eventPayloads) as EventType[]) {
-      expect(STREAM_ONLY_TYPES.has(t)).toBe(t === 'model.delta');
-      expect(isStreamOnly(t)).toBe(t === 'model.delta');
+      const expected = streamOnly.includes(t);
+      expect(STREAM_ONLY_TYPES.has(t)).toBe(expected);
+      expect(isStreamOnly(t)).toBe(expected);
     }
   });
 

@@ -23,8 +23,13 @@ export type { LaneExit };
 export interface LaneRunContext {
   /** Progress sink — the daemon forwards these to `lane.progress` events. */
   onProgress?: (note: string, pct?: number) => void;
-  /** Cooperative cancellation. */
+  /** Live pane snapshot sink (ADR-0049) — forwarded to stream-only `lane.pane`. */
+  onPane?: (text: string) => void;
+  /** Cooperative cancellation (hard stop → `cancelled`). */
   signal?: AbortSignal;
+  /** Graceful finish (ADR-0049) — the operator ended an interactive session; the
+   *  runner wraps up and reports `done`/`partial` (vs `signal` → `cancelled`). */
+  finishSignal?: AbortSignal;
 }
 
 export interface LaneRunner {

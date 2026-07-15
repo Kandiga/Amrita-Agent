@@ -6,6 +6,8 @@ import {
   CodexLaneRunner,
   type LaneRunner,
   ResearchLaneRunner,
+  TmuxSessionLaneRunner,
+  createNodeTmuxController,
 } from '@amrita/lanes';
 import {
   type AmritaEvent,
@@ -366,10 +368,19 @@ export class AmritaKernel {
   private readonly cliExec: CliExec | undefined;
   private readonly activeLanes = new Map<
     string,
-    { controller: AbortController; promise: Promise<LaneSettleResult> }
+    {
+      controller: AbortController;
+      promise: Promise<LaneSettleResult>;
+      /** A durable (tmux) session outlives the daemon — close() must NOT abort it. */
+      durable?: boolean;
+      /** Graceful finish for an interactive session (ADR-0049), vs `controller` = cancel. */
+      finishController?: AbortController;
+    }
   >();
-  /** Listeners for STREAM-ONLY events (model.delta) — never persisted (D8). */
+  /** Listeners for STREAM-ONLY events (model.delta, lane.pane) — never persisted (D8). */
   private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
+  /** tmux boundary for operator session I/O (ADR-0049); the session name is derivable. */
+  private readonly tmux = createNodeTmuxController();
   /** Pending operator approvals (ADR-0021). Audit trail lives in approval.* events. */
   private readonly pendingApprovals = new Map<
     string,
@@ -446,7 +457,24 @@ export class AmritaKernel {
     const codexRunner = realLaneExecution
       ? new CodexLaneRunner({ allowRealExecution: true, allowedRoots })
       : new CodexLaneRunner();
-    for (const r of [new ResearchLaneRunner(), codexRunner, ...(opts.extraLaneRunners ?? [])]) {
+    // Interactive tmux sessions (ADR-0049): register only on a real-exec daemon —
+    // there is no "safe refusal" variant, so on a non-opted daemon the `*-tmux` kinds
+    // stay unknown and abort honestly. Tests override by kind via `extraLaneRunners`.
+    const tmuxSessionRunners: LaneRunner[] = realLaneExecution
+      ? (() => {
+          const tmux = createNodeTmuxController();
+          return [
+            new TmuxSessionLaneRunner({ agent: 'claude', tmux, allowedRoots }),
+            new TmuxSessionLaneRunner({ agent: 'codex', tmux, allowedRoots }),
+          ];
+        })()
+      : [];
+    for (const r of [
+      new ResearchLaneRunner(),
+      codexRunner,
+      ...tmuxSessionRunners,
+      ...(opts.extraLaneRunners ?? []),
+    ]) {
       extraLaneRunners.set(r.kind, r);
     }
     const kernel = new AmritaKernel(
@@ -478,8 +506,13 @@ export class AmritaKernel {
 
   close(): void {
     this.closed = true;
-    // Abort any in-flight (detached) lanes so no child outlives the daemon.
-    for (const { controller } of this.activeLanes.values()) controller.abort();
+    // Abort in-flight (detached) HEADLESS lanes so no child outlives the daemon.
+    // DURABLE (tmux) sessions are deliberately left running — they outlive the daemon
+    // and are RE-ATTACHED on the next boot (ADR-0049); aborting them here would defeat
+    // the whole point. On a clean shutdown their promise is simply detached.
+    for (const { controller, durable } of this.activeLanes.values()) {
+      if (!durable) controller.abort();
+    }
     this.activeLanes.clear();
     // Reap every tracked CLI subprocess (chat turns, probes) as a process group —
     // an aborted lane resolves before its child exits, and a chat exec is not on
@@ -1227,6 +1260,34 @@ export class AmritaKernel {
         listener(ev);
       } catch {
         // a subscriber must never break the turn
+      }
+    }
+  }
+
+  /** Emit one stream-only `lane.pane` (ADR-0049) — the live tmux tail, never stored. */
+  private emitLanePane(
+    projectId: string,
+    conversationId: string,
+    laneId: string,
+    text: string,
+  ): void {
+    if (this.closed || this.streamListeners.size === 0) return;
+    const ev = parseEvent({
+      id: newId(),
+      seq: 0, // stream-only: never store-sealed, never persisted
+      ts: new Date().toISOString(),
+      projectId,
+      conversationId,
+      laneId,
+      origin: 'lane',
+      type: 'lane.pane',
+      payload: { laneId, text },
+    });
+    for (const listener of this.streamListeners) {
+      try {
+        listener(ev);
+      } catch {
+        // a subscriber must never break the run
       }
     }
   }
@@ -3120,6 +3181,10 @@ export class AmritaKernel {
     for (const status of NON_TERMINAL) {
       for (const lane of this.store.listLanes({ status })) {
         if (this.activeLanes.has(lane.id)) continue; // live in THIS process — skip
+        // A tmux session may still be ALIVE (it outlives the daemon), so it is not
+        // orphaned by definition — `resumeTmuxSessions()` re-attaches or aborts it
+        // after an async `has-session` check. Leave it here.
+        if (lane.kind.endsWith('-tmux')) continue;
         this.store.appendEvent({
           id: newId(),
           ts: new Date().toISOString(),
@@ -3134,6 +3199,65 @@ export class AmritaKernel {
       }
     }
     return { reconciled };
+  }
+
+  /**
+   * Re-attach to interactive tmux sessions after a restart (ADR-0049) — the durability
+   * payoff a headless lane cannot have. For each non-terminal `*-tmux` lane: if the
+   * tmux session is still alive, re-run its runner (which `has-session` → re-attaches
+   * and resumes capture, without re-approving); if it is gone, terminalize it honestly
+   * with `lane.aborted` + `origin:'system'`. Async, so `amritad` awaits it after open.
+   */
+  async resumeTmuxSessions(): Promise<{ resumed: number; aborted: number }> {
+    let resumed = 0;
+    let aborted = 0;
+    for (const status of ['running', 'merging'] as const) {
+      for (const lane of this.store.listLanes({ status })) {
+        if (!lane.kind.endsWith('-tmux') || this.activeLanes.has(lane.id)) continue;
+        if (await this.tmux.hasSession(`amrita-${lane.id}`)) {
+          this.resumeLane(lane);
+          resumed++;
+        } else {
+          this.store.appendEvent({
+            id: newId(),
+            ts: new Date().toISOString(),
+            projectId: lane.projectId,
+            conversationId: lane.conversationId,
+            laneId: lane.id,
+            origin: 'system',
+            type: 'lane.aborted',
+            payload: { laneId: lane.id, reason: 'session did not survive the daemon restart' },
+          } as UnsealedEvent);
+          aborted++;
+        }
+      }
+    }
+    return { resumed, aborted };
+  }
+
+  /** Re-run a durable lane's runner against its persisted mandate (no re-approval). */
+  private resumeLane(lane: LaneRow): void {
+    const runner = this.laneRunnerFor(lane.kind);
+    if (!runner) return;
+    let mandate: Parameters<LaneRunner['run']>[0];
+    try {
+      mandate = laneMandateSchema.parse(JSON.parse(lane.mandateJson));
+    } catch {
+      return;
+    }
+    const controller = new AbortController();
+    const finishController = new AbortController();
+    const promise = this.runLaneToCompletion(
+      lane.projectId,
+      lane.conversationId,
+      lane.id,
+      mandate,
+      runner,
+      controller.signal,
+      false, // already approved on first start
+      finishController.signal,
+    ).finally(() => this.activeLanes.delete(lane.id));
+    this.activeLanes.set(lane.id, { controller, promise, durable: true, finishController });
   }
 
   /** Append a lane lifecycle event (laneId on the envelope, so the projection keys on it). */
@@ -3396,6 +3520,10 @@ export class AmritaKernel {
     const requireApproval = verdict.gate === 'approval';
 
     const controller = new AbortController();
+    // An interactive tmux session (ADR-0049) is DURABLE (survives the daemon) and has
+    // a separate graceful-FINISH signal, distinct from cancel (controller.abort()).
+    const durable = kind.endsWith('-tmux');
+    const finishController = durable ? new AbortController() : undefined;
     const promise = this.runLaneToCompletion(
       projectId,
       conversationId,
@@ -3404,8 +3532,14 @@ export class AmritaKernel {
       runner,
       controller.signal,
       requireApproval,
+      finishController?.signal,
     ).finally(() => this.activeLanes.delete(laneId));
-    this.activeLanes.set(laneId, { controller, promise });
+    this.activeLanes.set(laneId, {
+      controller,
+      promise,
+      ...(durable ? { durable: true } : {}),
+      ...(finishController ? { finishController } : {}),
+    });
 
     if (input.detach) {
       return { laneId, status: 'running', dryRun: false, detached: true, report: null };
@@ -3431,6 +3565,7 @@ export class AmritaKernel {
     runner: LaneRunner,
     signal: AbortSignal,
     requireApproval = false,
+    finishSignal?: AbortSignal,
   ): Promise<LaneSettleResult> {
     if (requireApproval) {
       this.safeEmitLane(projectId, conversationId, laneId, 'lane.progress', {
@@ -3454,6 +3589,7 @@ export class AmritaKernel {
     try {
       const report = await runner.run(mandate, {
         signal,
+        ...(finishSignal ? { finishSignal } : {}),
         onProgress: (note, pct) =>
           this.safeEmitLane(
             projectId,
@@ -3462,6 +3598,9 @@ export class AmritaKernel {
             'lane.progress',
             clean({ note, pct }),
           ),
+        // ADR-0049: the live tmux pane, stream-only — for the operator to watch, never
+        // persisted (domain truth is the workspace files, not the screen).
+        onPane: (text) => this.emitLanePane(projectId, conversationId, laneId, text),
       });
       const sealed = mergeReportSchema.parse({ ...report, laneId });
       this.safeEmitLane(projectId, conversationId, laneId, 'lane.merge_report', sealed);
@@ -3506,6 +3645,36 @@ export class AmritaKernel {
   async awaitLane(laneId: string): Promise<void> {
     const entry = this.activeLanes.get(laneId);
     if (entry) await entry.promise;
+  }
+
+  /**
+   * Gracefully finish an interactive tmux session (ADR-0049): the runner captures a
+   * final pane, tears the session down, and reports `done`/`partial` — distinct from
+   * `cancelLane`, which aborts to `cancelled`. No-op on a non-session lane.
+   */
+  finishSession(laneId: string): { laneId: string; finished: boolean } {
+    const entry = this.activeLanes.get(laneId);
+    if (!entry?.finishController) return { laneId, finished: false };
+    entry.finishController.abort();
+    return { laneId, finished: true };
+  }
+
+  /**
+   * Type literal input into an interactive session's pane (ADR-0049) — the operator
+   * (or Amrita) answering a prompt or redirecting mid-session. The session name is
+   * derivable (`amrita-<laneId>`); tmux `send-keys -l` never interprets the text as a
+   * shell command. Only for an active `*-tmux` lane.
+   */
+  async sendSessionInput(laneId: string, text: string): Promise<{ laneId: string; sent: boolean }> {
+    const entry = this.activeLanes.get(laneId);
+    const lane = this.store.getLane(laneId);
+    if (!entry?.durable || !lane || !lane.kind.endsWith('-tmux')) {
+      return { laneId, sent: false };
+    }
+    const name = `amrita-${laneId}`;
+    if (!(await this.tmux.hasSession(name))) return { laneId, sent: false };
+    await this.tmux.sendKeys(name, text, { enter: true });
+    return { laneId, sent: true };
   }
 
   // ── channel pairings (delegated; ADR-0013) ────────────────────────────────

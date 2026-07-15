@@ -7,3 +7,5 @@ export * from './claude-code.ts';
 export * from './codex.ts';
 export * from './fake.ts';
 export * from './research.ts';
+export * from './tmux.ts';
+export * from './tmux-session.ts';

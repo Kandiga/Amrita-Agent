@@ -725,6 +725,8 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'conversation.compress': compressResultSchema,
   'conversation.archive': okTrueSchema,
   'lanes.workspace.ticket': z.object({ ticket: z.string(), expiresAt: z.string() }),
+  'lanes.session.send': z.object({ laneId: idSchema, sent: z.boolean() }),
+  'lanes.session.finish': z.object({ laneId: idSchema, finished: z.boolean() }),
   'project.delete': z.object({ deleted: z.literal(true) }),
 
   'message.user.record': z.object({ messageId: idSchema, event: sealedEventShellSchema }),

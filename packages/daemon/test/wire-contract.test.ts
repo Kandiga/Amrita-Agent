@@ -239,6 +239,8 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     await run('lanes.list', { projectId: p.id });
     await run('lanes.get', { laneId: lane.laneId });
     await run('orchestration.capsule', { conversationId: c.id });
+    await run('lanes.session.send', { laneId: lane.laneId, text: 'hi' });
+    await run('lanes.session.finish', { laneId: lane.laneId });
     await run('lanes.cancel', { laneId: lane.laneId });
 
     await run('approvals.list');
