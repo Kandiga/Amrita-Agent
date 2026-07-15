@@ -223,6 +223,9 @@ describe('chat through the new providers', () => {
     // the kernel prefers the STREAMING path now (model.delta live)
     expect(seen.args).toEqual([
       '-p',
+      // --max-turns 1: a chat reply is one turn, never an agentic build loop (ADR-0048)
+      '--max-turns',
+      '1',
       '--output-format',
       'stream-json',
       '--include-partial-messages',

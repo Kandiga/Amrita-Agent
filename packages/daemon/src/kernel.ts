@@ -2558,14 +2558,18 @@ export class AmritaKernel {
   }): Promise<void> {
     if (this.getSetting(ORCHESTRATION_SETTING) === false) return;
     if (!looksLikeBuildIntent(input.userText)) return;
-    const project = this.store.getProject(input.projectId);
-    if (!project?.root) return;
 
     const { intent } = classifyIntent(input.userText);
     const runtimes = await this.getCodingRuntimes();
     const agent = resolveAgent({ intent, runtimes, realExecution: this.realLaneExecution });
-    if (agent.kind === 'human') return;
+    if (agent.kind === 'human') return; // no ready runtime → Amrita's reply says so honestly
 
+    // Open an INTERACTIVE, streamed tmux session (ADR-0049) so the operator WATCHES the
+    // agent build live in the Claude/Codex tab — not a silent headless lane. It is
+    // gated by the Approval Constitution (interactive-session → material → the operator
+    // approves and attends) and jailed to a synthesized workspace, so it needs no bound
+    // project root. Unattended autonomous building still uses headless (delegateTask).
+    const kind = agent.kind === 'codex' ? 'codex-tmux' : 'claude-code-tmux';
     const mandate = buildMandateFromChat({
       laneId: newId(),
       requestText: input.userText,
@@ -2578,7 +2582,7 @@ export class AmritaKernel {
     await this.startLane({
       conversationId: input.conversationId,
       goal: mandate.goal,
-      kind: agent.kind,
+      kind,
       contextPack: mandate.contextPack,
       budget: mandate.budget,
       approvals: mandate.approvals,

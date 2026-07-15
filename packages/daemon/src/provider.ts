@@ -514,7 +514,11 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
   return {
     id: 'claude-code',
     async generate(req: ChatRequest): Promise<ChatResponse> {
-      const args = ['-p', '--output-format', 'json', '--model', req.model];
+      // `--max-turns 1`: Amrita's chat brain REPLIES (and delegates), it does not run
+      // the agentic tool loop and build things itself — that is what a lane/session is
+      // for. Without it a "build me a game" chat turn spawns a full Claude Code build
+      // that overruns the chat timeout (ADR-0048; "chat = structural, no tools").
+      const args = ['-p', '--max-turns', '1', '--output-format', 'json', '--model', req.model];
       const r = await exec('claude', args, flattenTranscript(req.messages), CLAUDE_CLI_TIMEOUT_MS);
       if (r.status === null) {
         // Honest classification (never conflated): a timeout is not a missing CLI.
@@ -562,6 +566,10 @@ export function createClaudeCliProvider(opts: { execImpl?: CliExec }): ChatProvi
     async generateStream(req: ChatRequest, onDelta: (text: string) => void): Promise<ChatResponse> {
       const args = [
         '-p',
+        // Reply in one turn; do not run the agentic build loop in a chat turn — a
+        // lane/session does the building (ADR-0048). See the note in generate().
+        '--max-turns',
+        '1',
         '--output-format',
         'stream-json',
         '--include-partial-messages',

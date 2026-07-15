@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FakeTmuxController, TmuxSessionLaneRunner } from '@amrita/lanes';
 import type { LaneMandate, MergeReport } from '@amrita/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ORCHESTRATION_SETTING } from '../src/context-pack.ts';
@@ -54,6 +55,18 @@ beforeEach(() => {
     dbPath: ':memory:',
     fetchImpl: fakeChat,
     laneRunner: fakeRunner,
+    // Hermetic tmux: the Planner opens a *-tmux session, so override the node runner
+    // with a fake-tmux one (a real spawn is gated behind approval, which we deny,
+    // but this keeps the test from ever touching the host).
+    extraLaneRunners: [
+      new TmuxSessionLaneRunner({
+        agent: 'claude',
+        tmux: new FakeTmuxController(),
+        allowedRoots: [dir],
+        captureIntervalMs: 5,
+        goalDelayMs: 0,
+      }),
+    ],
     allowRealLaneExecution: true,
     laneAllowedRoots: [dir],
     codingRuntimeProber: async () => ({ kind: 'ok', stdout: '2.1.0', stderr: '' }),
@@ -89,7 +102,8 @@ describe('the Planner delegates build intent to a session (ADR-0048)', () => {
     await new Promise((r) => setTimeout(r, 30));
     const lanes = spawnedLanes();
     expect(lanes).toHaveLength(1);
-    expect((lanes[0]?.payload as { kind?: string }).kind).toBe('claude-code');
+    // A streamed, interactive tmux session (ADR-0049) — visible in the Claude tab.
+    expect((lanes[0]?.payload as { kind?: string }).kind).toBe('claude-code-tmux');
   });
 
   it('a conversational message opens no session', async () => {
