@@ -101,6 +101,8 @@ import {
   cinemaKnowledgeSource,
 } from './harness.ts';
 import { type PublicHub, SLUG_RE, buildPublicHub, contentHash, renderPublicHub } from './hub.ts';
+import { resolveApprovalPolicy } from './lane-approval.ts';
+import { activeScopeConflicts } from './lane-scope.ts';
 import { buildMandateFromChat } from './mandate-synth.ts';
 import {
   type ChatMessage,
@@ -447,7 +449,7 @@ export class AmritaKernel {
     for (const r of [new ResearchLaneRunner(), codexRunner, ...(opts.extraLaneRunners ?? [])]) {
       extraLaneRunners.set(r.kind, r);
     }
-    return new AmritaKernel(
+    const kernel = new AmritaKernel(
       store,
       opts.dbPath,
       new Date().toISOString(),
@@ -461,6 +463,9 @@ export class AmritaKernel {
       opts.cliExec,
       opts.approvalTimeoutMs ?? 120_000,
     );
+    // ADR-0048: terminalize lanes orphaned by a previous crash before serving.
+    kernel.reconcileLanesOnBoot();
+    return kernel;
   }
 
   /** Resolve the runner for a lane kind (ADR-0023). Unknown kinds get none — the lane aborts honestly. */
@@ -3091,6 +3096,46 @@ export class AmritaKernel {
     return buildConclusionCapsule({ conversationId, lanes, inbox, approvals });
   }
 
+  /**
+   * Reconcile lanes orphaned by a crash (ADR-0048). `activeLanes` is in-memory, so at
+   * boot it is EMPTY by construction — therefore every lane row still in a non-terminal
+   * status (spawned/running/merging) is definitionally orphaned: its runner died with
+   * the previous process and can never resolve. Left alone the row lies "running"
+   * forever. Each is terminalized honestly with `lane.aborted` + `origin:'system'`
+   * (reusing the existing event — no new type, no CHECK-widening table rebuild),
+   * through `appendEvent` (the single write path), never a raw SQL update. The
+   * `activeLanes` guard makes this safe to call again as a manual reap.
+   *
+   * (Slice 6/ADR-0049 upgrades this: a tmux session still alive is RE-ATTACHED rather
+   * than aborted, because it outlives the daemon.)
+   */
+  reconcileLanesOnBoot(): { reconciled: number } {
+    // Only `running`/`merging` represent genuinely orphaned IN-FLIGHT execution. A
+    // `spawned` row is ambiguous — it is also the resting state of a completed
+    // dry-run, and of a lane that crashed before it ever executed — so aborting it
+    // would clobber a legitimate dry-run. Leave `spawned` alone; reap only work that
+    // was actually running when the process died.
+    const NON_TERMINAL = ['running', 'merging'] as const;
+    let reconciled = 0;
+    for (const status of NON_TERMINAL) {
+      for (const lane of this.store.listLanes({ status })) {
+        if (this.activeLanes.has(lane.id)) continue; // live in THIS process — skip
+        this.store.appendEvent({
+          id: newId(),
+          ts: new Date().toISOString(),
+          projectId: lane.projectId,
+          conversationId: lane.conversationId,
+          laneId: lane.id,
+          origin: 'system',
+          type: 'lane.aborted',
+          payload: { laneId: lane.id, reason: 'daemon restarted mid-run — lane orphaned' },
+        } as UnsealedEvent);
+        reconciled++;
+      }
+    }
+    return { reconciled };
+  }
+
   /** Append a lane lifecycle event (laneId on the envelope, so the projection keys on it). */
   private emitLaneEvent(
     projectId: string,
@@ -3323,7 +3368,32 @@ export class AmritaKernel {
     // `real: true`, so keying the gate on the flag alone would be a bypass.
     // 'auto-safe'/'sandboxed' policies skip the gate (pre-authorized posture);
     // non-opted daemons are ungated because their runner refuses real exec.
-    const requireApproval = this.realLaneExecution && mandate.approvals === 'forward';
+    // ADR-0048 — the Approval Constitution replaces the one-line gate. 'forward'
+    // still gates anything real (behavior UNCHANGED); the fix is that 'auto-safe'/
+    // 'sandboxed' no longer BLINDLY skip the gate for MATERIAL actions (writes to the
+    // shared root, spend over cap, network, scope overlap, deploy/push, an
+    // interactive session). Operational jailed work under those policies proceeds.
+    const activeScopes = [...this.activeLanes.keys()]
+      .map((id) => this.store.getLane(id))
+      .filter((l): l is LaneRow => Boolean(l))
+      .map((l) => {
+        try {
+          const scope = (JSON.parse(l.mandateJson) as { scope?: { paths?: string[] } }).scope;
+          return { laneId: l.id, paths: scope?.paths ?? [] };
+        } catch {
+          return { laneId: l.id, paths: [] as string[] };
+        }
+      });
+    const verdict = resolveApprovalPolicy(mandate, {
+      realExecution: this.realLaneExecution,
+      dryRun: false,
+      kind,
+      workspacesRoot: this.laneWorkspacesRoot,
+      maxUsdCap: Number(process.env.AMRITA_LANES_APPROVAL_MAX_USD ?? '2') || 2,
+      maxTokensCap: Number(process.env.AMRITA_LANES_APPROVAL_MAX_TOKENS ?? '200000') || 200_000,
+      scopeConflicts: activeScopeConflicts(mandate.scope.paths ?? [], activeScopes),
+    });
+    const requireApproval = verdict.gate === 'approval';
 
     const controller = new AbortController();
     const promise = this.runLaneToCompletion(
