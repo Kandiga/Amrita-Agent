@@ -1021,3 +1021,488 @@ One ledger, updated per phase — no scattered notes.
   real daemon: `runtime.status` returns claude-code `ready` + the 6 real tools and codex `ready`;
   a REAL Claude Code lane (Opus 4.8) ran end-to-end, wrote its file, and its clean 7-line output
   rendered in the Session tab while the canvas showed the file it wrote. Desktop + mobile verified.
+
+---
+
+## Phase H — the Project-Management OS: the agent↔domain bridge (ADR-0044)
+
+- **Trigger:** Natanel asked to integrate the project-management method from a Fable 5 video
+  (`FT8E_qEqIgM`) into Amrita — a durable, agentic PM operating system, not a pasted-on Trello.
+- **Root cause found (and it was not the one in the brief):** the research packet said "schemas
+  exist but the activation loop doesn't populate them." True — but the *cause* was worse.
+  **Amrita's chat agent was not project-aware and could not become so.** The provider call passed
+  **only the raw conversation transcript** (`kernel.ts` `listMessages().map(...)`), and
+  `ChatRequest` was `{messages, model}` — **no system-prompt field and no tool surface**. The
+  agent could neither READ nor WRITE the Project Companion. The only writers were a human
+  hand-filling forms in a side panel and the GitHub importer. Hence: **7 projects, 25
+  conversations, 298 events — and 0 tasks, 0 milestones, 0 risks, 0 open questions.** No
+  `task.*` / `milestone.*` / `risk.*` / `question.*` event had *ever* been emitted.
+- **And it was systemic.** Every agent→domain path was cut the same way: lane merge reports carry
+  typed `tasks[]`/`decisions[]`/`followUps[]` and `project.ts` **discarded them**; `store.updateTask`
+  was fully implemented, tested, and had **zero callers above the store**; `tasks.create` dropped
+  `laneId`; `projects.root` was write-once and therefore unreachable (why all 7 live roots are
+  NULL). The pattern: *the write path gets built and tested, then nothing is wired to call it.*
+- **Corrections to the research packet:** there are **no `brain_*` tables** (the Brain is a pure
+  derived projection in `harness.ts` — it cannot be richer than the empty tables feeding it), **no
+  `receipts` table**, and **no `approvals` table** (approvals are in-memory, deny-on-restart;
+  `preview_approvals` is the only durable one).
+
+### What landed
+
+- **Slice 0 — foundation.** `Store.rebuildProjections()` replays the whole log, in original append
+  order, into the event-derived read model inside ONE transaction — the **executable proof of
+  "views are projections"**, and the prerequisite for any new projection. Honest scope: only tables
+  whose sole writer is the reducer. Clearing `decisions` reuses ADR-0038's per-project append-only
+  gate exactly as designed (opened per project, cleared before commit, trigger never weakened).
+  **Migration 0009 restores `idx_events_project_ts`** — created by 0004, silently dropped by the
+  0007 table rebuild (whose own comment claimed "both indexes are preserved" — there were three).
+  Every project-timeline read had been a full table scan since.
+- **Slice 1 — Amrita becomes project-aware (the keystone).** New pure `context-pack.ts` assembles a
+  bounded, deterministic, secret-free digest of live project state — charter, open risks, open
+  questions, milestones, tasks in flight, decisions, memory, working tree, **honest connector
+  status** — and the kernel prepends it as ONE system message. **No `ChatRequest` change and no
+  adapter change**: every adapter already handled the `system` role (Anthropic lifts it into the
+  `system` param, OpenAI passes it through, the CLIs' `flattenTranscript` puts it first). Reused
+  the seam that existed. **No cache, therefore no invalidation**: rebuilt from the store every turn,
+  so a task changed by *any* writer is in the next turn's context with no second chat message.
+  Not persisted — the event log stays byte-identical to the pre-ADR-0044 world.
+- **Slice 2 — the Inbox + the Scribe (the bridge).** One new aggregate, `inbox_items`, with two SQL
+  CHECKs in the ADR-0018 house style: **nothing leaves the queue silently** (a promotion must NAME
+  what it became; a dismissal needs a reason). **One Inbox, four origins** (user / agent / lane /
+  system). The **Scribe** runs strictly *after* the turn is persisted — it can never delay a reply
+  or fail a turn — parses the model's output with a **strict** schema (a malformed proposal is
+  dropped, never guessed at), and files typed proposals. Triage promotes through the **existing
+  typed command** a human would call, so the Inbox never becomes a second write path.
+  **Auto-commit boundary (Natanel's decision): `question.opened` only** — the one inert, maximally
+  reversible item — capped at 3/turn, deduped, provenance-mandatory, attributed, kill-switchable.
+  Everything that *asserts* something waits for a human. A test asserts the Scribe emits
+  `question.opened` **and no other domain event**.
+- **Cost reality that shaped the design:** the live `fast` role resolves to `claude-code`/`haiku` —
+  a **CLI subprocess**, not an API call. So the plausibility gate is *required*, not an
+  optimization, and the Scribe runs off the reply path by construction.
+
+### Verification
+
+- root **507/507** (was 455) · web **87/87** (was 76) · typecheck 0 · lint clean · web build clean ·
+  secret scan clean (270 files).
+- The context pack is asserted **on the wire** (the real Anthropic request body), not on an internal
+  call — the whole bug was that project state never left the store.
+- Replay-equivalence, idempotency, and transactional rollback of `rebuildProjections` are tested,
+  including that the append-only decisions trigger is still armed afterwards.
+- **Not yet done:** slices 3–9 (charter/interview, `tasks.update` + board fields, Board/List/Timeline
+  + project-scoped live push, project.setRoot + task→lane delegation + lane merge-back, weekly
+  review, stakeholder hub, retrospective).
+- **Not deployed.** No push, no service restart, no live-DB mutation.
+
+### Phase H — slices 3 & 4 (the charter, and the write path that was unreachable)
+
+- **Slice 3 — the charter ("constraints as fuel").** The brief held goal / audience / success
+  criteria / scope — and nothing that makes a plan *accountable*. Migration `0011` adds
+  `finish_line`, `constraints_json` and `decision_rights_json` **to the existing aggregate**, not a
+  new table: the brief is a full-document upsert (ADR-0018), so extension is replay-safe and the
+  down path is a plain `DROP COLUMN`. A constraint is `{kind, text, hard}` — and **`hard` defaults
+  to false**: a constraint is only immovable if you say so. That flag is the fixed-vs-negotiable
+  boundary the whole method turns on, and it reaches the model verbatim.
+  - The context pack now renders the charter, and when it is thin it tells Amrita to **interview
+    one question at a time** ("do not present a form, do not invent an answer") and to name the
+    single constraint most likely to break the project.
+  - **Trap found and pinned:** because `brief.updated` carries the WHOLE document, an edit that
+    omits the charter does not leave it alone — it **clears** it. A store test now nails that
+    behavior, and `BriefPanel` seeds every field so the UI cannot silently wipe it.
+  - `charter.ts` (pure, web) parses/formats constraints and decision rights from plain lines
+    (`budget: $15K net (hard)`, `vendor list -> the arts council`) so they are editable without a
+    grid of inputs — and testable.
+- **Slice 4 — `tasks.update`, the dormant write path, finally reachable.** `store.updateTask` has
+  been implemented, tested, and callable by **nobody** since ADR-0018: no kernel method, no RPC, no
+  client. A board drag was not expressible *at any layer*. Now wired end to end: RPC → kernel →
+  store → event → projection → read, with a wire-contract exercise and 7 focused tests.
+  - Migration `0012` adds `owner`, `due_date`, `priority`, `order_key`, `blocked_reason` +
+    `idx_tasks_board`. **`taskStatusSchema` is deliberately NOT widened**: SQLite cannot alter a
+    CHECK, so adding `blocked` would mean rebuilding the tasks table — exactly what `0007` did to
+    `events`, and it silently lost an index doing it. A nullable `blocked_reason` gives the same
+    "Waiting" column at zero migration risk and carries *more* information: not just that a task is
+    blocked, but on what.
+  - `order_key` is a **lexicographic fractional index**, so a drag is ONE `task.updated` touching
+    ONE row — no sibling re-indexing, no write amplification, and concurrent drags cannot corrupt
+    each other.
+  - Field semantics, tested at every layer: **absent = leave alone, `null` = clear** (un-assign an
+    owner, unblock a task) — which is why `clean()` stripping only `undefined` is load-bearing.
+  - Also fixed in passing: `tasks.create` **silently dropped `laneId`** (the column, the event and
+    the store all supported it), and the web client had **no `milestoneUpdate` wrapper**, so a
+    milestone could never be set `active` from the UI — which silently disabled the
+    `milestone-plan` rule in `companion.ts`.
+  - Pre-0044 `task.created` / `brief.updated` events (no new fields) replay unchanged — tested.
+
+- **Verification:** root **528/528** (was 455 at baseline) · web **100/100** (was 76) · typecheck 0 ·
+  lint clean · web build clean. Not deployed; no push, no restart, no live-DB mutation.
+
+### Phase H — slice 5 (the control room) + FIRST DEPLOY
+
+- **Slice 5 — Board / List / Timeline, and the live push that makes them real.**
+  - `board.ts` (pure) derives four columns from the task rows and stores nothing of its own.
+    **"Waiting" is not a status** — a task is waiting when it has a `blockedReason`, so the enum
+    stays untouched and the column carries *why*, not just *that*.
+  - **The fractional index was the hard part and it bit back.** The first implementation
+    infinite-looped and OOM-killed the test runner — caught *before* any UI was built on it. The
+    rewrite carries two stated invariants: a generated key never ends on the zero digit (or nothing
+    could ever be dropped above it again), and `keyBetween` is **total** (a drag handler that can
+    throw is a drag handler that loses your card). Tested against 200 repeated inserts at the same
+    position, 100 repeated prepends, degenerate ranges and hand-written junk keys.
+  - `BoardPanel`: **the keyboard path is the contract, drag is the enhancement.** A drag-only board
+    is unusable on a phone and with a keyboard, and this has to work on both. Dropping a card into
+    Waiting *asks what it is waiting on* — blocked-ness is never invented.
+  - The Project stage's **11-card masonry is gone** — exactly the "generic AI dashboard clutter" the
+    project's own rules forbid. It is now: charter → Inbox → one projection (Board/List/Timeline) →
+    a disclosure for runtime/brand/lanes.
+  - **Project-scoped live push (a third WS frame, ADR-0044 §6b).** The board was worthless if a drag
+    in one tab never reached the other: the WS was filtered on a single `conversationId` and the
+    client ignored *every* domain event. `WS /events/ws` now takes an optional `projectId` and emits
+    `{t:'project-event'}`. It deliberately carries **no cursor** — `seq` is per-conversation, so a
+    project-wide stream has no global sequence — it is a *notification*, and the client refetches
+    (idempotent, so missing or replaying one is harmless). Which types qualify is owned **once**, in
+    the protocol, and imported by both sides.
+
+### Deploy (E4) — 2026-07-14
+
+- **Backup first:** online SQLite backup (not a file copy — a WAL copy can be torn) to
+  `/root/.amrita/backups/amrita-pre-adr0044-20260714-174250.db`. Verified: integrity ok, schema v8,
+  7 projects, 298 events, 27 conversations.
+- **Applied:** `systemctl restart amritad.service` → migrations **0009–0012** applied cleanly →
+  `schemaVersion: 12`. Then `amrita-web.service`. Both `active`; `:7461` → 200; `/rpc` → **401**
+  (the auth gate is intact); real lane execution still enabled.
+- **Live schema verified:** `inbox_items` present; `tasks` has owner/due_date/priority/order_key/
+  blocked_reason; `project_briefs` has finish_line/constraints_json/decision_rights_json; all three
+  indexes exist — **including `idx_events_project_ts`, missing since the 0007 bug.**
+- **Live E4 smoke on a SCRATCH project** (never the 7 real ones): `tasks.create` with board fields →
+  **`tasks.update`** (the path that had zero callers for four ADRs) → `inbox.capture` +
+  `inbox.triage` → charter with a hard budget constraint and decision rights → read back correct.
+  Then `project.delete` cascaded it away.
+- **Live data untouched:** 7 projects, 298 events, 5 decisions, 1 brief, `integrity_check: ok` —
+  byte-for-byte the pre-deploy state, now on schema v12. The delete cascade correctly included the
+  new `inbox_items` table.
+- **Gates at deploy:** root **530/530** · web **124/124** · typecheck 0 · lint clean · build clean ·
+  secret scan clean.
+- **Not done:** slices 6–9 (project.setRoot + task→lane delegation + lane merge-back, weekly review,
+  stakeholder hub, retrospective). Nothing pushed to a remote.
+
+## Phase H — ADR-0045: honesty, control, and the rest of the loop (2026-07-14)
+
+The six-part voice brief was reviewed against what ADR-0044 actually shipped. Most of the gap was
+missing *features* — but **three of them were defects**, and they are the reason this phase exists.
+
+### The three defects (not features — defects)
+
+- **The system silently overwrote.** There was **no version check anywhere**. Two tabs dragging the
+  same card ended with the last writer winning in silence — and because the brief is a *full-document
+  upsert*, a stale save did not lose a field, it **wiped the whole charter** someone else had just
+  written. Fixed with `expectedVersion` optimistic concurrency (migration `0015`).
+  **The token is a counter, not a timestamp**: the first cut used `updatedAt`, and a test caught that
+  two writes in the same millisecond carry the same token — a stale write would have sailed straight
+  through the guard built to stop it.
+- **Fact and hypothesis were indistinguishable.** A guess and a commitment looked identical on the
+  card. Migration `0013` adds `certainty ∈ {stated, documented, inferred}`. Certainty follows *who
+  raised it*: anything an agent worked out stays `inferred` **even after you approve it** — approval
+  makes a proposal actionable, it does not make it first-hand.
+- **The board was a template, and it appeared out of nothing.** Migration `0014` adds **phases** and
+  `projects.activated_at`. A new project is now a *conversation*, not an empty board; the columns are
+  the project's own phases, and a project with none falls back honestly to the four status buckets.
+
+### The rest of the loop
+
+- **Charter audit** (`charter-audit.ts`) — the critique as *code*, not as a prompt: two hard dates,
+  two approvers for the same area, a budget with nobody authorised to spend it, everything marked
+  negotiable, a scope item that is also out of scope. A prompt can *ask* a model to notice a
+  contradiction; it cannot *guarantee* it. The machine states the findings; the model does the part
+  only it can do — judging which constraint is most likely to break the project.
+- **Execution routes** (`execution-route.ts`) — derived, never stored (a route depends on a runtime, a
+  root and a connector, all of which move; a stored route is a lie the moment any of them changes).
+  A task needing email says exactly what is missing, why, **and the risk of approving it**.
+- **`projects.setRoot`** at last — `root` was write-once (settable only at `createProject`, with no
+  `updateProject` anywhere), which is why all 7 live projects sat at `root = NULL`. It was not
+  neglect; it was **unreachable**. The browser never picks a path: the daemon validates it against the
+  allowed-roots allowlist it was started with.
+- **Lane merge-back** — `lane.merge_report` carried typed `tasks[]`, `decisions[]` and `followUps[]`,
+  and the reducer **threw them away**. A lane could report it created three tasks and zero rows would
+  appear. They now become Inbox proposals with `origin: 'lane'` — a lane is an agent, so it proposes
+  and a human disposes, exactly like the Scribe.
+- **Weekly review** — two scheduler defects had to be fixed first: `intervalMinutes.max(24*60)` made
+  **weekly literally inexpressible**, and run-state was an **in-memory Map**, so a restart made every
+  job due — which would have fired a fresh packet on every daemon bounce. The job writes **only**
+  Inbox proposals and one `message.system`; **a test asserts it emits no domain-mutating event at
+  all**, and it is idempotent per ISO week.
+- **The stakeholder hub** — the public object is **CONSTRUCTED from a named allowlist**, not filtered
+  from the private one. A filter is a blacklist in disguise: add a field to the brief and it leaks by
+  default until someone remembers to exclude it. There is **no `...spread` of any private object
+  anywhere in `hub.ts`**; every value is written by hand, and progress is a *count*, never task
+  titles. **The model never renders it** — it cannot be prompt-injected into publishing the budget,
+  because it is not in the code path at all.
+  - **A real security bug, found while testing:** `requestApproval` returns the decision **string**,
+    so `if (!allowed)` was false for `'deny'` — a truthy string — and **a denied publish would have
+    published**. Now compared explicitly against `'allow'`.
+  - `GET /p/<slug>` is the first hole ever punched in the auth gate and is deliberately the dumbest
+    component in the system: **zero SQL on the request path**, regex-validated slug checked *before*
+    any path is constructed, realpath confinement, a CSP that forbids every outbound channel, no
+    directory listing, per-IP rate limit, and a revoked page **indistinguishable from one that never
+    existed** — a 404 must not become an oracle. The slug is **stable across republishes** (the
+    video's own complaint about Cloudflare Drop was that the URL changed every time).
+- **The retrospective** — computed from what actually happened (dates that slipped, questions never
+  answered, risks left open, tasks that ended blocked), and **promotion out of the project is one
+  lesson at a time, by hand**. A promoted lesson carries `retro:<projectId>` as its source, so the
+  next project is always told *whose* experience it is being offered and can disagree with it.
+  **There is deliberately no "promote all" — and a test asserts no such verb exists.** Cross-project
+  contamination is not a bug you fix later; it is a door you never build.
+
+### Gates
+
+Migrations `0013`–`0017`, all additive and reversible. Root **624/624** · web **141/141** ·
+typecheck 0 · lint clean · build clean · secret scan clean.
+
+### Post-review hardening — the hub, after an adversarial pass (2026-07-14)
+
+An adversarial security review was run against the diff before deploy. It **confirmed the leak
+design holds** — the constructor-allowlist (no `...spread`, no private field reachable), the escaping,
+the `default-src 'none'` CSP, the zero-SQL request path, the approval gate (`decision !== 'allow'`),
+the slug validation-before-path, and the revoked/never-existed 404 equivalence all verified sound.
+It found **two real defects and one trap**, all now fixed:
+
+- **Revoke could fail OPEN.** The public reader executes zero SQL, so it serves whatever `<slug>.html`
+  is on disk — the *file* is the takedown, not `revoked_at`. But `revokeHub` deleted with
+  `rmSync(force:true)` inside a swallow-everything `catch`, then marked the DB revoked and returned
+  `{ok:true}`. On the Windows-first target a scanner or the operator's own browser holding the file
+  open (EPERM/EBUSY) — or a read-only mount (EROFS) — would leave the page **live while the system
+  reported it down**. Now the unlink runs **first** and fails **closed**: only "already gone"
+  (`ENOENT`) counts as removed; any other error throws *before* the DB is touched, so a takedown is
+  never reported unless the bytes are actually gone.
+- **The rate limiter keyed on `remoteAddress` — always the loopback proxy.** The daemon binds
+  loopback; the internet reaches `/p/` only through `serve-web.mjs`, so every visitor looked like
+  `127.0.0.1`: all strangers shared one 60/min bucket (a self-inflicted 429 storm) and the "per-IP"
+  cap protected nothing. The proxy now appends the true peer as the **rightmost** `x-forwarded-for`
+  hop, and the daemon trusts that hop **only from a loopback peer** and only the rightmost entry (so a
+  client cannot spoof it). The hit map is now **bounded** (expired windows evicted past a cap) so a
+  flood of distinct sources — cheap over IPv6 — cannot grow it without bound. Four unit tests pin the
+  keying and the not-shared-bucket property.
+- **`esc` did not escape `'`** — safe today (every site is a text node or a double-quoted/enum/numeric
+  attribute) but a trap for any future single-quoted-attribute edit. Now escaped.
+- **`cache-control` was `public, max-age=60`** — a successful revoke could still be served from cache
+  for up to a minute. Now `no-store`: a takedown is immediate.
+
+### Deploy (E4) — ADR-0045, 2026-07-14
+
+- **Backup first (online, not a file copy):** `db.backup()` to
+  `/root/.amrita/backups/amrita-pre-adr0045-20260714-adr0045.db` — integrity ok, schema v12, 7
+  projects, 302 events.
+- **Dry-run before touching live:** migrations `0013`–`0017` applied to a **copy of the real DB**
+  (v12 → **v17**, all data intact, integrity ok) **and reversed cleanly back to v12** — the strongest
+  evidence short of touching production.
+- **Applied:** `systemctl restart amritad.service` → migrations `0013`–`0017` applied to the live DB →
+  **`schemaVersion: 17`**; `tasks` gained certainty/version/phase_id/derived_from_json; briefs gained
+  version/certainty_json; `phases` and `project_publications` present; `projects.activated_at`
+  present; `integrity_check: ok`; live data unchanged (7 projects, 302 events, 5 decisions). Then a
+  second daemon restart to load the post-review hub hardening, and `amrita-web.service` restarted to
+  load the updated proxy. Both `active`; `:7461` → 200; `/rpc` → **401** (gate intact); real lane
+  execution still enabled.
+- **Live E4 smoke on a SCRATCH project** (never the 7 real ones): charter with a hard budget
+  constraint + decision rights → **charter audit** (readyToActivate, 1 finding) → **activate** with
+  explicit phases (board born from the project) → `tasks.create` with board fields → **`tasks.update`**
+  → a **stale write correctly rejected with `conflict`** (no silent overwrite) → `inbox.capture` +
+  list → **hub preview key set = exactly the allowlist**, leak check clean → **approval-gated publish**
+  → `GET /p/<slug>` **200 with no bearer**, served bytes **contain none of the budget / vendor /
+  decision-rights strings** → **revoke** → `GET` **404** (indistinguishable from never-existed) →
+  **review.run** raises proposals → **retro** computes one lesson → **promote one lesson** → then
+  `project.delete`.
+- **Live data verified after cleanup:** 7 projects, 304 events (the +2 are `settings.updated`
+  scheduler run-state on the System project), 5 decisions, 7 memory rows, `integrity_check: ok`.
+  **No orphans:** zero rows in any project-scoped table (including the three new ones) reference the
+  deleted scratch project; zero events point at a missing project — the cascade is correct. The one
+  org-memory row the promotion wrote (user-scoped, so it survives project deletion by design) was
+  removed so no smoke artifact remains in the real Org Brain.
+- **Gates at deploy:** root **628/628** · web **141/141** · typecheck 0 · lint clean · build clean ·
+  secret scan clean. Nothing pushed to a remote.
+
+## Phase I — Full-platform activation sweep (2026-07-14)
+
+A goal to make *every* button, menu and settings toggle truly active (or honestly "needs setup"),
+fix bugs, and remove dead ends. Driven by two evidence-backed audits (a PM-OS completeness pass and
+a five-reader full-platform control inventory), executed as eight work packages. The one binding
+boundary: **honest integrations only** — anything needing a real external connector stays an honest
+`needs setup`, never a faked green.
+
+- **WP1 — chat/composer bugs.** A failed `chat.turn` used to eat the typed message and leave a ghost
+  bubble that looked sent; now the draft is restored and the optimistic bubble rolled back (mirroring
+  quick-capture). Selection-aware focus is reset on project/session switch (it used to ride into
+  another project) and a "Talking about N tasks ✕" chip lets you clear it from the composer.
+- **WP2 — the 90s deploy hang, root-caused and fixed.** `http.ts` `close()` never terminated live
+  WebSocket clients, so `server.close()` never resolved and systemd SIGKILLed the daemon after the
+  full 90s on every restart. Now it `.terminate()`s each client first; a `TimeoutStopSec=20s` drop-in
+  backs it up. **Verified live: a restart of the patched daemon returns in 0s** (was 90s). A
+  regression test asserts `close()` settles with a client connected.
+- **WP3 — milestone activation.** `milestoneUpdate` had a client wrapper but zero UI call sites, so a
+  milestone could never be set `active` — which permanently disabled the `milestone-plan` companion
+  rule. Added Activate/Drop controls; **verified live** that an activated milestone shows as active.
+- **WP4 — project create + working folder.** There was no "+ New project" control anywhere (a fresh
+  DB was stuck on `system`); added one to the sidebar. Added a Working-folder panel that binds
+  `projects.setRoot` — the server validates against its allowed-roots allowlist and the browser never
+  picks a path. **Verified live**: `/etc` is rejected with the honest allowlist error; an allowed
+  root binds. This unblocks lane delegation (every project had sat at `root=NULL`).
+- **WP5 — Settings expansion.** New client wrappers + UI for the capabilities that had backend but no
+  way to reach them: a **Preferences** section of toggles over `settings.get/update`
+  (context-pack / scribe / auto-open-questions — the flags the daemon reads but nothing could set); a
+  **model discovery datalist** backed by `providers.models` (the model box was raw free-text while a
+  live `/models` probe existed); a read-only **Channels** card over `channels.list` making
+  Telegram/WhatsApp visible with their honest states; and a **Global Amrita** panel over
+  `system.health` + a non-mutating `system.audit`. **All verified live.** (Wrappers also added for
+  `accounts.*`, `providers.probeEndpoint`, `projects.phases.create/update`; their dedicated UIs are
+  the documented next slice.)
+- **WP6 — honesty + polish.** "Run for real" is now *disabled*, not just annotated, when the daemon
+  hasn't opted into real execution; project memory saves now confirm; the composer send button is
+  disabled with no open conversation instead of silently no-op'ing.
+- **WP7 — dead code + an enforced invariant.** Removed/There-were dead exports (`firstKey`), used
+  `PRIORITIES` in the board select instead of a hardcoded duplicate, and un-exported internal-only
+  helpers. The security-critical `NEVER_PUBLIC` denylist in `hub.ts` was a comment read by nothing;
+  it is now **enforced by a test** that walks the constructed public object and asserts none of those
+  field names appear at any depth.
+- **WP8 — QA + deploy.** Root **630/630** · web **141/141** · typecheck 0 · lint clean · build clean ·
+  secret scan clean. Online DB backup first; no schema change this sweep (all UI wiring + fixes), so
+  the live DB stays at v17, `integrity_check: ok`, 7 projects untouched. Live e2e smoke of every new
+  path ran on a scratch project only, then deleted it (0 orphans). Nothing pushed to a remote.
+
+### WP9 — the remaining wrapper-ready surfaces (2026-07-14)
+
+Completing the "everything reachable, or honestly needs-setup" mandate. All were backend
+capabilities with client wrappers but no UI; none required a schema change (protocol edits were
+pure `export type` aliases over existing schemas).
+
+- **Provider Accounts + local endpoint** (`accounts.*`, `providers.probeEndpoint`, the
+  `providers.endpoint.local` setting). Provider setup was CLI-only; now an account can be registered
+  and pointed at the **env-var NAME** that holds its key — the name, never the value — and a local
+  OpenAI-compatible endpoint can be probed and saved. Secrets never enter the request, the store, or
+  the UI. **Verified live:** connect → bind `ANTHROPIC_API_KEY` → the account shows its secretRef.
+- **Post-activation Phases editor** (`projects.phases.create/update`). Activation seeds a project's
+  phases; this is the only way to add or rename one afterward, and since the board's columns *are*
+  the phases, it reshapes the board. **Verified live:** create → list.
+- **Cinema module panel** (`cinema.providers`, `cinema.mandate.list`). Honest and bridge-gated: it
+  probes the external Cinema bridge and, when absent, says "needs setup — set BRAIN_BRIDGE_TOKEN and
+  start the bridge" rather than faking a connection; local mandates render regardless. **Verified
+  live:** mandate list reads locally with no bridge.
+- Gates: root **630/630** · web **141/141** · typecheck 0 · lint clean · build clean · secret scan
+  clean. Web bundle redeployed (WP9 is web + protocol-types only; the daemon needed no restart).
+  Live smoke ran on a scratch project; the scratch project and the (global, non-project-scoped)
+  smoke account and setting were all removed afterward — the live DB is byte-for-byte its pre-smoke
+  state (7 projects, 306 events, integrity ok). Nothing pushed to a remote.
+
+**Left as deliberate follow-ups (need their own ADR / real external work), not gaps:** native
+provider tool-calling as the agent bridge; task dependencies / critical path; a real user/contact
+model (owner stays free text); real mail/calendar/chat ingestion connectors (kept honestly
+"planned"); Gantt; project templates; the itemized hub-diff preview; a machine-backed
+"chat = no tools" ecosystem badge (needs a protocol field). Every one is recorded in the plan §17
+and the ADRs.
+
+## Phase J — Adversarial stability hardening (2026-07-14/15)
+
+A full "no holes / fully functional / stable" pass. A 6-subsystem adversarial audit (find→verify,
+12 agents) surfaced **40 confirmed robustness holes** — crashes, resource leaks, races,
+data-integrity and DoS gaps. Every one was fixed with a test where testable, in four batches, and
+deployed. Gates throughout: root **632** · web **141** · typecheck/lint/build/secret-scan clean.
+
+**ST1–4 (foundational):** daemon `startHttpServer` now rejects on a taken port (was a raw uncaught
+exception) and amritad exits honestly; `serve-web.mjs` got listen-error + stream-error + handler
+try/catch (a file I/O race no longer crashes the internet-facing edge); a corrupt SQLite file is
+quarantined on open (`.corrupt.<ts>`) instead of crash-looping; systemd gained `Wants=network-online`
++ a real `/health` readiness gate so the web edge waits for a listening daemon.
+
+**Batch A — process/subprocess safety.** `unhandledRejection`/`uncaughtException` guards; every CLI
+subprocess (chat turns, lanes) is spawned as a **process group** and tracked, reaped on daemon close
+and killed as a tree (SIGTERM→SIGKILL) on timeout/abort — they used to outlive the daemon; a **default
+wall-clock cap** on lanes so a child that stalls before any turn can't run forever; **BudgetGuard
+wired live** so maxTokens/maxUsd abort mid-run (were post-hoc only); provider stdout bounded;
+`StringDecoder` so multibyte (Hebrew/emoji) output split across reads isn't corrupted; a scheduler
+re-entrancy guard.
+
+**Batch B — HTTP/WebSocket.** WS **heartbeat** (drops half-open sockets that leaked subscriptions +
+memory); **backpressure** (a client whose buffer balloons is dropped, not buffered to OOM); a
+**connection cap**; **bounded replay-on-connect**; the `/p/` rate-limiter now **hard-caps** (fails
+closed under a distinct-IP flood instead of growing without bound); workspace files **streamed** not
+`readFileSync`'d; oversized bodies get a 400 instead of a destroyed socket; a post-headers throw tears
+the response down instead of hanging it.
+
+**Batch C — web resilience.** A **React error boundary** (a render throw no longer white-screens the
+app); the chat reply **drops its fold if you switched conversation** mid-await (no more cross-
+conversation corruption); `ensureProjectAndLoad` is **race-guarded** with a monotonic token; the WS
+**revives on `online`/`visibilitychange`** after giving up (a slept laptop reconnects); `refreshBase`
+is **allSettled** (a failing doctor no longer blanks the projects tree); the debounced loaders catch
+their own errors; the optimistic `pending[]` is pruned on success.
+
+**Batch D — store integrity.** `setProjectRoot` writes the audit event and the row in **one
+transaction** (was two — a crash between them diverged the log from the row); `settings.update`
+**reserves the `cascade.*` namespace** so untrusted input can't disable the decisions append-only
+guard (RPC refuse + event-schema defense-in-depth); `connectProviderAccount` is **idempotent** on
+(provider,label) instead of raising a raw UNIQUE error; the `workspaceTickets` map is swept and
+cleared. (The Scribe's post-provider reads were wrapped in Batch A.)
+
+**Deploy (E4):** online backup (`amrita-pre-stability-20260715.db`), daemon restart **1s** (the WP2
+fix holds; the ST3 quarantine correctly did NOT trigger on the healthy DB — no `.corrupt` file). Live
+DB verified: schema 17, integrity ok, **0 orphan events** — confirming the delete-cascade over the new
+PM-OS tables is correct in production (the operator had deleted 5 old projects via the UI, leaving
+System + one new project). Nothing pushed to a remote.
+
+**Deliberately deferred (documented, not holes):** the spill-durability / orphan-spill-file /
+memory-consolidation-retention findings are all gated on `tool.completed`, which no production code
+emits yet; the optimistic-lock is single-writer-safe by construction; migration 0007.down is
+conditionally reversible. One small web follow-up remains: re-mint workspace view tickets on expiry.
+
+## Phase K — Live canvas: agent builds land on it + Claude-Design grid (2026-07-15)
+
+**Bug: "she couldn't display it on the canvas."** Root cause — the canvas only ever rendered
+artifacts DERIVED from typed project state (`buildSurfaceArtifacts`: brief/brand/tasks/lanes). HTML
+that Amrita wrote in a chat reply had **no path onto the canvas at all**, so she fell back to writing
+files and `python -m http.server`, which the operator's canvas never sees.
+
+Fixed in two halves:
+- **Client (`agent-canvas.ts`, pure + tested):** any COMPLETE HTML the agent produces in chat — a
+  fenced ```` ```html ```` block or a whole-message HTML document — becomes an `html-preview`
+  artifact and lands on the canvas, auto-opening via the existing "she builds, you watch" effect.
+  Rendered ONLY inside the zero-network Stage-B sandbox (`allow-scripts`, inline-only CSP), so an
+  interactive game runs but can't reach the network or the parent origin. The streaming draft is
+  never rendered (no half-written HTML flicker); a changed build gets a new id so the canvas re-opens.
+- **Daemon (`AMRITA_CAPABILITIES` in the context pack):** an always-on capability preamble — injected
+  on EVERY project turn, even a stateless one like System — tells Amrita she has a live canvas and to
+  return self-contained HTML in a ```` ```html ```` block (inline only, <256 KB, no files, no
+  `http.server`). Without this the model never knew the canvas existed.
+
+**Claude-Design grid look.** The canvas surface (gallery, empty state, open-artifact panel) now sits
+on a subtle warm dot-grid backdrop, and the artifact renders as a floating framed card — rounded,
+bordered, soft-shadowed — the way a claude.ai artifact reads. `CanvasFrame` also became resilient:
+an oversize build shows an honest "too large to preview inline" note instead of throwing into the
+error boundary.
+
+Gates: root **632** · web **147** (+6 canvas tests) · typecheck/lint/build/secret-scan clean.
+Deployed: web bundle + daemon restarted (1s). Verified the grid CSS and the extraction logic are in
+the shipped bundle and the capability is in the running daemon. The operator can now ask Amrita to
+build a page or a game and watch it land on the canvas.
+
+## Phase L — The live interactive canvas (ADR-0047, 2026-07-15)
+
+Natanel wanted a claude.ai-Design-grade canvas: watch a build take shape live, move/resize/minimize
+each build as a card, select one so the next instruction targets it, several cards for multi-page
+sites or variations, and full mobile. Planned with the STORM loop; built as five phases.
+
+- **P1 — free-canvas engine.** Pure `canvas-layout.ts` (positions/size/z-order/minimize + drag/resize
+  math, 7 unit tests) drives `CanvasCard` (pointer-drag on the title bar, corner resize, minimize,
+  raise-on-select) inside a `FreeCanvas`. Layout is VIEW state → localStorage per conversation, never
+  the event store. Every HTML build is now a movable card.
+- **P2 — live build.** The claude-code chat provider already streams `text_delta`; `extractStreamingArtifact`
+  pulls the partial HTML from the still-open ```` ```html ```` block in `transcript.draft` and shows it
+  as a "building…" card **with scripts stripped** (a half-written `<script>` can't break the render),
+  throttled to ~300ms chunks so the layers appear smoothly. On completion the full **interactive**
+  artifact takes over. 4 unit tests.
+- **P3 — selection-aware targeting (ADR-0047).** `chatFocusSchema` gains an `artifact` kind + `label`
+  (additive-optional; a refine keeps domain kinds requiring ids). Selecting a card sets that focus;
+  `renderFocus` tells the model the message is about THAT build and to return the complete updated
+  HTML. A composer chip shows “Talking about <title>”.
+- **P4 — multiple builds.** `agent-canvas.ts` already extracts every block; `AMRITA_CAPABILITIES` now
+  instructs one ```` ```html ```` block per page/variation, each with its own `<title>` (the card
+  label), and how to modify a selected build. A 3-page site or 3 variations → 3 cards.
+- **P5 — mobile + QA.** Under 720px the CSS collapses absolute positioning to a full-width vertical
+  stack; drag/resize hide (not touch primitives). Gates: root **632** · web **158** (+11 canvas
+  tests) · typecheck/lint/build/secret-scan clean. Deployed (daemon + web, restart ~2s); the sandbox
+  (opaque origin, zero-network CSP, 256 KB cap) remains the only security boundary.
