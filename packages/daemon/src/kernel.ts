@@ -381,6 +381,14 @@ export class AmritaKernel {
   private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
   /** tmux boundary for operator session I/O (ADR-0049); the session name is derivable. */
   private readonly tmux = createNodeTmuxController();
+  /**
+   * Short-TTL cache for the coding-runtime status. The auth probe spawns
+   * `claude auth status` / `codex` (~4s each), and the Planner + router ask for it on
+   * EVERY build turn — so without a cache a few rapid build requests fan out into many
+   * concurrent claude processes that race on the subscription's token refresh and fail
+   * transiently ("unauthenticated"). Runtime auth barely changes; 30s is plenty.
+   */
+  private runtimesCache: { at: number; value: CodingRuntimeStatus[] } | null = null;
   /** Pending operator approvals (ADR-0021). Audit trail lives in approval.* events. */
   private readonly pendingApprovals = new Map<
     string,
@@ -1011,11 +1019,17 @@ export class AmritaKernel {
    * only with a real status probe behind them.
    */
   async getCodingRuntimes(): Promise<CodingRuntimeStatus[]> {
-    return getRuntimesStatus({
+    const now = Date.now();
+    if (this.runtimesCache && now - this.runtimesCache.at < 30_000) {
+      return this.runtimesCache.value;
+    }
+    const value = await getRuntimesStatus({
       realExecution: this.realLaneExecution,
       ...(this.codingRuntimeProber ? { prober: this.codingRuntimeProber } : {}),
       ...(this.laneAllowedTools.length > 0 ? { claudeAllowedTools: this.laneAllowedTools } : {}),
     });
+    this.runtimesCache = { at: now, value };
+    return value;
   }
 
   /**
