@@ -1506,3 +1506,13 @@ sites or variations, and full mobile. Planned with the STORM loop; built as five
   stack; drag/resize hide (not touch primitives). Gates: root **632** · web **158** (+11 canvas
   tests) · typecheck/lint/build/secret-scan clean. Deployed (daemon + web, restart ~2s); the sandbox
   (opaque origin, zero-network CSP, 256 KB cap) remains the only security boundary.
+
+### Live canvas — improve-in-place + stream into the selected card (ADR-0047, 2026-07-15)
+
+Two refinements after Natanel used it: (1) improving a SELECTED build spawned a new card instead of
+updating it; (2) the live build streamed into a separate card, not the one being worked on. Root
+cause: card identity was the message id, so every turn made a new artifact. Fixed with **title-based
+identity** (`artifactIdForTitle`): same `<title>` → same card id → in-place update (keeping its
+position); different titles stay separate cards (multi-page / variations). And `extractStreamingArtifact`
+now takes the active artifact-focus label, so an improvement streams INTO the selected card — the
+operator watches it rebuild layer by layer in place. Gates: web **161** · lint/build clean. Web deployed.

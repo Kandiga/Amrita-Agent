@@ -28,6 +28,22 @@ function titleFrom(html: string): string {
   return h1 || 'Live build';
 }
 
+/**
+ * A stable card id derived from the TITLE, not the message id. This is what makes
+ * "improve THIS build" update the card in place: an improved version keeps the
+ * same <title>, so it maps to the same id → the same card → the same position,
+ * instead of spawning a new card. Different titles (a multi-page site, several
+ * variations) stay separate cards.
+ */
+export function artifactIdForTitle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return `agent-html:${slug || 'build'}`;
+}
+
 export interface StreamingArtifact {
   id: string;
   title: string;
@@ -49,6 +65,7 @@ export interface StreamingArtifact {
  */
 export function extractStreamingArtifact(
   draft: string | null | undefined,
+  focusLabel?: string | null,
 ): StreamingArtifact | null {
   if (!draft) return null;
   const open = draft.match(/```html\r?\n?/i);
@@ -60,12 +77,16 @@ export function extractStreamingArtifact(
   // can never break the render; the structure and styles still stream in.
   const structural = after.replace(/<script\b[\s\S]*/gi, '');
   if (structural.replace(/\s+/g, '').length < 10) return null; // nothing meaningful yet
-  return {
-    id: 'agent-html:building',
-    title: titleFrom(after) || 'Building…',
-    html: structural,
-    building: true,
-  };
+  // When a build is SELECTED and being improved, stream INTO that card (its id and
+  // title) so the operator watches it rebuild in place — not in a separate card.
+  return focusLabel
+    ? { id: artifactIdForTitle(focusLabel), title: focusLabel, html: structural, building: true }
+    : {
+        id: 'agent-html:building',
+        title: titleFrom(after) || 'Building…',
+        html: structural,
+        building: true,
+      };
 }
 
 /** Complete agent HTML in the transcript → openable canvas artifacts (oldest→newest). */
@@ -73,7 +94,10 @@ export function extractAgentArtifacts(
   messages: readonly ChatMessage[],
   projectId: string,
 ): HtmlPreviewArtifact[] {
-  const out: HtmlPreviewArtifact[] = [];
+  // Keyed by TITLE-based id so a later "improve this" reply (same <title>) REPLACES
+  // the earlier build instead of adding a new card. Insertion order is preserved
+  // (Map keeps first-seen order), so an update keeps the card's place.
+  const byId = new Map<string, HtmlPreviewArtifact>();
   for (const m of messages) {
     // Only COMPLETE agent messages — never the streaming draft, whose HTML is
     // half-written and would render broken and flicker on every delta.
@@ -90,19 +114,21 @@ export function extractAgentArtifacts(
     // No fenced block, but the whole reply IS an HTML document.
     if (blocks.length === 0 && looksLikeHtmlDoc(m.text)) blocks.push(m.text.trim());
 
-    blocks.forEach((html, i) => {
-      out.push({
+    for (const html of blocks) {
+      const title = titleFrom(html);
+      const id = artifactIdForTitle(title);
+      byId.set(id, {
         kind: 'html-preview',
-        id: `agent-html:${m.id}:${i}`,
+        id,
         projectId,
-        title: titleFrom(html),
+        title,
         html,
         contentHash: contentHash(html),
         // Agent-built and shown live inside the sandbox — viewing needs no
         // approval (the sandbox is the boundary); approval is for publishing.
         status: 'approved',
       });
-    });
+    }
   }
-  return out;
+  return [...byId.values()];
 }

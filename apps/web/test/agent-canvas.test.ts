@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { extractAgentArtifacts, extractStreamingArtifact } from '../src/agent-canvas.ts';
+import {
+  artifactIdForTitle,
+  extractAgentArtifacts,
+  extractStreamingArtifact,
+} from '../src/agent-canvas.ts';
 import type { ChatMessage } from '../src/lib.ts';
 
 const agent = (id: string, text: string): ChatMessage => ({ id, role: 'agent', text });
@@ -20,7 +24,7 @@ describe('agent HTML lands on the canvas (CANVAS-1)', () => {
     expect(arts[0]?.title).toBe('Gravity');
     expect(arts[0]?.html).toContain('<canvas>');
     expect(arts[0]?.html).toContain('<script>'); // interactive game scripts survive
-    expect(arts[0]?.id).toBe('agent-html:a1:0');
+    expect(arts[0]?.id).toBe('agent-html:gravity'); // title-based id (ADR-0047)
     expect(arts[0]?.status).toBe('approved');
   });
 
@@ -58,12 +62,30 @@ describe('agent HTML lands on the canvas (CANVAS-1)', () => {
     expect(v2[0]?.title).toBe('v2');
   });
 
-  it('extracts multiple html blocks from one message with distinct ids', () => {
+  it('extracts multiple html blocks from one message with distinct (title) ids', () => {
     const arts = extractAgentArtifacts(
-      [agent('a1', '```html\n<h1>one</h1>\n```\nand\n```html\n<h1>two</h1>\n```')],
+      [agent('a1', '```html\n<h1>Home</h1>\n```\nand\n```html\n<h1>Pricing</h1>\n```')],
       'p1',
     );
-    expect(arts.map((a) => a.id)).toEqual(['agent-html:a1:0', 'agent-html:a1:1']);
+    expect(arts.map((a) => a.id)).toEqual(['agent-html:home', 'agent-html:pricing']);
+  });
+
+  it('improving a build (same title) REPLACES it in place — no new card (ADR-0047)', () => {
+    const v1 = agent('a1', '```html\n<title>Bounce Keeper</title><h1>v1</h1>\n```');
+    const v2 = agent(
+      'a2',
+      'improved it:\n```html\n<title>Bounce Keeper</title><h1>v2 with score</h1>\n```',
+    );
+    const arts = extractAgentArtifacts([v1, v2], 'p1');
+    expect(arts).toHaveLength(1); // one card, not two
+    expect(arts[0]?.id).toBe(artifactIdForTitle('Bounce Keeper'));
+    expect(arts[0]?.html).toContain('v2 with score'); // the latest version wins
+  });
+
+  it('a differently-titled build is a NEW card', () => {
+    const a = agent('a1', '```html\n<title>Home</title>\n```');
+    const b = agent('a2', '```html\n<title>About</title>\n```');
+    expect(extractAgentArtifacts([a, b], 'p1')).toHaveLength(2);
   });
 });
 
@@ -89,6 +111,14 @@ describe('live-build streaming (Live Canvas Phase 2)', () => {
   it('stops streaming once the block CLOSES — the committed message takes over', () => {
     const draft = '```html\n<h1>done</h1>\n```\nthere you go';
     expect(extractStreamingArtifact(draft)).toBeNull();
+  });
+
+  it('when a build is SELECTED, the live build streams INTO that card (its id)', () => {
+    const draft = 'improving it:\n```html\n<h1>rebuilding</h1>';
+    const s = extractStreamingArtifact(draft, 'Bounce Keeper');
+    expect(s?.id).toBe(artifactIdForTitle('Bounce Keeper')); // same card, in place
+    expect(s?.title).toBe('Bounce Keeper');
+    expect(s?.html).toContain('rebuilding');
   });
 
   it('returns null before any html block, and for empty/undefined drafts', () => {

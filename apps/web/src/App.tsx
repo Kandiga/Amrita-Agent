@@ -718,20 +718,27 @@ export function App() {
         kindLabel: a.kind === 'design-page' ? 'design' : 'build',
         html: a.html,
       }));
-    const streaming = extractStreamingArtifact(previewDraft);
-    return streaming
-      ? [
-          {
-            id: streaming.id,
-            title: streaming.title,
-            kindLabel: 'build',
-            html: streaming.html,
-            building: true,
-          },
-          ...done,
-        ]
-      : done;
-  }, [surfaceArtifacts, previewDraft]);
+    // If a build is SELECTED and being improved, the streaming preview carries the
+    // selected card's id — so it rebuilds IN PLACE (same card) rather than opening
+    // a new one. Otherwise it is a fresh "building…" card.
+    const focusLabel = focus?.kind === 'artifact' ? focus.label : undefined;
+    const streaming = extractStreamingArtifact(previewDraft, focusLabel);
+    if (!streaming) return done;
+    const card: FreeCanvasArtifact = {
+      id: streaming.id,
+      title: streaming.title,
+      kindLabel: 'build',
+      html: streaming.html,
+      building: true,
+    };
+    const idx = done.findIndex((c) => c.id === streaming.id);
+    if (idx >= 0) {
+      const next = [...done];
+      next[idx] = card; // improving THIS build → replace its content in place
+      return next;
+    }
+    return [card, ...done]; // a brand-new build → its own card
+  }, [surfaceArtifacts, previewDraft, focus]);
 
   // Throttle the streaming draft into `previewDraft` so the live-build card
   // re-renders in ~300ms chunks (watch the layers appear), not on every token.
