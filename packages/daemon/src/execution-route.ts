@@ -116,6 +116,30 @@ const CONNECTORS: { match: string[]; what: string; why: string; risk: string; fi
   },
 ];
 
+/** Research/QA work a session can do without building — the Codex sweet spot. Kept
+ *  deliberately narrow so a conversational "can you review my plan?" is NOT read as
+ *  a delegation request; the operator's cross-QA/compare flows are UI-initiated. */
+const RESEARCH = [
+  'research',
+  'investigate',
+  'benchmark',
+  'reproduce',
+  'profile',
+  'look into',
+  'find out',
+];
+
+// Word-boundary matching, so a keyword like 'pay' does not fire on 'payment', nor
+// 'sign' on 'design' — a real false-positive class that plain `.includes` has.
+const wordRe = (term: string): RegExp =>
+  new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+
+const matchesAny = (text: string, list: readonly string[]): boolean =>
+  list.some((m) => wordRe(m).test(text));
+
+const connectorFor = (text: string): (typeof CONNECTORS)[number] | undefined =>
+  CONNECTORS.find((c) => c.match.some((m) => wordRe(m).test(text)));
+
 const hay = (t: RouteInput['task']): string => `${t.title} ${t.body ?? ''}`.toLowerCase();
 
 export function routeFor(input: RouteInput): RouteVerdict {
@@ -128,24 +152,28 @@ export function routeFor(input: RouteInput): RouteVerdict {
 
   // A connector we do not have beats everything else: pretending is the one thing
   // this system must never do.
-  for (const c of CONNECTORS) {
-    if (c.match.some((m) => text.includes(m))) {
-      return {
-        route: 'needs-connector',
-        detail: `Needs ${c.what}, which Amrita does not have.`,
-        missing: { what: c.what, why: c.why, risk: c.risk, fix: c.fix },
-      };
-    }
+  const connector = connectorFor(text);
+  if (connector) {
+    return {
+      route: 'needs-connector',
+      detail: `Needs ${connector.what}, which Amrita does not have.`,
+      missing: {
+        what: connector.what,
+        why: connector.why,
+        risk: connector.risk,
+        fix: connector.fix,
+      },
+    };
   }
 
-  if (HUMAN_ONLY.some((m) => text.includes(m))) {
+  if (matchesAny(text, HUMAN_ONLY)) {
     return {
       route: 'human-only',
       detail: 'A person has to do this — Amrita will not do it quietly on your behalf.',
     };
   }
 
-  if (CODEABLE.some((m) => text.includes(m))) {
+  if (matchesAny(text, CODEABLE)) {
     if (!input.hasRoot) {
       return {
         route: 'needs-approval',
@@ -190,3 +218,71 @@ export const ROUTE_LABEL: Record<ExecutionRoute, string> = {
   'needs-approval': 'Needs approval',
   'human-only': 'Human only',
 };
+
+/**
+ * What an incoming CHAT MESSAGE is asking for (ADR-0048). This is the chat-side
+ * sibling of `routeFor`: `routeFor` grades an existing TASK, this classifies a raw
+ * message so the Planner can decide whether to delegate to an execution session.
+ *
+ * Pure and deterministic, sharing the same keyword tables as `routeFor` (no second
+ * source of truth). Deliberately CONSERVATIVE: an unmatched message is
+ * `conversational` — Amrita just answers in chat, which is always safe — so a false
+ * negative costs nothing while a false `build` would spin up a session. The Planner
+ * and the operator's own agent pick are the backstop.
+ */
+export type IntentKind = 'conversational' | 'build' | 'research' | 'human' | 'needs-connector';
+
+export interface IntentVerdict {
+  intent: IntentKind;
+  /** Why this intent, in one plain sentence. */
+  detail: string;
+  /** For `needs-connector`: exactly what is missing and how to get it. */
+  missing?: { what: string; why: string; risk: string; fix: string };
+}
+
+export function classifyIntent(text: string): IntentVerdict {
+  const t = text.toLowerCase();
+
+  // A missing connector beats everything: never pretend a tool exists.
+  const connector = connectorFor(t);
+  if (connector) {
+    return {
+      intent: 'needs-connector',
+      detail: `Needs ${connector.what}, which Amrita does not have.`,
+      missing: {
+        what: connector.what,
+        why: connector.why,
+        risk: connector.risk,
+        fix: connector.fix,
+      },
+    };
+  }
+
+  if (matchesAny(t, HUMAN_ONLY)) {
+    return {
+      intent: 'human',
+      detail: 'A person has to do this — Amrita will not do it quietly on your behalf.',
+    };
+  }
+
+  // Research/QA is checked before build so a "reproduce the bug" reads as research
+  // (a Codex sweet spot), while "build the feature" reads as build.
+  if (matchesAny(t, RESEARCH)) {
+    return { intent: 'research', detail: 'Research Amrita can delegate to a session.' };
+  }
+
+  if (matchesAny(t, CODEABLE)) {
+    return { intent: 'build', detail: 'Build work Amrita can delegate to an execution session.' };
+  }
+
+  return { intent: 'conversational', detail: 'A conversation — nothing to delegate.' };
+}
+
+/**
+ * The cheap gate (mirrors the Scribe's `looksLikeProjectTruth`): does this turn
+ * plausibly want a delegated session? If not, the Planner never spawns a provider.
+ */
+export function looksLikeBuildIntent(text: string): boolean {
+  const { intent } = classifyIntent(text);
+  return intent === 'build' || intent === 'research';
+}

@@ -1,0 +1,47 @@
+import { describe, expect, it } from 'vitest';
+import { classifyIntent, looksLikeBuildIntent } from '../src/execution-route.ts';
+
+/**
+ * The chat-message intent classifier (ADR-0048) — the chat-side sibling of
+ * `routeFor`. Pure and deterministic; conservative by design so a false negative
+ * (just answer in chat) is safe and a false `build` never spins up a session.
+ */
+describe('classifyIntent — what a chat message is asking for (ADR-0048)', () => {
+  it('ordinary conversation is not a delegation request', () => {
+    expect(classifyIntent('what is our current pricing?').intent).toBe('conversational');
+    expect(classifyIntent('thanks, that helps').intent).toBe('conversational');
+    expect(classifyIntent('can you review my plan?').intent).toBe('conversational'); // not build/research
+  });
+
+  it('build work is a build intent', () => {
+    expect(classifyIntent('build me a login page').intent).toBe('build');
+    expect(classifyIntent('implement the checkout endpoint').intent).toBe('build');
+    expect(classifyIntent('refactor the payment module').intent).toBe('build');
+    expect(classifyIntent('fix the failing test').intent).toBe('build');
+  });
+
+  it('research/QA work is a research intent (the Codex sweet spot)', () => {
+    expect(classifyIntent('investigate why the build is slow').intent).toBe('research');
+    expect(classifyIntent('reproduce the crash from issue 12').intent).toBe('research');
+    expect(classifyIntent('benchmark the two approaches').intent).toBe('research');
+  });
+
+  it('a missing connector beats everything and stays honest', () => {
+    const v = classifyIntent('send an email to the vendor');
+    expect(v.intent).toBe('needs-connector');
+    expect(v.missing?.what).toMatch(/email/i);
+    expect(v.missing?.fix).toBeTruthy();
+  });
+
+  it('work a machine must not quietly do is human', () => {
+    expect(classifyIntent('call the caterer and negotiate the price').intent).toBe('human');
+  });
+
+  it('the cheap gate fires only for delegatable build/research', () => {
+    expect(looksLikeBuildIntent('build me a login page')).toBe(true);
+    expect(looksLikeBuildIntent('investigate the slow query')).toBe(true);
+    expect(looksLikeBuildIntent('what did we decide?')).toBe(false);
+    expect(looksLikeBuildIntent('send an email to the vendor')).toBe(false); // honest, not delegated
+    expect(looksLikeBuildIntent('call the caterer')).toBe(false);
+  });
+});
