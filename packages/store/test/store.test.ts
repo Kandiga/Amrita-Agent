@@ -105,17 +105,31 @@ describe('migrations', () => {
     const addedColumns = ['idempotency_key', 'group_id', 'role', 'verifies_lane_id'];
     const addedIndexes = ['idx_lanes_idempotency', 'idx_lanes_group', 'idx_lanes_verifies_lane'];
 
-    expect(currentVersion(db)).toBe(18);
+    expect(currentVersion(db)).toBe(TOP_VERSION);
     for (const name of addedColumns) expect(columns()).toContain(name);
     for (const name of addedIndexes) expect(indexes()).toContain(name);
 
-    expect(migrateDown(db, 17)).toBe(1);
+    expect(migrateDown(db, 17)).toBe(TOP_VERSION - 17);
     for (const name of addedColumns) expect(columns()).not.toContain(name);
     for (const name of addedIndexes) expect(indexes()).not.toContain(name);
 
-    expect(migrateUp(db)).toBe(1);
+    expect(migrateUp(db)).toBe(TOP_VERSION - 17);
     for (const name of addedColumns) expect(columns()).toContain(name);
     for (const name of addedIndexes) expect(indexes()).toContain(name);
+    db.close();
+  });
+
+  it('migration 0019 reversibly adds acceptance evidence to tasks (ADR-0055)', () => {
+    const db = new Database(':memory:');
+    migrateUp(db);
+    const cols = () =>
+      (db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map((row) => row.name);
+    const added = ['acceptance_json', 'verified_at', 'verification_json'];
+    for (const name of added) expect(cols()).toContain(name);
+    expect(migrateDown(db, 18)).toBe(1);
+    for (const name of added) expect(cols()).not.toContain(name);
+    expect(migrateUp(db)).toBe(1);
+    for (const name of added) expect(cols()).toContain(name);
     db.close();
   });
 

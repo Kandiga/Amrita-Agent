@@ -3755,3 +3755,73 @@ code {
 .capsule-conflict h4 {
   color: var(--error, #c0392b);
 }
+
+/* ADR-0055 — evidence-based done: criteria chips + verify. */
+.task-evidence {
+  font-size: 0.75rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.evidence-pass {
+  border-color: #3d9a5f;
+  color: #2e7d4f;
+}
+.evidence-fail {
+  border-color: #c25b4e;
+  color: #a94438;
+}
+.evidence-unverified {
+  color: inherit;
+  opacity: 0.75;
+}
+.task-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.task-criteria {
+  flex-basis: 100%;
+  border-top: 1px dashed var(--border);
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+}
+.task-criteria ul {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.task-criteria li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.task-criteria li code {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.task-criteria-add {
+  display: flex;
+  gap: 0.4rem;
+}
+.task-criteria-add input {
+  flex: 1;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.task-criteria-add select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 0.85rem;
+}
+.task-row {
+  flex-wrap: wrap;
+}

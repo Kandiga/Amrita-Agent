@@ -45,6 +45,7 @@ export const MIGRATIONS: readonly Migration[] = [
   load(16, 'derivation'),
   load(17, 'publications'),
   load(18, 'lane_idempotency'),
+  load(19, 'task_acceptance'),
 ];
 
 function ensureMigrationsTable(db: DB): void {

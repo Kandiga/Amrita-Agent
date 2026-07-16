@@ -11,7 +11,7 @@ import { resolveTaskTransition } from '../src/task-transition.ts';
 describe('resolveTaskTransition (pure) — lane proposes, human disposes', () => {
   const base = {
     taskStatus: 'now' as const,
-    hasAcceptanceCriteria: false,
+    criteria: 'none' as const,
     autoEnabled: false,
     goal: 'ship it',
   };
@@ -36,15 +36,40 @@ describe('resolveTaskTransition (pure) — lane proposes, human disposes', () =>
     expect(d?.mode).toBe('propose');
   });
 
-  it('done + acceptance criteria → propose review even with auto ON (unverifiable)', () => {
+  it('done + UNVERIFIED criteria → propose review even with auto ON', () => {
     const d = resolveTaskTransition({
       ...base,
       exit: 'done',
       autoEnabled: true,
-      hasAcceptanceCriteria: true,
+      criteria: 'unverified',
     });
     expect(d?.mode).toBe('propose');
     if (d?.mode === 'propose') expect(d.reason).toMatch(/unverified/i);
+  });
+
+  it('done + VERIFIED-PASS criteria + auto ON → auto review WITH evidence (ADR-0055)', () => {
+    const d = resolveTaskTransition({
+      ...base,
+      exit: 'done',
+      autoEnabled: true,
+      criteria: 'verified-pass',
+    });
+    expect(d?.mode).toBe('auto');
+    if (d?.mode === 'auto') expect(d.reason).toMatch(/evidence|passed/i);
+  });
+
+  it('done + VERIFIED-FAIL criteria → a blocked proposal even with auto ON (evidence beats prose)', () => {
+    const d = resolveTaskTransition({
+      ...base,
+      exit: 'done',
+      autoEnabled: true,
+      criteria: 'verified-fail',
+    });
+    expect(d?.mode).toBe('propose');
+    if (d?.mode === 'propose') {
+      expect(d.suggestedStatus).toBe('blocked');
+      expect(d.reason).toMatch(/failed/i);
+    }
   });
 
   it('partial/budget/aborted → a blocked proposal, never auto', () => {

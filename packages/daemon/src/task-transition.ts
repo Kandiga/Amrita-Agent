@@ -20,13 +20,23 @@ export type TaskTransition =
   | { mode: 'auto'; blockedReason: string; reason: string }
   | { mode: 'propose'; text: string; suggestedStatus: 'done' | 'blocked'; reason: string };
 
+/**
+ * ADR-0055 — the task's evidence state, derived from its typed criteria and the
+ * latest machine-verification run (never from prose):
+ *   'none'          — no criteria at all
+ *   'unverified'    — criteria exist but no verification ran (or criteria changed)
+ *   'verified-pass' — the latest run passed every machine check
+ *   'verified-fail' — the latest run has a failing check
+ */
+export type CriteriaState = 'none' | 'unverified' | 'verified-pass' | 'verified-fail';
+
 export interface TransitionInput {
   /** The linked task's current status. Terminal (`done`/`dropped`) → no action. */
   taskStatus: TaskStatus;
   /** The completing lane's exit. */
   exit: LaneExit;
-  /** Whether the mandate carried deliverables/acceptance criteria we cannot verify. */
-  hasAcceptanceCriteria: boolean;
+  /** ADR-0055 — the task's acceptance-evidence state. */
+  criteria: CriteriaState;
   /** The `orchestration.autoTaskTransition` flag (default off = always propose). */
   autoEnabled: boolean;
   /** The goal, for a human-readable proposal. */
@@ -34,6 +44,8 @@ export interface TransitionInput {
 }
 
 const REVIEW_NOTE = 'A session finished this — review the result, then mark it done.';
+const VERIFIED_NOTE =
+  'A session finished this and the acceptance checks PASSED — review, then mark it done.';
 
 export function resolveTaskTransition(input: TransitionInput): TaskTransition | null {
   // Never touch a task the human already closed, and never re-open a dropped one.
@@ -42,22 +54,40 @@ export function resolveTaskTransition(input: TransitionInput): TaskTransition | 
   if (input.exit === 'cancelled') return null;
 
   if (input.exit === 'done') {
-    if (input.autoEnabled && !input.hasAcceptanceCriteria) {
+    // Failing evidence beats a lane's claim of done — that is the whole point.
+    if (input.criteria === 'verified-fail') {
+      return {
+        mode: 'propose',
+        text: `A session finished "${clip(input.goal)}" but the acceptance verification FAILED — inspect the failing checks before anything moves.`,
+        suggestedStatus: 'blocked',
+        reason: 'exit done but the acceptance verification failed',
+      };
+    }
+    if (input.autoEnabled && (input.criteria === 'none' || input.criteria === 'verified-pass')) {
       // Safe/reversible class: annotate for review, attributed. NEVER silent-done.
       return {
         mode: 'auto',
-        blockedReason: REVIEW_NOTE,
-        reason: "lane exited 'done' with no acceptance criteria — advanced to review by Amrita",
+        blockedReason: input.criteria === 'verified-pass' ? VERIFIED_NOTE : REVIEW_NOTE,
+        reason:
+          input.criteria === 'verified-pass'
+            ? "lane exited 'done' and the acceptance checks passed — advanced to review by Amrita with evidence"
+            : "lane exited 'done' with no acceptance criteria — advanced to review by Amrita",
       };
     }
-    // Criteria we cannot machine-verify, or auto disabled → propose the review.
+    // Unverified criteria, or auto disabled → propose the review.
     return {
       mode: 'propose',
-      text: `A session finished "${clip(input.goal)}" — review whether it meets the bar, then close the task.`,
+      text:
+        input.criteria === 'unverified'
+          ? `A session finished "${clip(input.goal)}" — run the acceptance verification, then close the task on evidence.`
+          : `A session finished "${clip(input.goal)}" — review whether it meets the bar, then close the task.`,
       suggestedStatus: 'done',
-      reason: input.hasAcceptanceCriteria
-        ? 'exit done but acceptance criteria are unverified'
-        : 'auto task transition disabled',
+      reason:
+        input.criteria === 'unverified'
+          ? 'exit done but acceptance criteria are unverified'
+          : input.criteria === 'verified-pass'
+            ? 'acceptance checks passed; auto task transition disabled'
+            : 'auto task transition disabled',
     };
   }
 

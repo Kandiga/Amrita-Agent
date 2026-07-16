@@ -127,6 +127,11 @@ export const taskRowSchema = z.object({
   /** Why this card exists (ADR-0045) — the goal/constraint/decision it came from. */
   derivedFrom: z.array(derivationSchema),
   externalRef: z.string().nullable(),
+  // ADR-0055 — evidence-based done: raw-JSON columns (the lanes `mandateJson`
+  // pattern); consumers parse with `acceptanceCriterionSchema`/`taskVerificationSchema`.
+  acceptanceJson: z.string().nullable(),
+  verifiedAt: isoTimestampSchema.nullable(),
+  verificationJson: z.string().nullable(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });

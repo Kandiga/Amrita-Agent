@@ -1574,3 +1574,19 @@ isolated jail), honest hint. Security unchanged: folder already inside `laneAllo
 Constitution still gates every open (interactive + writes-shared-root), agent CLI runs bare (its own
 permission prompts, answered in the terminal). Gates: root **773** (+5 ADR-0054) · web 175 ·
 typecheck/lint/protocol/web-build · secret scan (383) · diff-check clean.
+
+## Phase N — Harmony: evidence-based done (ADR-0055, 2026-07-16)
+
+Natanel's harmony directive, item 0: close the task↔evidence loop. Tasks now carry TYPED
+acceptance criteria (`file` / `command` / `manual`, closed union grown only by ADR); an
+operator-initiated `tasks.verify` runs them — file checks read-only inside the project's bound
+folder (escape = honest failure), command checks behind ONE deny-by-default approval per run
+(`/bin/sh -c` in the root, scrubbed env, wall-clock kill, output DISCARDED — exit codes only,
+events stay value-free; injectable `verifyExec` keeps tests hermetic). The outcome seals as
+`task.updated.verification` (additive-optional; migration 0019: `acceptance_json`/`verified_at`/
+`verification_json`; pre-0055 events replay byte-identically). `resolveTaskTransition` upgraded to
+a `CriteriaState`: **verified-fail blocks even a 'done' exit (evidence beats prose)**; verified-pass
++ auto flag → the review annotation carries evidence; still never a silent done. Web: criteria
+chips + editor + Verify button + ✓/✗ badge (pure `task-evidence.ts`). Gates: root **792** (+19:
+task-verify 11, transition evidence states, protocol round-trip/replay, migration 0019 round-trip,
+wire round-trip) · web **179** (+4) · typecheck/lint/build/secret-scan clean.

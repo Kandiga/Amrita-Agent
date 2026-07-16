@@ -178,6 +178,10 @@ export const tasks = sqliteTable(
     milestoneId: text('milestone_id'),
     // 0006: external provenance, e.g. `github:owner/repo#123` — see ADR-0022.
     externalRef: text('external_ref'),
+    // 0019 (ADR-0055): evidence-based done — typed criteria + verification run.
+    acceptanceJson: text('acceptance_json'),
+    verifiedAt: text('verified_at'),
+    verificationJson: text('verification_json'),
     // 0012 (ADR-0044): the board. `blockedReason` non-null IS the "Waiting"
     // column — the status enum is NOT widened (SQLite cannot alter a CHECK).
     owner: text('owner'),

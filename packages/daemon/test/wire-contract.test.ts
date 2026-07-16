@@ -82,6 +82,9 @@ describe('wire-contract round-trip (ADR-0032)', () => {
       'cinema.providers',
       'projects.setRoot',
       'tasks.delegate',
+      // needs a REAL bound working folder; round-trips through dispatch against a
+      // real kernel in task-verify.test.ts (ADR-0055)
+      'tasks.verify',
       // publish/revoke are approval-gated and write real bytes — exercised in hub.test.ts
       'projects.hub.publish',
       'projects.hub.revoke',

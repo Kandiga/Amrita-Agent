@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
+  type AcceptanceCriterion,
   type AmritaEvent,
   type AuthMode,
   type Certainty,
@@ -26,6 +27,7 @@ import {
   type RiskSeverity,
   type TaskPriority,
   type TaskStatus,
+  type TaskVerification,
   type UnsealedEvent,
   isSafeEnvSecretRefName,
   isStreamOnly,
@@ -173,6 +175,10 @@ export interface TaskRow {
   derivedFrom: Derivation[];
   /** Provenance to an external system, e.g. `github:owner/repo#123` (ADR-0022). */
   externalRef: string | null;
+  /** ADR-0055 — evidence-based done: raw-JSON criteria + latest verification run. */
+  acceptanceJson: string | null;
+  verifiedAt: string | null;
+  verificationJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -973,6 +979,8 @@ export class Store {
                 owner, due_date AS dueDate, priority, order_key AS orderKey,
                 blocked_reason AS blockedReason, certainty, phase_id AS phaseId, version,
                 derived_from_json AS dfj, external_ref AS externalRef,
+                acceptance_json AS acceptanceJson, verified_at AS verifiedAt,
+                verification_json AS verificationJson,
                 created_at AS createdAt, updated_at AS updatedAt
            FROM tasks WHERE id = ?`,
       )
@@ -1045,6 +1053,10 @@ export class Store {
       certainty?: Certainty | null;
       phaseId?: string | null;
       derivedFrom?: Derivation[];
+      /** ADR-0055 — replace the acceptance-criteria list (empty array clears). */
+      acceptance?: AcceptanceCriterion[];
+      /** ADR-0055 — record a machine-verification run over the criteria. */
+      verification?: TaskVerification;
       /** WHY the change was made (ADR-0045). Lives on the event, not the row. */
       reason?: string;
       /** The row `version` the caller last saw. Mismatch ⇒ `conflict`, not a silent overwrite. */
@@ -1090,6 +1102,8 @@ export class Store {
         ...(input.certainty !== undefined ? { certainty: input.certainty } : {}),
         ...(input.phaseId !== undefined ? { phaseId: input.phaseId } : {}),
         ...(input.derivedFrom !== undefined ? { derivedFrom: input.derivedFrom } : {}),
+        ...(input.acceptance !== undefined ? { acceptance: input.acceptance } : {}),
+        ...(input.verification !== undefined ? { verification: input.verification } : {}),
         ...(Object.keys(previous).length > 0 ? { previous } : {}),
         ...(input.reason ? { reason: input.reason } : {}),
       },
@@ -2243,6 +2257,8 @@ export class Store {
                 owner, due_date AS dueDate, priority, order_key AS orderKey,
                 blocked_reason AS blockedReason, certainty, phase_id AS phaseId, version,
                 derived_from_json AS dfj, external_ref AS externalRef,
+                acceptance_json AS acceptanceJson, verified_at AS verifiedAt,
+                verification_json AS verificationJson,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM tasks ${clause}
          -- board order: an explicit key first, then a stable fallback for tasks

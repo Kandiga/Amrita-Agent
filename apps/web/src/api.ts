@@ -105,7 +105,17 @@ export type LaneCancelResultLite = LaneCancelResultWire;
 export type SessionSnapshotLite = SessionSnapshotWire;
 export type ConclusionCapsuleLite = ConclusionCapsule;
 export type { CapsuleItem };
+/** ADR-0055 — a typed acceptance criterion (mirrors the protocol union). */
+export type AcceptanceCriterionLite =
+  | { kind: 'file'; path: string }
+  | { kind: 'command'; run: string }
+  | { kind: 'manual'; text: string };
+
 export type TaskRowLite = {
+  /** ADR-0055 — evidence-based done (raw JSON; parse on use). */
+  acceptanceJson?: string | null;
+  verifiedAt?: string | null;
+  verificationJson?: string | null;
   id: string;
   title: string;
   status: string;
@@ -359,8 +369,18 @@ export class RpcClient {
     /** ADR-0045: the row `version` this client last saw. Stale ⇒ `conflict`. */
     expectedVersion?: number;
     phaseId?: string | null;
+    /** ADR-0055: typed acceptance criteria (empty array clears). */
+    acceptance?: AcceptanceCriterionLite[];
   }): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('tasks.update', params);
+  }
+
+  /** ADR-0055: run the task's machine acceptance checks (commands are approval-gated). */
+  tasksVerify(params: { projectId: string; conversationId: string; taskId: string }): Promise<{
+    passed: boolean;
+    results: { criterion: AcceptanceCriterionLite; ok: boolean; detail?: string }[];
+  }> {
+    return this.call('tasks.verify', params);
   }
 
   tasksComplete(params: {

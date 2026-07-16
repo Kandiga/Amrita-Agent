@@ -32,6 +32,7 @@ import {
   riskSeveritySchema,
   sealedEventShellSchema,
   sessionRuntimeStateSchema,
+  verificationResultSchema,
 } from './events.ts';
 import { harnessTopologySchema, knowledgeSourceSchema, projectBrainSchema } from './harness.ts';
 import { idSchema, isoTimestampSchema } from './ids.ts';
@@ -797,6 +798,8 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'tasks.list': z.array(taskRowSchema),
   'tasks.update': okTrueSchema,
   'tasks.complete': okTrueSchema,
+  // ADR-0055: an operator-initiated acceptance-verification run.
+  'tasks.verify': z.object({ passed: z.boolean(), results: z.array(verificationResultSchema) }),
 
   'projects.companion.get': companionStateSchema,
   'projects.brief.update': okTrueSchema,

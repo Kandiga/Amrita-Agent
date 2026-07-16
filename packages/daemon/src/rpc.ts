@@ -4,6 +4,7 @@ import {
   type RoleResolution,
   type RpcErrorCode,
   type RpcId,
+  acceptanceCriterionSchema,
   approvalDecisionSchema,
   approvalPolicySchema,
   authModeSchema,
@@ -230,6 +231,9 @@ export const METHODS: Record<string, RpcMethod> = {
       certainty: certaintySchema.nullable().optional(),
       phaseId: z.string().nullable().optional(), // ADR-0045 — null unlinks
       derivedFrom: z.array(derivationSchema).max(6).optional(),
+      // ADR-0055: typed acceptance criteria (empty array clears). Verification
+      // itself has its own gated method — never writable directly over RPC.
+      acceptance: z.array(acceptanceCriterionSchema).max(20).optional(),
       /** ADR-0045: WHY. "אירוע שמספר מי הזיז, מאיזה מצב לאיזה מצב, מתי ולמה." */
       reason: z.string().min(1).max(300).optional(),
       // ADR-0045: optimistic lock. Omit it and you opt out (CLI/agent); send it and
@@ -248,6 +252,11 @@ export const METHODS: Record<string, RpcMethod> = {
   ),
   'tasks.complete': def(z.object({ ...convCtx, ...writeOpts, taskId: z.string() }), (k, p) =>
     k.completeTask(clean(p)),
+  ),
+  // ADR-0055: run the task's machine acceptance checks (commands are approval-
+  // gated inside verifyTask; file checks are read-only in the project folder).
+  'tasks.verify': def(z.object({ ...convCtx, ...writeOpts, taskId: z.string() }), (k, p) =>
+    k.verifyTask(clean(p)),
   ),
 
   // ── project companion (ADR-0018) ──────────────────────────────────────────

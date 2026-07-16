@@ -141,6 +141,18 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
         sets.push('derived_from_json = ?');
         vals.push(JSON.stringify(p.derivedFrom));
       }
+      // ADR-0055 — evidence-based done: criteria replace; a verification run
+      // stamps both the JSON record and the quick-read verified_at column.
+      if (p.acceptance !== undefined) {
+        sets.push('acceptance_json = ?');
+        vals.push(JSON.stringify(p.acceptance));
+      }
+      if (p.verification !== undefined) {
+        sets.push('verification_json = ?');
+        vals.push(JSON.stringify(p.verification));
+        sets.push('verified_at = ?');
+        vals.push(p.verification.at);
+      }
       // `previous` and `reason` live ONLY on the event: they are the history of the
       // change, not the state of the row. The row says what IS; the log says why.
       //

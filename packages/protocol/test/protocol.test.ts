@@ -522,3 +522,46 @@ describe('connector manifests + task provenance (ADR-0022)', () => {
     ).not.toThrow();
   });
 });
+
+describe('ADR-0055 — acceptance criteria + verification (additive-optional)', () => {
+  const T = '01KX9XB0159205BQ44Z7RJAGY5';
+
+  it('a pre-0055 task.updated replays byte-identically (no injected fields)', () => {
+    const old = { taskId: T, status: 'now' as const };
+    const parsed = eventPayloads['task.updated'].parse(old);
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(old));
+  });
+
+  it('typed criteria + a verification run round-trip', () => {
+    const payload = {
+      taskId: T,
+      acceptance: [
+        { kind: 'file' as const, path: 'dist/index.html' },
+        { kind: 'command' as const, run: 'pnpm test' },
+        { kind: 'manual' as const, text: 'reads well in Hebrew' },
+      ],
+      verification: {
+        at: '2026-07-16T00:00:00.000Z',
+        passed: false,
+        results: [
+          { criterion: { kind: 'file' as const, path: 'dist/index.html' }, ok: true },
+          {
+            criterion: { kind: 'command' as const, run: 'pnpm test' },
+            ok: false,
+            detail: 'exit 1',
+          },
+        ],
+      },
+    };
+    expect(eventPayloads['task.updated'].parse(payload)).toEqual(payload);
+  });
+
+  it('an unknown criterion kind is refused (closed union, ADR-gated growth)', () => {
+    expect(() =>
+      eventPayloads['task.updated'].parse({
+        taskId: T,
+        acceptance: [{ kind: 'github-pr', ref: 'x#1' }],
+      }),
+    ).toThrow();
+  });
+});

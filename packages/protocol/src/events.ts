@@ -244,6 +244,41 @@ const SECRET_KEY_RE = /secret|api[_-]?key|apikey|token|password/i;
 export const laneRoleSchema = z.enum(['build', 'qa', 'compare']);
 export type LaneRole = z.infer<typeof laneRoleSchema>;
 
+/**
+ * ADR-0055 — evidence-based done. A task's acceptance criteria are TYPED and
+ * machine-checkable where possible: `file` (a path that must exist under the
+ * project's working folder), `command` (a gate command that must exit 0 in the
+ * project's working folder — operator-approved before it ever runs), and
+ * `manual` (human judgement; never machine-verified). Extensible by ADR —
+ * a `github-pr` kind lands with CONN-1.
+ */
+export const acceptanceCriterionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('file'), path: z.string().min(1).max(500) }).strict(),
+  z.object({ kind: z.literal('command'), run: z.string().min(1).max(500) }).strict(),
+  z.object({ kind: z.literal('manual'), text: z.string().min(1).max(500) }).strict(),
+]);
+export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>;
+
+/** One machine check's outcome. `detail` is value-free (exit codes, "missing"). */
+export const verificationResultSchema = z
+  .object({
+    criterion: acceptanceCriterionSchema,
+    ok: z.boolean(),
+    detail: z.string().max(200).optional(),
+  })
+  .strict();
+export type VerificationResult = z.infer<typeof verificationResultSchema>;
+
+/** A verification RUN over a task's machine criteria (manual ones excluded). */
+export const taskVerificationSchema = z
+  .object({
+    at: z.string().min(1),
+    passed: z.boolean(),
+    results: z.array(verificationResultSchema).max(20),
+  })
+  .strict();
+export type TaskVerification = z.infer<typeof taskVerificationSchema>;
+
 export const eventPayloads = {
   // conversation lifecycle
   'conversation.created': z.object({ title: z.string().optional() }).strict(),
@@ -441,6 +476,11 @@ export const eventPayloads = {
       blockedReason: z.string().min(1).max(300).nullable().optional(),
       certainty: certaintySchema.nullable().optional(), // ADR-0045
       phaseId: idSchema.nullable().optional(), // ADR-0045 — null unlinks
+      // ADR-0055 — evidence-based done. `acceptance` replaces the criteria list
+      // (empty array clears); `verification` records a machine-check run. Both
+      // additive-optional: every pre-0055 task.updated still parses.
+      acceptance: z.array(acceptanceCriterionSchema).max(20).optional(),
+      verification: taskVerificationSchema.optional(),
       derivedFrom: z.array(derivationSchema).max(6).optional(),
       /**
        * ADR-0045 — "אירוע שמספר מי הזיז, מאיזה מצב לאיזה מצב, מתי ולמה".

@@ -1,5 +1,6 @@
+import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   ClaudeCodeLaneRunner,
@@ -12,8 +13,10 @@ import {
   classifyBootPane,
   createNodeTmuxController,
   redactPane,
+  scrubEnv,
 } from '@amrita/lanes';
 import {
+  type AcceptanceCriterion,
   type AmritaEvent,
   type ChatFocus,
   type CinemaMandate,
@@ -33,12 +36,15 @@ import {
   type SessionSnapshotWire,
   type SkillStatus,
   type UnsealedEvent,
+  type VerificationResult,
+  acceptanceCriterionSchema,
   cinemaMandateReportSchema,
   cinemaMandateSchema,
   laneMandateSchema,
   mergeReportSchema,
   newId,
   parseEvent,
+  taskVerificationSchema,
 } from '@amrita/protocol';
 import {
   type AccountRow,
@@ -173,7 +179,8 @@ import {
   suggestedPayload,
 } from './scribe.ts';
 import { loadSkillStatuses } from './skills.ts';
-import { resolveTaskTransition } from './task-transition.ts';
+import { type CriteriaState, resolveTaskTransition } from './task-transition.ts';
+import { machineCriteria, runAcceptance } from './task-verify.ts';
 import { clean } from './util.ts';
 
 /** A chat turn request. */
@@ -248,6 +255,8 @@ export interface KernelOptions {
   laneAllowedTools?: string[];
   /** Injectable coding-runtime prober (tests pass a fake; defaults to bounded spawn). */
   codingRuntimeProber?: CommandProber;
+  /** ADR-0055: injectable gate-command runner for acceptance verification (tests). */
+  verifyExec?: VerifyExecFn;
   /** Injectable CLI exec for subscription providers (tests pass a fake; defaults to bounded spawnSync). */
   cliExec?: CliExec;
   /** How long a pending approval waits before timing out to DENY (ADR-0021). */
@@ -402,6 +411,8 @@ export class AmritaKernel {
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
+  /** ADR-0055: the acceptance gate-command runner (injectable; defaults to /bin/sh). */
+  private verifyExecImpl: VerifyExecFn = defaultVerifyExec;
   private readonly cliExec: CliExec | undefined;
   private readonly activeLanes = new Map<
     string,
@@ -547,6 +558,7 @@ export class AmritaKernel {
           ? Number(process.env.AMRITA_APPROVAL_TIMEOUT_MS)
           : 120_000),
     );
+    if (opts.verifyExec) kernel.verifyExecImpl = opts.verifyExec;
     // ADR-0048: terminalize lanes orphaned by a previous crash before serving.
     kernel.reconcileLanesOnBoot();
     // ADR-0048 §8.3: the Watcher subscribes to NEW events only (never a replay of
@@ -1686,6 +1698,8 @@ export class AmritaKernel {
       certainty?: Certainty | null;
       phaseId?: string | null;
       derivedFrom?: Derivation[];
+      /** ADR-0055: typed acceptance criteria (empty array clears). */
+      acceptance?: AcceptanceCriterion[];
       /** ADR-0045: WHY the change was made. Lives on the event, not the row. */
       reason?: string;
       /** ADR-0045: the row `version` the caller saw. Mismatch ⇒ `conflict`. */
@@ -1948,6 +1962,71 @@ export class AmritaKernel {
     });
 
     return { laneId: lane.laneId, status: lane.status };
+  }
+
+  /**
+   * ADR-0055 — run the task's MACHINE acceptance checks and seal the outcome on
+   * the event log. `file` checks are read-only inside the project's bound
+   * working folder; `command` checks run there too but ONLY behind one
+   * operator approval per run (deny-by-default, like every material action).
+   * Output never enters the record — only exit codes ("events are value-free").
+   */
+  async verifyTask(
+    input: { projectId: string; conversationId: string; taskId: string } & EntityWriteOpts,
+  ): Promise<{ passed: boolean; results: VerificationResult[] }> {
+    const task = this.store.getTask(input.taskId);
+    if (!task || task.projectId !== input.projectId) {
+      throw new Error(`no such task: ${input.taskId}`);
+    }
+    let criteria: AcceptanceCriterion[] = [];
+    try {
+      criteria = task.acceptanceJson
+        ? acceptanceCriterionSchema.array().parse(JSON.parse(task.acceptanceJson))
+        : [];
+    } catch {
+      criteria = [];
+    }
+    const machine = machineCriteria(criteria);
+    if (machine.length === 0) {
+      throw new Error('conflict: this task has no machine-checkable acceptance criteria');
+    }
+    const root = this.store.getProject(input.projectId)?.root;
+    if (!root) {
+      throw new Error(
+        'conflict: this project has no working folder bound — acceptance checks run inside it (projects.setRoot)',
+      );
+    }
+    const commands = machine.filter((c) => c.kind === 'command');
+    if (commands.length > 0) {
+      // The gate: stored commands NEVER run silently. One approval per run.
+      const summary = commands
+        .map((c) => (c.kind === 'command' ? c.run : ''))
+        .join(' ; ')
+        .slice(0, 200);
+      const decision = await this.requestApproval(
+        { projectId: input.projectId, conversationId: input.conversationId },
+        'task.verify',
+        summary,
+      );
+      if (decision !== 'allow') {
+        throw new Error('conflict: acceptance verification was not approved');
+      }
+    }
+    const verification = await runAcceptance(criteria, {
+      root,
+      fileExists: (p) => existsSync(p),
+      exec: this.verifyExecImpl,
+      now: () => new Date().toISOString(),
+    });
+    this.store.updateTask({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      taskId: input.taskId,
+      verification,
+      reason: 'acceptance verification run',
+      ...(input.origin ? { origin: input.origin } : {}),
+    });
+    return { passed: verification.passed, results: verification.results };
   }
 
   // ── the retrospective, and what crosses out of a project (ADR-0045) ────────
@@ -2461,20 +2540,33 @@ export class AmritaKernel {
     try {
       const task = this.store.listTasks({ projectId }).find((t) => t.laneId === laneId);
       if (!task) return;
-      const lane = this.store.getLane(laneId);
-      let hasAcceptanceCriteria = false;
-      if (lane) {
-        try {
-          hasAcceptanceCriteria =
-            (laneMandateSchema.parse(JSON.parse(lane.mandateJson)).deliverables ?? []).length > 0;
-        } catch {
-          hasAcceptanceCriteria = false;
+      // ADR-0055 — the evidence state comes from the task's TYPED criteria and
+      // its latest verification run; pre-0055 tasks fall back to the mandate's
+      // deliverables as "unverified" (the old proxy, preserved).
+      let criteria: CriteriaState = 'none';
+      try {
+        const list = task.acceptanceJson
+          ? acceptanceCriterionSchema.array().parse(JSON.parse(task.acceptanceJson))
+          : [];
+        if (list.length > 0) {
+          const run = task.verificationJson
+            ? taskVerificationSchema.parse(JSON.parse(task.verificationJson))
+            : null;
+          criteria = run ? (run.passed ? 'verified-pass' : 'verified-fail') : 'unverified';
+        } else {
+          const lane = this.store.getLane(laneId);
+          const deliverables = lane
+            ? (laneMandateSchema.parse(JSON.parse(lane.mandateJson)).deliverables ?? [])
+            : [];
+          criteria = deliverables.length > 0 ? 'unverified' : 'none';
         }
+      } catch {
+        criteria = 'unverified'; // unparseable evidence is NOT evidence
       }
       const decision = resolveTaskTransition({
         taskStatus: task.status,
         exit: report.exit,
-        hasAcceptanceCriteria,
+        criteria,
         autoEnabled: this.getSetting(AUTO_TASK_TRANSITION_SETTING) === true,
         goal: task.title,
       });
@@ -4379,4 +4471,32 @@ export class AmritaKernel {
   listPairings(channel?: string): PairingRow[] {
     return this.store.listPairings(channel);
   }
+}
+
+/** ADR-0055 — a gate-command runner: exit code only; output is DISCARDED. */
+export type VerifyExecFn = (
+  run: string,
+  cwd: string,
+  timeoutMs: number,
+) => Promise<{ code: number }>;
+
+/** Default: /bin/sh -c in the project folder, scrubbed env, hard timeout, no output. */
+export function defaultVerifyExec(
+  run: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ code: number }> {
+  return new Promise((settle) => {
+    const child = spawn('/bin/sh', ['-c', run], { cwd, env: scrubEnv(), stdio: 'ignore' });
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    timer.unref?.();
+    child.on('error', () => {
+      clearTimeout(timer);
+      settle({ code: 127 });
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      settle({ code: code ?? 1 });
+    });
+  });
 }
