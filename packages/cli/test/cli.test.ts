@@ -560,3 +560,36 @@ describe('amrita CLI', () => {
     expect(out.issues).toHaveLength(0);
   });
 });
+
+describe('lane start exit code (community onboarding, finding 11)', () => {
+  it('a --real lane on a non-opted daemon aborts AND exits non-zero', async () => {
+    await cli(['project', 'ensure', 'excode', 'ExCode']);
+    // real execution is OFF by default → the lane aborts safely without running.
+    const r = await cli([
+      'lane',
+      'start',
+      '--project',
+      'excode',
+      '--goal',
+      'do real work',
+      '--real',
+    ]);
+    expect(r.out).toMatch(/aborted/); // the human-readable outcome
+    expect(r.code).toBe(3); // and automation can trust the process exit code
+  });
+
+  it('a dry-run lane records the mandate and exits 0', async () => {
+    await cli(['project', 'ensure', 'excode2', 'ExCode2']);
+    const r = await cli([
+      'lane',
+      'start',
+      '--project',
+      'excode2',
+      '--goal',
+      'plan it',
+      '--dry-run',
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/dry-run/);
+  });
+});

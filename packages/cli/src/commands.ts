@@ -16,7 +16,10 @@ export interface CommandCtx {
 }
 export interface Command {
   describe: string;
-  run(client: InProcessClient, ctx: CommandCtx): Promise<{ result: unknown; summary: string }>;
+  run(
+    client: InProcessClient,
+    ctx: CommandCtx,
+  ): Promise<{ result: unknown; summary: string; exitCode?: number }>;
 }
 
 interface ProjectLite {
@@ -1336,7 +1339,16 @@ export const COMMANDS: Record<string, Command> = {
           : r.report
             ? `exit ${r.report.exit}`
             : r.status;
-      return { result: r, summary: `lane ${r.laneId} · ${r.status} · ${meta}` };
+      // Community onboarding (finding 11): a blocked/aborted/non-done real lane
+      // must be a NON-ZERO process exit so automation can trust it — not exit 0
+      // with the failure buried in printed text.
+      const failed =
+        !r.dryRun && (r.status === 'aborted' || (r.report != null && r.report.exit !== 'done'));
+      return {
+        result: r,
+        summary: `lane ${r.laneId} · ${r.status} · ${meta}`,
+        ...(failed ? { exitCode: 3 } : {}),
+      };
     },
   },
   'lane get': {

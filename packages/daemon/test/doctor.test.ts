@@ -14,7 +14,13 @@ import {
 const DUMMY_ENV_VALUE = 'placeholder-value-for-doctor-tests';
 const TEST_ENV_NAME = 'AMRITA_DOCTOR_TEST_KEY';
 const AUTH_ENV = 'AMRITA_AUTH_TOKEN';
-const EXTERNAL_ENVS = ['TELEGRAM_BOT_TOKEN', 'AMRITA_TELEGRAM_ALLOWED_IDS', 'GITHUB_TOKEN'];
+const EXTERNAL_ENVS = [
+  'TELEGRAM_BOT_TOKEN',
+  'AMRITA_TELEGRAM_ALLOWED_IDS',
+  'GITHUB_TOKEN',
+  'BRAIN_BRIDGE_TOKEN',
+  'AMRITA_CINEMA_BRIDGE_URL',
+];
 
 // Deterministic runtime posture: no CLIs found, so doctor never depends on what
 // happens to be installed on the test host.
@@ -57,6 +63,7 @@ async function section(title: string) {
   return s;
 }
 
+// Cinema is a PRIVATE module — hidden unless BRAIN_BRIDGE_TOKEN/URL is set.
 const SECTION_ORDER = [
   'home',
   'store',
@@ -65,7 +72,6 @@ const SECTION_ORDER = [
   'lanes',
   'channels',
   'connectors',
-  'cinema',
   'skills',
   'auth',
 ];
@@ -99,12 +105,13 @@ describe('doctor', () => {
     const rt = await section('runtimes');
     const ids = rt.checks.map((c) => c.id);
     expect(ids).toEqual(['runtime.claude-code', 'runtime.codex', 'runtime.opencode']);
-    // claude-code (primary) not installed → warn with install fix
+    // Community onboarding: a coding runtime is OPTIONAL (brain ≠ coding agent),
+    // so NOT-INSTALLED is informational `ok` for every runtime — a fresh user who
+    // picked an API-key/mock brain isn't "broken" for lacking Claude/Codex CLIs.
     const cc = rt.checks.find((c) => c.id === 'runtime.claude-code');
-    expect(cc?.status).toBe('warn');
-    expect(cc?.fix).toContain('claude-code');
-    // optional detection-only runtimes never warn just for being absent
+    expect(cc?.status).toBe('ok');
     expect(rt.checks.find((c) => c.id === 'runtime.codex')?.status).toBe('ok');
+    expect(rt.checks.find((c) => c.id === 'runtime.opencode')?.status).toBe('ok');
   });
 
   it('an account bound to a missing env var is a FAIL with a setup fix', async () => {
@@ -182,5 +189,56 @@ describe('doctor', () => {
     expect(after?.detail).toContain('presence-checked only');
     expect(JSON.stringify(await runDoctor(kernel))).not.toContain(DUMMY_ENV_VALUE);
     delete process.env[ghEnv];
+  });
+});
+
+describe('doctor profiles (community onboarding)', () => {
+  it('every section is tagged core/optional/private; the rollup uses core only', async () => {
+    const r = await runDoctor(kernel);
+    const byTitle = Object.fromEntries(r.sections.map((s) => [s.title, s.profile]));
+    expect(byTitle.home).toBe('core');
+    expect(byTitle.providers).toBe('core');
+    expect(byTitle.runtimes).toBe('core');
+    expect(byTitle.auth).toBe('core');
+    expect(byTitle.channels).toBe('optional');
+    expect(byTitle.connectors).toBe('optional');
+    expect(byTitle.skills).toBe('optional');
+    // A fresh kernel: core has legit setup warns (brain/roles/token) → warn, never fail.
+    expect(r.status).toBe('warn');
+    expect(r.ok).toBe(true);
+  });
+
+  it('the private Cinema module is HIDDEN unless explicitly enabled', async () => {
+    const off = await runDoctor(kernel);
+    expect(off.sections.find((s) => s.title === 'cinema')).toBeUndefined();
+
+    process.env.BRAIN_BRIDGE_TOKEN = 'placeholder-not-a-real-token';
+    try {
+      const on = await runDoctor(kernel);
+      const cinema = on.sections.find((s) => s.title === 'cinema');
+      expect(cinema?.profile).toBe('private'); // appears, tagged private
+    } finally {
+      const BBT = 'BRAIN_BRIDGE_TOKEN';
+      delete process.env[BBT];
+    }
+  });
+
+  it('an installed-but-unauthenticated executable runtime is a warn (codex parity)', async () => {
+    // claude ready, codex installed-but-logged-out → codex must NOT be masked ok.
+    const prober: CommandProber = async (cmd, args) => {
+      const isAuth = args.includes('status') || args.includes('login');
+      if (cmd === 'codex')
+        return isAuth ? { kind: 'failed', stdout: '' } : { kind: 'ok', stdout: 'codex 1.0' };
+      if (cmd === 'claude') return { kind: 'ok', stdout: '2.1.0' };
+      return { kind: 'spawn_error' };
+    };
+    const k2 = AmritaKernel.open({ dbPath: ':memory:', codingRuntimeProber: prober });
+    try {
+      const rt = (await runDoctor(k2)).sections.find((s) => s.title === 'runtimes');
+      const codex = rt?.checks.find((c) => c.id === 'runtime.codex');
+      expect(codex?.status).toBe('warn'); // executable + unauthenticated = actionable
+    } finally {
+      k2.close();
+    }
   });
 });

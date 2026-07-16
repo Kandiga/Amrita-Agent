@@ -229,9 +229,16 @@ export const doctorCheckSchema = z.object({
 });
 export type DoctorCheck = z.infer<typeof doctorCheckSchema>;
 
+export const doctorProfileSchema = z.enum(['core', 'optional', 'private']);
+export type DoctorProfile = z.infer<typeof doctorProfileSchema>;
+
 export const doctorSectionSchema = z.object({
   title: z.string(),
   checks: z.array(doctorCheckSchema),
+  // Community onboarding: `core` drives the top-line ok/status (the basic chat
+  // loop); `optional` integrations and `private` bespoke modules never gate it.
+  // Additive-optional: pre-profile reports still parse (absent = treated core).
+  profile: doctorProfileSchema.optional(),
 });
 export type DoctorSection = z.infer<typeof doctorSectionSchema>;
 

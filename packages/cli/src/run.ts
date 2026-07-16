@@ -89,12 +89,12 @@ export async function run(argv: string[], io: IO): Promise<number> {
     return 1;
   }
   try {
-    const { result, summary } = (await COMMANDS[matched.key]?.run(new InProcessClient(kernel), {
-      positionals: matched.rest,
-      flags,
-    })) ?? { result: null, summary: '' };
+    const { result, summary, exitCode } = (await COMMANDS[matched.key]?.run(
+      new InProcessClient(kernel),
+      { positionals: matched.rest, flags },
+    )) ?? { result: null, summary: '' };
     io.out(json ? JSON.stringify(result, null, 2) : summary);
-    return 0;
+    return exitCode ?? 0;
   } catch (e) {
     if (e instanceof RpcClientError) {
       io.err(formatError(json, e.rpcCode, e.message, e.details));

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { scrubEnv } from '@amrita/lanes';
 import type { CodingRuntimeState, CodingRuntimeStatusWire } from '@amrita/protocol';
 
 /**
@@ -33,7 +34,14 @@ export const defaultProber: CommandProber = (cmd, args, timeoutMs) =>
   new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'], shell: false });
+      // SECURITY: probe `claude auth status`/`codex login status` with the SAME scrubbed
+      // env the real turn uses, so exit 0 means the user's own login is valid — not a
+      // stray API key masquerading as a subscription (community-onboarding finding 5/6).
+      child = spawn(cmd, args, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+        env: scrubEnv(process.env),
+      });
     } catch {
       resolve({ kind: 'spawn_error' });
       return;
