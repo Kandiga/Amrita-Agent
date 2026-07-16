@@ -92,12 +92,14 @@ import {
   AMRITA_ORCHESTRATOR,
   CONTEXT_PACK_SETTING,
   ORCHESTRATION_SETTING,
+  type SessionBrief,
   buildProjectContextPack,
 } from './context-pack.ts';
 import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
 import {
   type RouteVerdict,
   classifyIntent,
+  classifyRelay,
   looksLikeBuildIntent,
   routeFor,
 } from './execution-route.ts';
@@ -1442,11 +1444,22 @@ export class AmritaKernel {
     const transcript = this.store
       .listMessages(input.conversationId)
       .map((m) => ({ role: m.role, text: m.text }));
+    // ADR-0051: the RELAY seam runs BEFORE the provider call — if this message is
+    // "תבחרי אופציה 2", the input reaches the session FIRST and the reply then
+    // truthfully confirms the outcome (instead of "I have no window into the
+    // session"). Best-effort: a relay failure degrades to a note, never a
+    // failed turn.
+    let relayNote: string | null = null;
+    try {
+      relayNote = await this.runRelay(projectId, input.conversationId, input.text);
+    } catch {
+      relayNote = null;
+    }
     const pack = await this.buildContextPack(projectId);
     // ADR-0045: what the operator is LOOKING AT. Appended to the pack rather than
     // baked into it, so the pack stays cacheable-by-value and focus stays per-turn.
     const focus = this.renderFocus(projectId, input.focus);
-    const system = focus ? `${pack}\n\n${focus}` : pack;
+    const system = [pack, relayNote, focus].filter(Boolean).join('\n\n');
     const messages: ChatMessage[] = system
       ? [{ role: 'system', text: system }, ...transcript]
       : transcript;
@@ -2687,6 +2700,16 @@ export class AmritaKernel {
     const tasks = this.store.listTasks({ projectId });
     const risks = this.store.listRisks({ projectId });
     const questions = this.store.listQuestions({ projectId });
+    // ADR-0051: the manager can SEE her active sessions. Gated with orchestration
+    // and failure-tolerant — a tmux probe must never fail (or stall) a chat turn.
+    let sessions: SessionBrief[] = [];
+    if (this.getSetting(ORCHESTRATION_SETTING) !== false) {
+      try {
+        sessions = await this.collectSessionBriefs(projectId);
+      } catch {
+        sessions = [];
+      }
+    }
     const pack = buildProjectContextPack({
       project: { name: project.name },
       brief,
@@ -2700,6 +2723,7 @@ export class AmritaKernel {
       gaps: brain.gaps,
       sources: brain.sources,
       context,
+      sessions,
     });
     // The preamble is a property of Amrita, not the project, so it goes on EVERY
     // turn. When orchestration is on (default), she delegates builds to a session
@@ -2707,6 +2731,99 @@ export class AmritaKernel {
     const preamble =
       this.getSetting(ORCHESTRATION_SETTING) === false ? AMRITA_CAPABILITIES : AMRITA_ORCHESTRATOR;
     return pack ? `${preamble}\n\n${pack}` : preamble;
+  }
+
+  /**
+   * Bounded, redacted briefs of this project's ACTIVE interactive sessions
+   * (ADR-0051) — the eyes of the chat brain. DERIVED per turn from
+   * `getSessionSnapshot` (the single runtime-state authority); nothing here is
+   * stored, and a probe failure degrades to "no brief", never a failed turn.
+   * Index is newest-first and matches what the relay seam resolves ("סשן 2").
+   */
+  private async collectSessionBriefs(projectId: string): Promise<SessionBrief[]> {
+    const lanes = this.store
+      .listLanes({ projectId })
+      .filter((l) => l.kind.endsWith('-tmux') && l.status !== 'completed' && l.status !== 'aborted')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 3);
+    const briefs: SessionBrief[] = [];
+    for (const [i, lane] of lanes.entries()) {
+      try {
+        const snap = await this.getSessionSnapshot(projectId, lane.id);
+        let goal = 'unknown goal';
+        try {
+          goal = laneMandateSchema.parse(JSON.parse(lane.mandateJson)).goal;
+        } catch {
+          /* malformed history — keep the honest placeholder */
+        }
+        const screenTail = snap.live
+          ? snap.text
+              .split('\n')
+              .map((l) => l.replace(/\s+$/, ''))
+              .filter((l) => l.trim().length > 0)
+              .slice(-8)
+          : [];
+        briefs.push({
+          index: i + 1,
+          agent: lane.kind === 'codex-tmux' ? 'codex' : 'claude',
+          state: snap.state,
+          goal,
+          screenTail,
+        });
+      } catch {
+        /* a dead/foreign/raced lane simply has no brief */
+      }
+    }
+    return briefs;
+  }
+
+  /**
+   * The RELAY seam (ADR-0051) — the Planner's sibling on the INPUT side. Runs
+   * BEFORE the provider call, so the reply can truthfully confirm what was (or
+   * was not) typed into the session. Deterministic, conservative, and enforced
+   * by the same guarded `sendSessionInput` path (never types into login/trust/
+   * blocked/dead screens). Returns a value-free note for the system message, or
+   * null when the message is not a relay.
+   */
+  private async runRelay(
+    projectId: string,
+    conversationId: string,
+    userText: string,
+  ): Promise<string | null> {
+    if (this.getSetting(ORCHESTRATION_SETTING) === false) return null;
+    const verdict = classifyRelay(userText);
+    if (!verdict) return null;
+
+    const candidates = this.store
+      .listLanes({ projectId })
+      .filter((l) => l.kind.endsWith('-tmux') && l.status !== 'completed' && l.status !== 'aborted')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    if (candidates.length === 0) {
+      return 'SESSION RELAY: the operator asked to send input, but this project has no active session — say so and offer to open one.';
+    }
+    const target = verdict.session ? candidates[verdict.session - 1] : candidates[0];
+    if (!target) {
+      return `SESSION RELAY: the operator named session ${verdict.session}, but only ${candidates.length} session(s) are active — ask which one they meant.`;
+    }
+    if (!verdict.session && candidates.length > 1) {
+      return `SESSION RELAY: ${candidates.length} sessions are active and the operator did not say which — nothing was sent; ask them to name one (e.g. "בסשן 1").`;
+    }
+
+    const label = verdict.kind === 'option' ? `option ${verdict.value}` : 'the requested text';
+    try {
+      const res = await this.sendSessionInput(projectId, target.id, verdict.value);
+      if (!res.sent) {
+        return `SESSION RELAY: could not send ${label} — the session is no longer available. Say so honestly.`;
+      }
+      // Audit trail: a coarse, value-free progress note on the lane's own log.
+      this.safeEmitLane(projectId, target.conversationId, target.id, 'lane.progress', {
+        note: 'operator input relayed from chat',
+      });
+      return `SESSION RELAY: ${label} was JUST typed into session ${verdict.session ?? 1} (${target.kind === 'codex-tmux' ? 'codex' : 'claude'}) and submitted. Confirm this to the operator; the session screen will update shortly.`;
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : 'the session refused the input';
+      return `SESSION RELAY: NOT sent — ${reason}. Explain this honestly and tell the operator what to do next.`;
+    }
   }
 
   getProjectBrain(projectId: string, now: string = new Date().toISOString()): ProjectBrain {

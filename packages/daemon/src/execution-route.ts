@@ -397,3 +397,63 @@ export function looksLikeBuildIntent(text: string): boolean {
   const { intent } = classifyIntent(text);
   return intent === 'build' || intent === 'research';
 }
+
+/**
+ * A chat message that RELAYS operator input into an active interactive session
+ * (ADR-0051): "תבחרי אופציה 2", "בחר 3 בסשן 2", "שלחי לסשן: תמשיך". Pure and
+ * DELIBERATELY conservative — a false positive types into a live agent session,
+ * so free-text relay requires the explicit session word, and option-select
+ * requires an imperative choose-verb (or the whole message being just the
+ * option). Past tense ("בחרתי באופציה 2") and questions ("מה אופציה 2?") must
+ * NOT match. The guarded `sendSessionInput` path is the enforcement backstop
+ * either way (never types into login/trust/blocked/dead screens).
+ */
+export interface RelayVerdict {
+  kind: 'option' | 'text';
+  /** For `option`: the digits to type. For `text`: the literal text to relay. */
+  value: string;
+  /** 1-based target session (newest first), when the operator named one. */
+  session?: number;
+}
+
+// Imperative/future "choose" forms only — Unicode-bounded so "בחרתי" (past) and
+// "נבחר" (passive) never match. Same lookaround trick as `wordRe` above.
+const CHOOSE_VERB =
+  /(?<![\p{L}\p{N}_])(?:תבחרי|תבחר|בחרי|בחר|choose|select|pick)(?![\p{L}\p{N}_])/iu;
+const OPTION_NUMBER = /(?:ב?אופציה|ב?אפשרות|option|מספר)?\s*(\d{1,2})(?![\p{L}\p{N}])/iu;
+/** The whole message IS the option: "אופציה 2", "option 3." */
+const BARE_OPTION = /^\s*(?:ב?אופציה|אפשרות|option)\s*(?:מספר\s*)?(\d{1,2})\s*[.!]?\s*$/iu;
+/** Explicit free-text relay: the session word is REQUIRED. */
+const TEXT_RELAY =
+  /(?<![\p{L}\p{N}_])(?:שלחי|תשלחי|שלח|תשלח|הקלידי|תקלידי|הקלד|תקליד|send|type|relay)(?![\p{L}\p{N}_])[^:]{0,30}?(?:ל?סשן|session)[^:\n]*:\s*(\S[\s\S]*)$/iu;
+const SESSION_INDEX = /(?:[בל]?סשן|session)\s*(?:מספר\s*)?(\d{1,2})(?![\p{L}\p{N}])/iu;
+
+export function classifyRelay(text: string): RelayVerdict | null {
+  const t = text.trim();
+  if (t.length === 0 || t.length > 400) return null;
+
+  const session = SESSION_INDEX.exec(t)?.[1];
+  const target = session ? { session: Number(session) } : {};
+
+  const explicit = TEXT_RELAY.exec(t);
+  if (explicit?.[1]) {
+    const value = explicit[1].trim().slice(0, 2000);
+    if (value.length > 0) return { kind: 'text', value, ...target };
+  }
+
+  // The session clause is a TARGET, never an option number — "בחר בסשן 2" must
+  // not type "2"; only "בחר 1 בסשן 2" carries an option.
+  const withoutTarget = t.replace(SESSION_INDEX, ' ');
+
+  const bare = BARE_OPTION.exec(withoutTarget);
+  if (bare?.[1]) return { kind: 'option', value: bare[1], ...target };
+
+  if (CHOOSE_VERB.test(withoutTarget)) {
+    // The number must live NEAR the verb's clause, not anywhere in a long message.
+    const afterVerb = withoutTarget.slice(withoutTarget.search(CHOOSE_VERB));
+    const num = OPTION_NUMBER.exec(afterVerb.slice(0, 60));
+    if (num?.[1]) return { kind: 'option', value: num[1], ...target };
+  }
+
+  return null;
+}

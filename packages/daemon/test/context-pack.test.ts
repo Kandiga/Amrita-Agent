@@ -362,4 +362,54 @@ describe('project context pack (ADR-0044)', () => {
     // An env NAME is not a secret and is allowed to be discussed.
     expect(out).toContain('ANTHROPIC_API_KEY');
   });
+
+  it('shows active sessions — the manager can SEE her arms (ADR-0051)', () => {
+    const out = buildProjectContextPack(
+      input({
+        brief: brief(),
+        sessions: [
+          {
+            index: 1,
+            agent: 'claude',
+            state: 'running',
+            goal: 'תבני לי משחק פאזל',
+            screenTail: ['איזה סוג משחק?', '❯ 1. Arcade', '  2. Puzzle', 'Enter to select'],
+          },
+        ],
+      }),
+    );
+    expect(out).toContain('Active execution sessions');
+    expect(out).toContain('Session 1 — claude · running');
+    expect(out).toContain('❯ 1. Arcade');
+    expect(out).toContain('SESSION RELAY');
+    expect(out).toContain('never claim you have no access');
+  });
+
+  it('an active session alone is enough state for a pack on a bare project', () => {
+    const bare = input({
+      sessions: [
+        { index: 1, agent: 'codex', state: 'starting', goal: 'inspect repo', screenTail: [] },
+      ],
+    });
+    expect(buildProjectContextPack(bare)).toContain('Active execution sessions');
+    expect(buildProjectContextPack(input())).toBe(''); // and still empty with none
+  });
+
+  it('bounds the session section: at most 3 sessions, 8 tail lines, capped rows', () => {
+    const tail = Array.from({ length: 30 }, (_, i) => `line ${i} ${'x'.repeat(300)}`);
+    const sessions = Array.from({ length: 5 }, (_, i) => ({
+      index: i + 1,
+      agent: 'claude' as const,
+      state: 'running',
+      goal: 'g'.repeat(500),
+      screenTail: tail,
+    }));
+    const out = buildProjectContextPack(input({ brief: brief(), sessions }));
+    expect(out).toContain('Session 3 —');
+    expect(out).not.toContain('Session 4 —');
+    expect(out).not.toContain('line 21'); // only the last 8 tail lines survive
+    expect(out).toContain('line 29');
+    expect(out).not.toContain('x'.repeat(150)); // every tail row is hard-capped
+    expect(out).not.toContain('g'.repeat(200)); // and so is the goal
+  });
 });

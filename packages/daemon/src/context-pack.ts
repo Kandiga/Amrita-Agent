@@ -129,6 +129,13 @@ export const AMRITA_ORCHESTRATOR = [
   'If a request needs a tool you do not have (email, calendar, publishing), say',
   'exactly what is missing and how to set it up — never pretend it exists.',
   '',
+  'When the project has ACTIVE execution sessions, the context pack shows them to',
+  'you — state, goal, and the last lines of their live screen. If a session asks a',
+  'question (a menu, a choice), read it from there and help the operator decide.',
+  'When the operator tells you to pick an option or type into the session, the',
+  'system relays it automatically before your reply and reports the outcome in a',
+  'SESSION RELAY note — confirm what actually happened.',
+  '',
   'Always reply in the operator’s language: if they wrote in Hebrew, answer in',
   'Hebrew (mixed Hebrew/English for code terms is fine).',
 ].join('\n');
@@ -147,6 +154,22 @@ const CAPS = {
   gaps: 5,
 } as const;
 
+/**
+ * A bounded, already-redacted brief of one ACTIVE interactive session (ADR-0051).
+ * DERIVED from `getSessionSnapshot` (the runtime-state authority) by the kernel —
+ * this module only renders it; it never probes tmux. `screenTail` is the last few
+ * VISIBLE lines of the pane, redacted upstream, so the chat brain can answer
+ * "what is the session asking?" without a second truth store.
+ */
+export interface SessionBrief {
+  /** 1-based, newest first — the SAME index the relay seam resolves ("סשן 2"). */
+  index: number;
+  agent: 'claude' | 'codex';
+  state: string;
+  goal: string;
+  screenTail: string[];
+}
+
 export interface ProjectContextPackInput {
   project: { name: string };
   brief: ProjectBriefRow | null;
@@ -161,6 +184,8 @@ export interface ProjectContextPackInput {
   gaps: KnowledgeGap[];
   sources: KnowledgeSource[];
   context: ProjectContextWire | null;
+  /** Live interactive sessions (ADR-0051); absent/empty renders no section. */
+  sessions?: SessionBrief[];
 }
 
 export interface ProjectContextPackOptions {
@@ -225,6 +250,25 @@ export function buildProjectContextPack(
       title: 'Charter',
       lines: ['- No brief yet. The goal, audience and success criteria are not captured.'],
     });
+  }
+
+  // 1a. Active execution sessions (ADR-0051) — the manager can SEE her arms.
+  // High priority on purpose: when a session is asking a question, that changes
+  // what a good answer looks like more than anything else in the project.
+  const sessions = input.sessions ?? [];
+  if (sessions.length > 0) {
+    const lines: string[] = [];
+    for (const s of sessions.slice(0, 3)) {
+      lines.push(`- Session ${s.index} — ${s.agent} · ${s.state} · goal: ${line(s.goal, 140)}`);
+      for (const t of s.screenTail.slice(-8)) lines.push(`    ${line(t, 120)}`);
+    }
+    lines.push('');
+    lines.push('- You can SEE these sessions (redacted live screens above).');
+    lines.push('- When the operator asks to choose an option or type into a session, the');
+    lines.push('  system relays it for you BEFORE your reply — a "SESSION RELAY" note below');
+    lines.push('  the pack tells you exactly what was (or was not) sent. Confirm that');
+    lines.push('  outcome honestly; never claim you have no access to the session.');
+    sections.push({ title: 'Active execution sessions', lines });
   }
 
   // 1b. The critique (ADR-0045). These findings are COMPUTED — a missing approver,
@@ -360,7 +404,8 @@ export function buildProjectContextPack(
     openQuestions.length > 0 ||
     openRisks.length > 0 ||
     input.decisions.length > 0 ||
-    input.memory.length > 0;
+    input.memory.length > 0 ||
+    sessions.length > 0; // an active session IS state, even on a bare project (ADR-0051)
   if (!hasState) return '';
 
   const header = [
