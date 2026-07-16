@@ -1621,3 +1621,12 @@ typecheck/lint/build clean. No daemon change.
   Brain records with `calendar-import` provenance (an honest import source; no fake connector).
 - Gates: root **803** (+11: notify 4, channels callbacks 3, ingest 3, github-pr 1) · web 183 ·
   typecheck/lint/protocol/web builds · secret scan (395) · diff-check — all clean. ADR-0056.
+
+### Terminal reconnect hydration (ADR-0052 follow-up, 2026-07-16 night)
+
+Found live: a browser refresh left the embedded terminal blank except the agent's spinner line —
+a control-mode attach streams DELTAS only, so a reconnecting client saw nothing until the next
+repaint. Fix in the bridge: on attach, `capture-pane -e` hydrates the CURRENT screen first
+(clear+home, colors kept, LF→CRLF, redacted), while racing deltas buffer until the snapshot lands —
+snapshot first, then deltas, always. Real-tmux test asserts the first output is the hydration frame.
+Root 804, lint/secret-scan clean. Daemon-only deploy (tmux sessions survive the restart by design).

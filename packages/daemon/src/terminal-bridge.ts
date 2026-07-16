@@ -80,6 +80,39 @@ export function attachTerminalBridge(opts: TerminalBridgeOpts): TerminalBridge {
   let closed = false;
   let buffer = '';
 
+  // A control-mode attach streams DELTAS only — a reconnecting browser would see
+  // a blank screen until the next repaint (found live: after a refresh only the
+  // agent's spinner line painted). Hydrate with the CURRENT screen first
+  // (capture-pane -e keeps colors), and buffer any deltas that race the capture
+  // so ordering is preserved: snapshot, then deltas.
+  let hydrated = false;
+  const pendingDeltas: string[] = [];
+  const emitOutput = (data: string): void => {
+    if (hydrated) opts.onOutput(data);
+    else pendingDeltas.push(data);
+  };
+  const finishHydration = (snapshot: string): void => {
+    if (closed || hydrated) return;
+    hydrated = true;
+    if (snapshot.length > 0) {
+      // Clear + home, then the captured screen (LF → CRLF for the terminal).
+      opts.onOutput(`\u001b[2J\u001b[H${redactPane(snapshot.replace(/\n/g, '\r\n'))}`);
+    }
+    for (const delta of pendingDeltas) opts.onOutput(delta);
+    pendingDeltas.length = 0;
+  };
+  const capture: ChildProcess = doSpawn(
+    'tmux',
+    ['-L', 'amrita', 'capture-pane', '-e', '-p', '-t', opts.sessionName],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  let snapshot = '';
+  capture.stdout?.on('data', (chunk: Buffer) => {
+    snapshot += chunk.toString('utf8');
+  });
+  capture.on('close', () => finishHydration(snapshot));
+  capture.on('error', () => finishHydration(''));
+
   child.stdout?.on('data', (chunk: Buffer) => {
     buffer += chunk.toString('utf8');
     let nl = buffer.indexOf('\n');
@@ -89,7 +122,7 @@ export function attachTerminalBridge(opts: TerminalBridgeOpts): TerminalBridge {
       const payload = parseControlOutput(line);
       if (payload !== null && payload.length > 0) {
         // Best-effort secret scrub before the bytes leave the daemon (ADR-0049).
-        opts.onOutput(redactPane(payload));
+        emitOutput(redactPane(payload));
       } else if (line.startsWith('%exit')) {
         finish('the tmux session ended');
       }

@@ -72,6 +72,9 @@ describe.skipIf(!tmuxAvailable)('terminal bridge on real tmux (ADR-0052)', () =>
       bridge.close();
       expect(chunks.join('')).toContain('ping-42'); // cat echoed through %output
       expect(exited).toBeTruthy();
+      // Hydration: the FIRST output is a clear + the captured current screen,
+      // so a reconnecting browser is never blank (found live after a refresh).
+      expect(chunks[0]).toContain('\u001b[2J\u001b[H');
     } finally {
       try {
         execFileSync('tmux', ['-L', 'amrita', 'kill-session', '-t', name]);
