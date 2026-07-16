@@ -308,6 +308,10 @@ export const codingRuntimeStatusSchema = z.object({
   realExecution: z.boolean(),
   detail: z.string(),
   nextCommand: z.string().optional(),
+  /** Observed billing/auth mode parsed from the CLI's OWN status (never inferred
+   *  from exit code): 'subscription' = the user's login; 'api-key' = a key is
+   *  driving the CLI (community onboarding finding 5). Absent when not applicable. */
+  authMode: z.enum(['subscription', 'api-key']).optional(),
   /** Tool NAMES a real lane may use for this runtime (ADR-0043). Never secret-shaped —
    *  presence/absence of a tool is operational config, not a credential. claude-code
    *  only: codex sandboxes by directory, not by tool allowlist. */

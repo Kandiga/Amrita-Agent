@@ -972,11 +972,14 @@ export class AmritaKernel {
         timeoutMs: CATALOG_PROBE_TIMEOUT_MS,
       });
       if (st.state === 'ready') {
-        return {
-          ...base,
-          state: 'ready',
-          detail: `logged in via Claude Code${st.version ? ` (${st.version})` : ''} — subscription session; no API key exists anywhere`,
-        };
+        // P2: the label reflects the CLI's OWN reported auth mode, not a constant.
+        // Under the scrubbed probe (P1) 'api-key' would mean a key genuinely drives
+        // the CLI — say so honestly instead of calling it a subscription.
+        const detail =
+          st.authMode === 'api-key'
+            ? `logged in via Claude Code${st.version ? ` (${st.version})` : ''} — using an API key (billed to that key), not a subscription`
+            : `logged in via Claude Code${st.version ? ` (${st.version})` : ''} — subscription session; no API key exists anywhere`;
+        return { ...base, state: 'ready', detail };
       }
       if (st.state === 'not_installed') {
         return {
@@ -991,7 +994,7 @@ export class AmritaKernel {
           ...base,
           state: 'needs_login',
           detail: 'Claude Code is installed but not logged in',
-          fix: 'claude  # log in once interactively',
+          fix: 'claude auth login',
         };
       }
       return {

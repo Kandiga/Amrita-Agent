@@ -92,8 +92,20 @@ async function probeInstallAndAuth(opts: {
   installHint: string;
   loginHint: string;
   readyDetail: string;
+  /** Parse the CLI's own status output into an observed auth mode (P2). */
+  parseAuthMode?: (stdout: string) => 'subscription' | 'api-key' | undefined;
 }): Promise<CodingRuntimeStatus> {
-  const { probe, timeoutMs, base, cmd, authArgs, installHint, loginHint, readyDetail } = opts;
+  const {
+    probe,
+    timeoutMs,
+    base,
+    cmd,
+    authArgs,
+    installHint,
+    loginHint,
+    readyDetail,
+    parseAuthMode,
+  } = opts;
   const version = await probe(cmd, ['--version'], timeoutMs);
   if (version.kind === 'spawn_error') {
     return {
@@ -115,10 +127,12 @@ async function probeInstallAndAuth(opts: {
 
   const auth = await probe(cmd, authArgs, timeoutMs);
   if (auth.kind === 'ok') {
+    const authMode = parseAuthMode?.(auth.stdout);
     return {
       ...base,
       state: 'ready',
       ...(versionString ? { version: versionString } : {}),
+      ...(authMode ? { authMode } : {}),
       detail: readyDetail,
     };
   }
@@ -155,8 +169,22 @@ export async function getClaudeCodeStatus(opts: {
     cmd: 'claude',
     authArgs: ['auth', 'status'],
     installHint: 'npm install -g @anthropic-ai/claude-code',
-    loginHint: 'claude login',
+    loginHint: 'claude auth login',
     readyDetail: 'installed and authenticated (subscription login; no key is ever forwarded)',
+    parseAuthMode: (out) => {
+      // `claude auth status` prints JSON with authMethod = 'claude.ai' (login)
+      // or 'api_key'. Under the scrubbed probe env (P1) a stray key can't reach
+      // it, so 'api_key' here means the CLI genuinely resolved a key — reported
+      // honestly, never relabelled as a subscription.
+      try {
+        const m = (JSON.parse(out) as { authMethod?: string }).authMethod;
+        if (m === 'api_key') return 'api-key';
+        if (typeof m === 'string' && m.length > 0) return 'subscription';
+      } catch {
+        /* non-JSON output — leave the mode unknown rather than guess */
+      }
+      return undefined;
+    },
   });
 }
 
@@ -180,6 +208,8 @@ export async function getCodexStatus(opts: {
     installHint: 'npm install -g @openai/codex',
     loginHint: 'codex login',
     readyDetail: 'installed and authenticated (ChatGPT subscription; no key is ever forwarded)',
+    // `codex login status` prints 'Logged in using ChatGPT' (subscription) on exit 0.
+    parseAuthMode: (out) => (/chatgpt/i.test(out) ? 'subscription' : 'subscription'),
   });
 }
 

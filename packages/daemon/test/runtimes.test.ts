@@ -32,7 +32,7 @@ describe('coding runtime probes (ADR-0019 §6)', () => {
       }),
     });
     expect(unauth.state).toBe('installed_unauthenticated');
-    expect(unauth.nextCommand).toBe('claude login');
+    expect(unauth.nextCommand).toBe('claude auth login');
 
     const authUnknown = await getClaudeCodeStatus({
       realExecution: true,
