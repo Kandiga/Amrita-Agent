@@ -298,6 +298,18 @@ export interface LaneStartInput {
   real?: boolean;
   /** Return immediately with status `running`; the lane runs in the background. */
   detach?: boolean;
+  /**
+   * ADR-0054: where the session works. `'project'` = the project's bound working
+   * folder, so the full CLI operates on real files (refused honestly when no
+   * folder is bound); `'isolated'`/absent = the per-lane jail. Ignored when the
+   * caller names explicit `scope.paths`.
+   */
+  workspace?: 'project' | 'isolated';
+  /**
+   * ADR-0054: when `false`, the goal is a LABEL only — nothing is auto-typed
+   * into the session; the operator drives from the first keystroke (console mode).
+   */
+  sendGoal?: boolean;
   /** Durable at-most-once key (ADR-0053). Same key may only describe the same operation. */
   idempotencyKey?: string;
   /** Project-wide orchestration group (ADR-0049). */
@@ -3890,6 +3902,26 @@ export class AmritaKernel {
     const projectId = conv.projectId;
     const conversationId = input.conversationId;
     const kind = input.kind ?? 'claude-code';
+    // ADR-0054: an operator console opens ON the project's bound working folder,
+    // so the full CLI operates on real files. Resolved here — the UI never sees
+    // filesystem paths — and BEFORE the idempotency lookup, so the resolved
+    // folder is part of the operation's identity. The folder already lives inside
+    // `laneAllowedRoots` (setProjectRoot enforces it) and the Approval
+    // Constitution still gates the run (writes-shared-root / interactive-session).
+    let projectScope: { paths: string[] } | undefined;
+    if (
+      input.workspace === 'project' &&
+      (((input.scope ?? {}) as { paths?: string[] }).paths ?? []).length === 0
+    ) {
+      const root = this.store.getProject(projectId)?.root;
+      if (!root) {
+        throw new Error(
+          'conflict: this project has no working folder bound — bind one (projects.setRoot) and open the console again',
+        );
+      }
+      projectScope = { ...((input.scope ?? {}) as object), paths: [root] };
+    }
+    const identityInput = projectScope ? { ...input, scope: projectScope } : input;
     const verificationTarget = input.verifiesLaneId
       ? this.store.getLane(input.verifiesLaneId)
       : undefined;
@@ -3921,14 +3953,14 @@ export class AmritaKernel {
     };
     if (input.idempotencyKey) {
       const existing = this.store.getLaneByIdempotencyKey(input.idempotencyKey);
-      if (existing) return this.reuseIdempotentLane(input, kind, normalized, existing);
+      if (existing) return this.reuseIdempotentLane(identityInput, kind, normalized, existing);
     }
     const laneId = newId();
 
     // ADR-0039: a real run always gets a workspace. When the caller names no
     // paths, confine the lane to <allowed-root>/<laneId> — the UI never needs
     // to know filesystem paths, and the canvas can serve the output.
-    let scope = (input.scope ?? {}) as { paths?: string[] } & Record<string, unknown>;
+    let scope = (identityInput.scope ?? {}) as { paths?: string[] } & Record<string, unknown>;
     // ADR-0049 §9: a QA lane VERIFIES a build lane — by default its cwd IS the
     // build's output dir, so it inspects real files, not an empty jail. Only when
     // the caller gave no explicit paths; the target's own scope is already jailed.
@@ -3977,7 +4009,7 @@ export class AmritaKernel {
       // winner only when it proves to be the exact same operation.
       if (input.idempotencyKey) {
         const winner = this.store.getLaneByIdempotencyKey(input.idempotencyKey);
-        if (winner) return this.reuseIdempotentLane(input, kind, normalized, winner);
+        if (winner) return this.reuseIdempotentLane(identityInput, kind, normalized, winner);
       }
       throw error;
     }
@@ -4043,6 +4075,21 @@ export class AmritaKernel {
     });
     const requireApproval = verdict.gate === 'approval';
 
+    // ADR-0054 console mode: the goal is a label; nothing is auto-typed into the
+    // pane. Goal delivery is settled NOW on the durable event log, so every later
+    // path — resume after a daemon restart, snapshot, session send — reads it as
+    // already delivered and never types the label into the operator's console.
+    const consoleMode = input.sendGoal === false;
+    if (consoleMode) {
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.progress', {
+        note: 'operator console — the goal is a label; nothing is auto-typed',
+      });
+      this.safeEmitLane(projectId, conversationId, laneId, 'lane.progress', {
+        note: SESSION_GOAL_SENT_PROGRESS,
+      });
+      this.sessionGoalSentLanes.add(laneId);
+    }
+
     const controller = new AbortController();
     // An interactive tmux session (ADR-0049) is DURABLE (survives the daemon) and has
     // a separate graceful-FINISH signal, distinct from cancel (controller.abort()).
@@ -4057,6 +4104,7 @@ export class AmritaKernel {
       controller.signal,
       requireApproval,
       finishController?.signal,
+      consoleMode ? true : undefined,
     ).finally(() => this.activeLanes.delete(laneId));
     this.activeLanes.set(laneId, {
       controller,

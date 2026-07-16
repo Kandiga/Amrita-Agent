@@ -3338,8 +3338,9 @@ code {
 }
 .sessions-open {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  align-items: flex-start;
+  align-items: stretch;
 }
 .sessions-open textarea {
   flex: 1;
@@ -3348,6 +3349,31 @@ code {
   border: 1px solid var(--border);
   border-radius: 8px;
   font: inherit;
+}
+/* ADR-0054: operator console options — folder picker + open button on one row. */
+.session-open-opts {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+.session-workspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  margin-inline-end: auto;
+}
+.session-workspace select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.session-open-hint {
+  margin: 0;
+  font-size: 0.8rem;
 }
 .sessions-open button,
 .session-controls button,
@@ -3632,8 +3658,15 @@ code {
 
 @media (max-width: 720px) {
   .sessions-head,
-  .sessions-open {
+  .sessions-open,
+  .session-open-opts {
     flex-direction: column;
+  }
+  .session-open-opts {
+    align-items: stretch;
+  }
+  .session-workspace {
+    margin-inline-end: 0;
   }
   .session-terminal-wrap {
     height: 19rem;

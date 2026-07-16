@@ -1558,3 +1558,19 @@ they share migration 0018 and interleave in `kernel.ts`/`rpc.ts`/protocol.
   Not run (deliberate): real Claude/Codex tmux sessions on the shared `-L amrita` socket — that would
   disrupt the operator's live session; the tmux logic is covered by `FakeTmuxController` unit + isolated
   E2E instead.
+
+### Operator console sessions — the full CLI on real project files (ADR-0054, 2026-07-16)
+
+Natanel asked for full access to the Claude CLI's functions from inside the product. The ADR-0052
+terminal already gave a full keyboard, but a goal was mandatory (and auto-typed into the pane) and
+every session opened in an empty per-lane jail — the full CLI ran on nothing. Two additive-optional
+`lanes.start` inputs close it: **`workspace:'project'`** resolves the project's bound working folder
+as the session cwd (daemon-side, before the ADR-0053 idempotency lookup so the folder is part of the
+operation's identity; honest conflict when no folder is bound; explicit `scope.paths` still win), and
+**`sendGoal:false`** makes the goal a label — nothing is auto-typed; goal delivery is settled on the
+durable event log at start so restart/resume/snapshot never type the label into the console. The
+Session Workspace UI: goal now optional ("Open console"), a Folder select (project folder default /
+isolated jail), honest hint. Security unchanged: folder already inside `laneAllowedRoots`, Approval
+Constitution still gates every open (interactive + writes-shared-root), agent CLI runs bare (its own
+permission prompts, answered in the terminal). Gates: root **773** (+5 ADR-0054) · web 175 ·
+typecheck/lint/protocol/web-build · secret scan (383) · diff-check clean.

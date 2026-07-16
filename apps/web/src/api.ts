@@ -284,13 +284,21 @@ export class RpcClient {
   }
 
   /** Open an interactive tmux session for an agent (ADR-0049). Gated by approval. */
-  openSession(conversationId: string, kind: string, goal: string): Promise<LaneStartResultLite> {
+  openSession(
+    conversationId: string,
+    kind: string,
+    goal: string,
+    opts: { workspace?: 'project' | 'isolated'; sendGoal?: boolean } = {},
+  ): Promise<LaneStartResultLite> {
     return this.call<LaneStartResultLite>('lanes.start', {
       conversationId,
       goal,
       kind,
       real: true,
       detach: true,
+      ...(opts.workspace ? { workspace: opts.workspace } : {}),
+      // ADR-0054 console mode: the goal stays a label; nothing is auto-typed.
+      ...(opts.sendGoal === false ? { sendGoal: false } : {}),
     });
   }
 

@@ -76,6 +76,8 @@ export function SessionsPanel({
 }: SessionsPanelProps) {
   const kind = agent === 'claude' ? 'claude-code-tmux' : 'codex-tmux';
   const [goal, setGoal] = useState('');
+  /** ADR-0054: where the session works — the project folder (real files) or a jail. */
+  const [workspace, setWorkspace] = useState<'project' | 'isolated'>('project');
   const [busy, setBusy] = useState(false);
   const [actingLane, setActingLane] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
@@ -93,10 +95,18 @@ export function SessionsPanel({
   }
 
   async function open(): Promise<void> {
-    if (!goal.trim() || !conversationId || busy) return;
+    if (!conversationId || busy) return;
+    const trimmed = goal.trim();
     setBusy(true);
     try {
-      await client.openSession(conversationId, kind, goal.trim());
+      // ADR-0054: an empty goal opens a clean operator CONSOLE — the full CLI,
+      // nothing auto-typed; the operator drives from the first keystroke.
+      await client.openSession(
+        conversationId,
+        kind,
+        trimmed || `Operator console — the operator drives this ${TITLE[agent]} session directly.`,
+        trimmed ? { workspace } : { workspace, sendGoal: false },
+      );
       setGoal('');
       await onChanged();
     } catch (e) {
@@ -141,16 +151,30 @@ export function SessionsPanel({
             value={goal}
             dir={textDir(goal)}
             onChange={(e) => setGoal(e.target.value)}
-            placeholder={`What should ${TITLE[agent]} do in this project?`}
+            placeholder={`Optional goal — leave empty to open a clean ${TITLE[agent]} console you drive yourself.`}
             rows={2}
           />
-          <button
-            type="button"
-            onClick={() => void open()}
-            disabled={!conversationId || !goal.trim() || busy}
-          >
-            {busy ? 'Opening…' : 'Open session'}
-          </button>
+          <div className="session-open-opts">
+            <label className="session-workspace">
+              Folder
+              <select
+                value={workspace}
+                onChange={(e) =>
+                  setWorkspace(e.target.value === 'isolated' ? 'isolated' : 'project')
+                }
+              >
+                <option value="project">Project working folder</option>
+                <option value="isolated">Isolated per-session folder</option>
+              </select>
+            </label>
+            <button type="button" onClick={() => void open()} disabled={!conversationId || busy}>
+              {busy ? 'Opening…' : goal.trim() ? 'Open session' : 'Open console'}
+            </button>
+          </div>
+          <p className="muted session-open-hint">
+            An empty goal opens the full {TITLE[agent]} CLI with nothing auto-typed — every
+            /command, model picker and tool is yours. Each open still asks for one approval.
+          </p>
         </div>
       ) : (
         <p className="needs-setup">

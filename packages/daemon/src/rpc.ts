@@ -670,6 +670,10 @@ export const METHODS: Record<string, RpcMethod> = {
       dryRun: z.boolean().optional(),
       real: z.boolean().optional(),
       detach: z.boolean().optional(),
+      // ADR-0054 operator console: run in the project's bound working folder
+      // and/or keep the goal as a label (nothing auto-typed into the pane).
+      workspace: z.enum(['project', 'isolated']).optional(),
+      sendGoal: z.boolean().optional(),
       idempotencyKey: z.string().min(1).max(200).optional(),
       // ADR-0049 correlation: parallel/compare groups and QA→build verification.
       // These are lane IDs (ULIDs) — match the `lane.spawned` constitution exactly
