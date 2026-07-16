@@ -109,6 +109,7 @@ import {
   CONTEXT_PACK_SETTING,
   ORCHESTRATION_SETTING,
   SESSION_EYES_LINES_SETTING,
+  SINGLE_SESSION_SETTING,
   type SessionBrief,
   buildProjectContextPack,
 } from './context-pack.ts';
@@ -2879,6 +2880,62 @@ export class AmritaKernel {
    * the laneId, jails the workspace (ADR-0039) and gates real execution on operator
    * approval (ADR-0021); `detach` so this never blocks the already-sent reply.
    */
+  /**
+   * Route a chat build/upgrade request INTO the project's already-open build
+   * session (one session per project). Returns true when the request was
+   * HANDLED — either typed into the session through the guarded send path, or
+   * honestly surfaced to the Inbox because the open session cannot take input.
+   * QA/compare lanes never count: they verify builds, they are not the build.
+   */
+  private async routeIntoLiveBuildSession(input: {
+    projectId: string;
+    conversationId: string;
+    userText: string;
+  }): Promise<boolean> {
+    const lane = this.store
+      .listLanes({ projectId: input.projectId })
+      .filter(
+        (l) =>
+          l.kind.endsWith('-tmux') &&
+          l.status !== 'completed' &&
+          l.status !== 'aborted' &&
+          l.role !== 'qa' &&
+          l.role !== 'compare',
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (!lane) return false;
+    // The guarded send THROWS on login/trust/blocked screens — that is "cannot
+    // take input", not a failure of the routing rule.
+    let sent: { sent: boolean };
+    try {
+      sent = await this.sendSessionInput(input.projectId, lane.id, input.userText);
+    } catch {
+      sent = { sent: false };
+    }
+    if (sent.sent) {
+      this.safeEmitLane(input.projectId, lane.conversationId, lane.id, 'lane.progress', {
+        note: 'chat build request routed into the running session (one session per project)',
+      });
+      return true;
+    }
+    // The open session cannot take input right now (login/trust/blocked/dead
+    // screen). Surface it; NEVER open a second build session.
+    try {
+      this.store.captureInboxItem({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        origin: 'agent',
+        text: `A build session is already open but cannot take input right now — unblock it in its terminal, then resend: ${input.userText.slice(0, 140)}`,
+        suggestedKind: 'risk',
+        rationale: 'one build session per project; the open one is not accepting input',
+        confidence: 'high',
+      });
+    } catch {
+      /* best-effort */
+    }
+    return true;
+  }
+
   private async runPlanner(input: {
     projectId: string;
     conversationId: string;
@@ -2886,6 +2943,14 @@ export class AmritaKernel {
   }): Promise<void> {
     if (this.getSetting(ORCHESTRATION_SETTING) === false) return;
     if (!looksLikeBuildIntent(input.userText)) return;
+
+    // ONE build session per project (operator rule, 2026-07-17): a build/upgrade
+    // request while a session is already open is ROUTED INTO that session —
+    // Amrita manages the running build; she never spawns a sibling to fight it
+    // over the same files. Runs BEFORE agent selection: nothing new is opened.
+    if (this.getSetting(SINGLE_SESSION_SETTING) !== false) {
+      if (await this.routeIntoLiveBuildSession(input)) return;
+    }
 
     const { intent } = classifyIntent(input.userText);
     const runtimes = await this.getCodingRuntimes();

@@ -108,6 +108,14 @@ export const AUTO_TASK_TRANSITION_SETTING = 'orchestration.autoTaskTransition';
 export const SESSION_EYES_LINES_SETTING = 'orchestration.sessionEyesLines';
 
 /**
+ * ONE build session per project (operator rule, 2026-07-17). When a build/
+ * upgrade request arrives while a session is already open, the Planner routes
+ * the request INTO that session instead of spawning a sibling that would fight
+ * it over the same files. Default ON; `false` restores multi-session spawning.
+ */
+export const SINGLE_SESSION_SETTING = 'orchestration.singleSessionPerProject';
+
+/**
  * Amrita's ORCHESTRATOR preamble (ADR-0048). Used in place of `AMRITA_CAPABILITIES`
  * when orchestration is enabled: she is the managerial brain; Claude Code and Codex
  * are the execution arms. Owner decision (2026-07-15): EVERYTHING to a session — she
@@ -143,6 +151,12 @@ export const AMRITA_ORCHESTRATOR = [
   '',
   'If a request needs a tool you do not have (email, calendar, publishing), say',
   'exactly what is missing and how to set it up — never pretend it exists.',
+  '',
+  'Each project runs ONE build session at a time. When a session is already open',
+  'and the operator asks for an upgrade or more work, the system ROUTES the request',
+  'INTO that running session automatically — tell them it went to the running',
+  'session; never open (or describe opening) a second build session while one is',
+  'alive. If the running session cannot take input, an Inbox note says so.',
   '',
   'When the project has ACTIVE execution sessions, the context pack shows them to',
   'you — state, goal, and the last lines of their live screen. If a session asks a',

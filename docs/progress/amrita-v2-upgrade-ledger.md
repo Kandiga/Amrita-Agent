@@ -1641,3 +1641,14 @@ the workspace's NEWEST FILES (name · KB · mtime, read-only — artifact truth,
 the pack budget grows with the exposed tail (bounded +22KB). Screen bytes still never enter the
 store; the window is derived fresh per turn from tmux's own scrollback (the SSOT of "what he did").
 Root 804, all gates clean.
+
+### One build session per project — upgrades route INTO the running session (2026-07-17)
+
+Natanel (after two parallel sessions made a mess): one Claude session per project; an upgrade
+request goes INTO it, with Amrita managing that one build. The Planner now checks BEFORE agent
+selection: when a non-terminal build session exists (`orchestration.singleSessionPerProject`,
+default ON; QA/compare lanes never count), the chat request is TYPED INTO it through the guarded
+send path (login/trust/blocked screens refuse → an honest Inbox note; never a sibling session).
+Audited via `lane.progress: routed into the running session`; the orchestrator preamble tells
+Amrita to say exactly that. 3 new tests (routed+audited / blocked→Inbox+no-sibling / setting-off
+restores spawning). Root 807, all gates clean.
