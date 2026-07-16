@@ -1516,3 +1516,45 @@ identity** (`artifactIdForTitle`): same `<title>` → same card id → in-place 
 position); different titles stay separate cards (multi-page / variations). And `extractStreamingArtifact`
 now takes the active artifact-focus label, so an improvement streams INTO the selected card — the
 operator watches it rebuild layer by layer in place. Gates: web **161** · lint/build clean. Web deployed.
+
+## Phase M — Orchestration layer: Amrita manages Claude Code + Codex (ADR-0048/0049/0053, 2026-07-16)
+
+The keystone (Slices 0–6: Planner seam, headless + tmux execution sessions, Conclusion Capsule,
+reconcile-on-boot, Approval Constitution) and ADR-0050/0051/0052 (project-scoped Session Workspace,
+session eyes + chat relay, embedded terminal with the claude.ai look) shipped in the commits up to
+`ba20ecc`. This phase finishes the arc — Slices 5b/7/8 in one atomic landing (`962214e`) because
+they share migration 0018 and interleave in `kernel.ts`/`rpc.ts`/protocol.
+
+- **Slice 5b — durable lane idempotency + correlation (ADR-0053).** Migration 0018 adds nullable
+  `idempotency_key`/`group_id`/`role`/`verifies_lane_id` to `lanes` + a partial UNIQUE index (many
+  NULLs, one non-null key); reversible `.down.sql`. `lanes.start` dedups by key with a COMPLETE-identity
+  guard (conversation, kind, goal, group/role/verification target, **and** the caller-requested jail);
+  a same-key mismatch is a conflict, never a silent wrong reuse. Concurrent duplicates collapse to one
+  row (single-writer transaction; the partial index rejects the loser, which is caught).
+- **Slice 7 — event-driven Watcher + Conclusion Capsule in chat.** Pure `watch-decide` core + a thin
+  `store.subscribe` shell; the only side effect is an `origin:'lane'` Inbox proposal (no `watcher.*`
+  event, no domain mutation), deferred to a microtask so it never re-enters the fan-out; the sweep
+  timer is `unref`'d and cleared on `stop()`. The capsule stays DERIVED — a read-only RPC result,
+  never persisted (a test asserts no `capsule.*` event) — folded into the chat column with a
+  stale-response guard so a slow fetch never paints over a switched conversation.
+- **Slice 8 — confidence-gated task transition + opt-in Codex QA lane.** `resolveTaskTransition` (pure):
+  a lane exiting `done` NEVER silently marks a task done; the strongest auto action is a review
+  annotation (`blockedReason`), flag-gated by `orchestration.autoTaskTransition` (default off);
+  partial/budget/aborted always propose. A `verifiesLaneId` lane derives `role='qa'`, inherits the
+  build lane's group and output dir as its cwd, and is refused across projects.
+- **Independent review (two adversarial reviewers) → two fixes.** (1) `lanes.start`
+  `groupId`/`verifiesLaneId` now use `idSchema`, matching the `lane.spawned` constitution, so a
+  malformed correlation id is rejected at the edge before the workspace dir is created — not deep in
+  the append transaction. (2) The idempotent-identity check now includes the caller-requested jail
+  (order-insensitive, only when paths were explicitly given, so the no-scope `delegateTask` retry still
+  reuses). Both locked with tests.
+- **Gates & proof.** root **768** · web **175** · typecheck/lint/protocol-build/web-build clean ·
+  `git diff --check` clean · secret scan clean (372 files). Isolated E2E (temp DB, `dryRun` lanes):
+  idempotency survives restart, 6 concurrent same-key → 1 row, capsule never persisted, QA cross-project
+  refused (12/12). Migration 0018 up→down→up 10/10. **Live deploy:** daemon restarted on the real DB
+  (`/root/.amrita/amrita.db`) → **schema 18** applied on boot, `ok:true`; web serving the fresh capsule
+  bundle; the four new RPC methods (`orchestration.capsule`, `lanes.session.send/finish`, `lanes.start`)
+  in the running surface; clean boot log. Pushed `ba20ecc..962214e` to `origin/v2-main`.
+  Not run (deliberate): real Claude/Codex tmux sessions on the shared `-L amrita` socket — that would
+  disrupt the operator's live session; the tmux logic is covered by `FakeTmuxController` unit + isolated
+  E2E instead.
