@@ -1590,3 +1590,13 @@ a `CriteriaState`: **verified-fail blocks even a 'done' exit (evidence beats pro
 chips + editor + Verify button + ✓/✗ badge (pure `task-evidence.ts`). Gates: root **792** (+19:
 task-verify 11, transition evidence states, protocol round-trip/replay, migration 0019 round-trip,
 wire round-trip) · web **179** (+4) · typecheck/lint/build/secret-scan clean.
+
+### Mission Control — one screen per thread of work (HARMONY-1, 2026-07-16)
+
+The harmony gap: the task lived in one tab, its session in another, the approval in a third, the
+capsule in chat. Pure `mission-control.ts` (unit-tested) joins tasks ↔ lanes (`task.laneId`) ↔
+pending approvals (`approval.laneId`) ↔ ADR-0055 evidence into ONE derived row per live thread —
+attention-ranked (pending approval > failed checks > running session > waiting review > verify
+nudge) with a one-line "what now". `MissionControlPanel` renders at the top of the Project stage;
+read-only (actions stay with their owning panels); empty board stays quiet. Web 183 (+4),
+typecheck/lint/build clean. No daemon change.

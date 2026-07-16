@@ -45,6 +45,7 @@ import { InboxPanel } from './components/InboxPanel.tsx';
 import { LanesPanel } from './components/LanesPanel.tsx';
 import { MemoryPanel } from './components/MemoryPanel.tsx';
 import { MilestonesPanel } from './components/MilestonesPanel.tsx';
+import { MissionControlPanel } from './components/MissionControlPanel.tsx';
 import { NextActionsPanel } from './components/NextActionsPanel.tsx';
 import { PhasesPanel } from './components/PhasesPanel.tsx';
 import { RetroPanel } from './components/RetroPanel.tsx';
@@ -74,6 +75,7 @@ import {
   reduceEvent,
   transcriptMessages,
 } from './live-transcript.ts';
+import { buildMissionRows } from './mission-control.ts';
 import { buildSandboxedPreview } from './sandbox.ts';
 import {
   type SessionPanes,
@@ -1389,6 +1391,8 @@ export function App() {
                   </button>
                 ))}
               </nav>
+
+              <MissionControlPanel rows={buildMissionRows(tasks, lanes.byId, approvals)} />
 
               {projectView === 'board' ? (
                 <BoardPanel
