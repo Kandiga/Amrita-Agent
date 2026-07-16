@@ -1652,3 +1652,15 @@ send path (login/trust/blocked screens refuse → an honest Inbox note; never a 
 Audited via `lane.progress: routed into the running session`; the orchestrator preamble tells
 Amrita to say exactly that. 3 new tests (routed+audited / blocked→Inbox+no-sibling / setting-off
 restores spawning). Root 807, all gates clean.
+
+### High-quality Hebrew RTL in the embedded terminal (ADR-0052 follow-up, 2026-07-17)
+
+The embedded terminal painted Hebrew reversed (Claude + Codex). Root cause: xterm.js v6 has NO BiDi
+option (verified against ITerminalOptions) and the CLIs emit Hebrew in logical order. Fix: a per-line
+Unicode Bidirectional reorder (bidi-js) applied logical→visual before xterm renders, in a stateful
+line-buffering wrapper. SAFETY: only complete plain-text lines are reordered; any ESC/cursor/ANSI
+line/chunk passes through untouched so an interactive TUI frame is never corrupted. English/code
+untouched. Both agents (one SessionTerminal component). Proven: 5 pure unit tests + the production
+bundle loads clean in a real browser (Playwright: no bidi/module error; only the expected no-token
+401). Honest limit: full-screen TUI redraws stay LTR (reordering breaks cursor math). Gates: root 807,
+web 188, typecheck/lint/build/secret-scan clean.

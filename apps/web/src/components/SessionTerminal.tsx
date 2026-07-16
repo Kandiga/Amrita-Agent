@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { terminalServerFrameSchema } from '@amrita/protocol';
 import { useEffect, useRef, useState } from 'react';
+import { makeTerminalBidi } from '../terminal-bidi.ts';
 
 /**
  * The embedded interactive session terminal (ADR-0052). This IS the CLI: every
@@ -72,6 +73,10 @@ export function SessionTerminal({ projectId, laneId, authToken, epoch }: Session
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // High-quality RTL (ADR-0052 follow-up): reorder logical->visual per line so
+    // Hebrew from the Claude/Codex CLI reads right-to-left. TUI/ANSI frames pass
+    // through untouched, so interactive menus are never corrupted.
+    const bidiWrite = makeTerminalBidi();
     term.open(host);
     fit.fit();
 
@@ -93,7 +98,7 @@ export function SessionTerminal({ projectId, laneId, authToken, epoch }: Session
       if (!alive) return;
       try {
         const frame = terminalServerFrameSchema.parse(JSON.parse(String(m.data)));
-        if (frame.t === 'output') term.write(frame.data);
+        if (frame.t === 'output') term.write(bidiWrite(frame.data));
         else setExitReason(frame.reason);
       } catch {
         /* junk frames are dropped, never interpreted */
