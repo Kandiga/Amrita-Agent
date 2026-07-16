@@ -85,6 +85,37 @@ describe('role policy (D5/ADR-0017)', () => {
     expect(JSON.stringify(turn)).not.toContain(DUMMY_ENV_VALUE);
   });
 
+  it("a ROLE-LESS turn (a chat channel's shape) resolves the main binding — never silently mock", async () => {
+    // The Telegram/WhatsApp channels call runChatTurn with neither provider nor
+    // role (ADR-0037). That must hit the SAME deterministic chain as the web:
+    // it used to skip resolution entirely and answer with mock even when the
+    // operator had bound a real brain (found live on the first paired chat).
+    const c = ctx(kernel);
+    bindAnthropic(kernel, c);
+    kernel.updateSetting({
+      ...c,
+      key: 'providers.role.main',
+      value: { provider: 'anthropic', model: 'claude-test-model' },
+    });
+    const turn = await kernel.runChatTurn({
+      conversationId: c.conversationId,
+      text: 'hi from telegram',
+    });
+    expect(turn.provider).toBe('anthropic'); // the binding, not mock
+    expect(turn.model).toBe('claude-test-model');
+    expect(turn.text).toBe('role-routed reply');
+  });
+
+  it('a role-less turn with NO binding keeps the honest mock default (never auto-picks a paid provider)', async () => {
+    const c = ctx(kernel);
+    bindAnthropic(kernel, c); // a real provider is configured and auto-eligible…
+    const turn = await kernel.runChatTurn({
+      conversationId: c.conversationId,
+      text: 'hi',
+    });
+    expect(turn.provider).toBe('mock'); // …but nobody CHOSE it, so no silent spend
+  });
+
   it('a settings binding wins over auto and carries its model', async () => {
     const c = ctx(kernel);
     bindAnthropic(kernel, c);

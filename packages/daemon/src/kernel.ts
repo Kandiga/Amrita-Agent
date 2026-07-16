@@ -1215,18 +1215,26 @@ export class AmritaKernel {
     if (input.accountId && !account) {
       throw new ProviderError('not_found', `no such account: ${input.accountId}`);
     }
-    // An explicit provider/account always wins; otherwise an explicit role
-    // resolves via its settings binding or `auto` (D5/ADR-0017).
+    // An explicit provider/account always wins; otherwise the role resolves via
+    // its settings binding or `auto` (D5/ADR-0017). A role-less caller (the
+    // Telegram/WhatsApp channels, ADR-0037) MUST hit the same deterministic
+    // chain the web does (ADR-0019: explicit > project > global binding) — it
+    // used to skip resolution entirely and silently answer with mock even when
+    // the operator had bound a real brain. Only an EXPLICIT role may fall
+    // through to `auto`; a role-less turn without a binding keeps the honest
+    // mock default rather than auto-picking a paid provider nobody chose.
     let roleModel: string | undefined;
     let requested = input.provider ?? account?.provider;
     let via: 'explicit' | 'project' | 'binding' | 'auto' | 'default' = requested
       ? 'explicit'
       : 'default';
-    if (!requested && input.role) {
-      const resolved = this.resolveRole(input.role, projectId);
-      requested = resolved.provider;
-      roleModel = resolved.model;
-      via = resolved.via;
+    if (!requested) {
+      const resolved = this.resolveRole(role, projectId);
+      if (input.role || resolved.via !== 'auto') {
+        requested = resolved.provider;
+        roleModel = resolved.model;
+        via = resolved.via;
+      }
     }
     const providerId = normalizeProvider(requested ?? MOCK_PROVIDER_ID);
     if (account && input.provider && input.provider !== account.provider) {
