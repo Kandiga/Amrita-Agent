@@ -19,6 +19,13 @@ Environment=PATH=__PATH__
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
+# ADR-0049/0050: interactive tmux sessions OUTLIVE the daemon — a restart must
+# re-attach, not orphan-abort. The default control-group KillMode would tear down
+# the daemon-spawned tmux server (and every session in it) on `systemctl restart`,
+# which is exactly the regression live QA caught. `process` kills only the main
+# daemon; its graceful close() still aborts non-durable lanes and kills their
+# process groups itself, so nothing else is left behind on a clean stop.
+KillMode=process
 
 [Install]
 WantedBy=default.target
