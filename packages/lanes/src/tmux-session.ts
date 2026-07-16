@@ -23,8 +23,36 @@ export interface TmuxSessionRunnerConfig {
   /** Injectable clock for tests (ms). */
   clock?: () => number;
   captureIntervalMs?: number;
-  /** Delay before typing the goal, to let the agent UI initialize. */
+  /** Pause after typing the agent name, to let its process start. Tunable for tests. */
+  launchDelayMs?: number;
+  /** Minimum delay before typing the goal, to let the agent UI initialize. */
   goalDelayMs?: number;
+  /** Hard cap on deferring the goal for a boot screen we cannot clear (login). */
+  goalDeferCapMs?: number;
+}
+
+/**
+ * What the CURRENT screen (pane tail) shows while the agent CLI boots. A fresh
+ * `claude` in a brand-new directory does NOT go straight to the REPL — it first
+ * shows a folder-trust dialog (and, on a first-ever run, a theme picker). Typing
+ * the goal on a blind timer would land it INSIDE that dialog (verified in review),
+ * so goal delivery is gated on this classification:
+ * - `prompt`  — an accept-the-default dialog (trust / theme). The jailed workspace
+ *   is a brand-new empty dir the daemon itself created, so accepting is safe by
+ *   construction: press Enter, then wait for the screen to move on.
+ * - `login`   — the CLI wants a human login. Never keypress into it; defer the
+ *   goal (honest: the pane stream shows the login screen to the operator).
+ * - `none`    — no known blocker; deliver the goal after `goalDelayMs`.
+ * Only the last ~15 lines are inspected — a real pane REPLACES the screen, but
+ * scrollback (and the test fake) accumulates history.
+ */
+export function classifyBootPane(pane: string): 'prompt' | 'login' | 'none' {
+  const tail = pane.split('\n').slice(-15).join('\n');
+  if (/trust the files in this (folder|directory)|do you trust/i.test(tail)) return 'prompt';
+  if (/choose the text style|choose your theme/i.test(tail)) return 'prompt';
+  if (/select login method|sign in to continue|paste code here|please log ?in/i.test(tail))
+    return 'login';
+  return 'none';
 }
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -94,13 +122,14 @@ export class TmuxSessionLaneRunner implements LaneRunner {
     const clock = this.cfg.clock ?? (() => Date.now());
     const interval = this.cfg.captureIntervalMs ?? 1000;
     const goalDelay = this.cfg.goalDelayMs ?? 2000;
+    const goalDeferCap = this.cfg.goalDeferCapMs ?? 90_000;
     const maxMs = (mandate.budget.maxMinutes ?? this.cfg.defaultMaxMinutes ?? 30) * 60_000;
 
     const resuming = await tmux.hasSession(name);
     if (!resuming) {
       await tmux.newSession({ name, cwd, command: [] }); // bare shell
       ctx?.onProgress?.(`opened a ${this.cfg.agent} session`, 5);
-      await sleep(400, ctx?.signal);
+      await sleep(this.cfg.launchDelayMs ?? 400, ctx?.signal);
       await tmux.sendKeys(name, this.cfg.agent, { enter: true }); // launch the agent (fixed argv)
     } else {
       ctx?.onProgress?.('re-attached to the running session', 5);
@@ -110,18 +139,31 @@ export class TmuxSessionLaneRunner implements LaneRunner {
     let goalSent = resuming; // never re-send the goal on a resume
     let last = '';
     let ended: LaneExit | null = null;
+    // Boot-dialog handling: at most a few default-accepts, one per distinct screen.
+    let bootAnswersLeft = 3;
+    let lastAnsweredPane = '';
 
     while (ended === null) {
-      if (!goalSent && clock() - start >= goalDelay) {
-        await tmux.sendKeys(name, mandate.goal, { enter: true }); // literal — no shell
-        goalSent = true;
-        ctx?.onProgress?.('sent the goal to the session', 15);
-      }
-
       const pane = redactPane(await tmux.capturePane(name));
       if (pane !== last) {
         last = pane;
         ctx?.onPane?.(pane);
+      }
+
+      if (!goalSent) {
+        const boot = classifyBootPane(pane);
+        const waited = clock() - start;
+        if (boot === 'prompt' && bootAnswersLeft > 0 && pane !== lastAnsweredPane) {
+          // Accept the dialog's highlighted default (Enter only, never text).
+          await tmux.sendKeys(name, '', { enter: true });
+          bootAnswersLeft -= 1;
+          lastAnsweredPane = pane;
+          ctx?.onProgress?.('accepted the agent boot dialog', 10);
+        } else if (waited >= goalDelay && (boot === 'none' || waited >= goalDeferCap)) {
+          await tmux.sendKeys(name, mandate.goal, { enter: true }); // literal — no shell
+          goalSent = true;
+          ctx?.onProgress?.('sent the goal to the session', 15);
+        }
       }
 
       if (ctx?.signal?.aborted) ended = 'cancelled';

@@ -497,7 +497,13 @@ export class AmritaKernel {
       allowedTools,
       opts.codingRuntimeProber,
       opts.cliExec,
-      opts.approvalTimeoutMs ?? 120_000,
+      // Deny-by-default stays; only the WINDOW is tunable. 120s proved too short
+      // for a human to notice the approval card after a chat-spawned session —
+      // the operator saw "aborted: approval timed out" as "it just doesn't work".
+      opts.approvalTimeoutMs ??
+        (Number(process.env.AMRITA_APPROVAL_TIMEOUT_MS ?? '') > 0
+          ? Number(process.env.AMRITA_APPROVAL_TIMEOUT_MS)
+          : 120_000),
     );
     // ADR-0048: terminalize lanes orphaned by a previous crash before serving.
     kernel.reconcileLanesOnBoot();
@@ -1471,8 +1477,13 @@ export class AmritaKernel {
         conversationId: input.conversationId,
         userText: input.text,
       });
-    } catch {
-      /* the turn is already persisted; the Planner is best-effort */
+    } catch (err) {
+      // The turn is already persisted; the Planner is best-effort. But NEVER
+      // silently: a swallowed throw here once hid a broken delegation chain for
+      // days ("she says she delegates, nothing opens"). Value-free breadcrumb.
+      console.error(
+        `amritad: planner failed (turn persisted, no session opened): ${err instanceof Error ? err.message : 'unknown error'}`,
+      );
     }
 
     return {

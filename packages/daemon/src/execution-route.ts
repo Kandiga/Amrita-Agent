@@ -52,6 +52,15 @@ export interface RouteInput {
  * Work that a coding lane can plausibly do. Deliberately conservative: a false
  * `delegate` wastes a lane run and erodes trust, while a false `human-only` costs
  * nothing but a click. When unsure, hand it back to the human.
+ *
+ * HEBREW IS FIRST-CLASS. The operator asks in Hebrew ("תבני לי משחק"), and the
+ * live event log proved seven real build requests classified `conversational`
+ * because these tables were English-only — the Planner never fired and Amrita
+ * *said* she was delegating while nothing opened. Hebrew terms are imperative /
+ * infinitive verb forms plus strong artifact nouns (משחק, אתר, קוד…). Hebrew
+ * phrasing is often verb-less ("אני רוצה משחק סנייק"), so the artifact nouns are
+ * included on purpose; the approval gate on every spawned session is the backstop
+ * for a false positive, while a false negative silently kills the product promise.
  */
 const CODEABLE = [
   'code',
@@ -71,6 +80,48 @@ const CODEABLE = [
   'api',
   'endpoint',
   'schema',
+  // Hebrew build verbs (imperative/future/infinitive; the ש/ו prefixes are
+  // handled by the matcher, not enumerated here)
+  'תבני',
+  'תבנה',
+  'לבנות',
+  'בנה לי',
+  'צרי',
+  'תצרי',
+  'תצור',
+  'ליצור',
+  'תוסיף',
+  'תוסיפי',
+  'הוסיפי',
+  'להוסיף',
+  'תשדרג',
+  'תשדרגי',
+  'לשדרג',
+  'שדרוג',
+  'תשפר',
+  'תשפרי',
+  'לשפר',
+  'תתקן',
+  'תתקני',
+  'לתקן',
+  'תממש',
+  'תממשי',
+  'לממש',
+  'תטמיע',
+  'תטמיעי',
+  'להטמיע',
+  // Hebrew artifact nouns — in a project chat these are build subjects
+  'קוד',
+  'באג',
+  'סקריפט',
+  'משחק',
+  'אתר',
+  'אפליקציה',
+  'דשבורד',
+  'לוח בקרה',
+  'דף נחיתה',
+  'עמוד נחיתה',
+  'בוט',
 ];
 
 /** Work no machine should be quietly doing on your behalf. */
@@ -89,26 +140,59 @@ const HUMAN_ONLY = [
   'invoice',
   'approve',
   'decide',
+  // Hebrew
+  'תתקשר',
+  'תתקשרי',
+  'להתקשר',
+  'טלפון',
+  'פגישה',
+  'חתום',
+  'חתימה',
+  'משא ומתן',
+  'ראיון',
+  'חשבונית',
 ];
 
 /** Work that needs a tool Amrita does not have. */
 const CONNECTORS: { match: string[]; what: string; why: string; risk: string; fix: string }[] = [
   {
-    match: ['email', 'e-mail', 'send an email', 'inbox', 'mail'],
+    match: ['email', 'e-mail', 'send an email', 'inbox', 'mail', 'אימייל', 'מייל', 'דוא"ל'],
     what: 'an email connector',
     why: 'this task means sending or reading mail on your behalf',
     risk: 'it would let Amrita read and send mail as you — an account compromise becomes a mail compromise',
     fix: 'no email connector is built yet (the Brain lists it as planned, not connected)',
   },
   {
-    match: ['calendar', 'schedule a meeting', 'book a slot', 'invite'],
+    match: [
+      'calendar',
+      'schedule a meeting',
+      'book a slot',
+      'invite',
+      'יומן',
+      'קבע פגישה',
+      'קבעי פגישה',
+      'לקבוע פגישה',
+      'זימון',
+    ],
     what: 'a calendar connector',
     why: 'this task means creating or moving events for you',
     risk: 'it would let Amrita change your and other people’s time without asking each time',
     fix: 'no calendar connector is built yet (planned, not connected)',
   },
   {
-    match: ['post', 'tweet', 'publish to', 'social'],
+    match: [
+      'post',
+      'tweet',
+      'publish to',
+      'social',
+      'פרסם',
+      'פרסמי',
+      'תפרסם',
+      'תפרסמי',
+      'לפרסם',
+      'פוסט',
+      'ציוץ',
+    ],
     what: 'a publishing connector',
     why: 'this task means saying something publicly as you',
     risk: 'anything published is public immediately, and cannot be reliably unpublished',
@@ -127,12 +211,39 @@ const RESEARCH = [
   'profile',
   'look into',
   'find out',
+  // Hebrew
+  'תחקור',
+  'תחקרי',
+  'לחקור',
+  'מחקר',
+  'תשווה',
+  'תשווי',
+  'להשוות',
+  "בנצ'מרק",
+  'שחזר',
+  'שחזרי',
+  'לשחזר',
+  'בדוק למה',
+  'בדקי למה',
+  'תבדוק למה',
+  'תבדקי למה',
 ];
 
-// Word-boundary matching, so a keyword like 'pay' does not fire on 'payment', nor
-// 'sign' on 'design' — a real false-positive class that plain `.includes` has.
-const wordRe = (term: string): RegExp =>
-  new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+// Word matching with REAL Unicode boundaries. JS `\b` only understands
+// [A-Za-z0-9_], so it can never delimit a Hebrew keyword — the boundary between
+// a Hebrew letter and a space does not exist for it (proven live: seven Hebrew
+// build requests all classified conversational). Lookarounds over \p{L}\p{N}
+// give every script a boundary while keeping the original false-positive
+// protection ('pay' still does not fire on 'payment', nor 'sign' on 'design').
+// Hebrew terms additionally tolerate the attached one-letter prefixes
+// (ו/ש/ה/ל/ב/כ/מ, up to two: "ושתבני", "שתצרי") so conjugated requests match
+// the bare verb.
+const HEBREW_CHAR = /[֐-׿]/;
+const escapeRe = (term: string): string => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wordRe = (term: string): RegExp => {
+  const prefixes = HEBREW_CHAR.test(term) ? '(?:[ושהלבכמ]{0,2})' : '';
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${prefixes}${escapeRe(term)}(?![\\p{L}\\p{N}_])`, 'iu');
+};
 
 const matchesAny = (text: string, list: readonly string[]): boolean =>
   list.some((m) => wordRe(m).test(text));
