@@ -48,10 +48,17 @@ ok "git $(git --version | awk '{print $3}')"
 step "checking pnpm..."
 if ! command -v pnpm >/dev/null 2>&1; then
   if command -v corepack >/dev/null 2>&1; then
-    step "pnpm not found — enabling via corepack..."
-    corepack enable >/dev/null 2>&1 || fail "corepack enable failed — install pnpm manually: npm install -g pnpm"
+    # USER-LOCAL activation — never writes to a system-owned prefix (no sudo, no
+    # EACCES on a root-owned Node). corepack prepare drops the shim into BIN_DIR.
+    step "pnpm not found — activating a user-local pnpm via corepack..."
+    mkdir -p "$BIN_DIR"
+    if corepack enable --install-directory "$BIN_DIR" pnpm >/dev/null 2>&1 \
+       || corepack prepare pnpm@latest --activate >/dev/null 2>&1; then
+      export PATH="$BIN_DIR:$PATH"
+    fi
+    command -v pnpm >/dev/null 2>&1 || fail "could not activate pnpm without sudo — install it user-locally: 'corepack prepare pnpm@latest --activate' or see https://pnpm.io/installation"
   else
-    fail "pnpm not found — install it: npm install -g pnpm"
+    fail "pnpm not found and corepack unavailable — install pnpm user-locally: https://pnpm.io/installation (no sudo needed)"
   fi
 fi
 ok "pnpm available (repo pins its own version via packageManager)"
@@ -73,6 +80,10 @@ fi
 step "installing dependencies (native modules compile on first run)..."
 (cd "$INSTALL_DIR" && pnpm install --frozen-lockfile)
 ok "dependencies ready"
+
+step "building the web UI (so \`amrita open\` can serve it)..."
+(cd "$INSTALL_DIR" && pnpm --filter @amrita/web build) || fail "web build failed — see the output above"
+ok "web UI built (apps/web/dist)"
 
 # ── 4. launchers (back up any existing ones first — recovery story) ──────────
 step "installing launchers to $BIN_DIR..."
@@ -107,12 +118,20 @@ if [ -t 0 ] && [ "${AMRITA_NO_SERVICE:-0}" != "1" ] && \
     y|Y|yes)
       mkdir -p "$HOME/.config/systemd/user"
       SERVICE_PATH="$(dirname "$NODE_BIN"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+      # A real project workspace default OUTSIDE the Amrita checkout, so real
+      # coding lanes never confine to Amrita's own source and $HOME never becomes
+      # the jail (community-onboarding finding 10). The user can widen it later.
+      WORKROOTS="${AMRITA_LANES_ALLOWED_ROOTS:-$HOME/amrita-workspaces}"
+      mkdir -p "$WORKROOTS"
+      sed -e "s|__NODE__|$NODE_BIN|g" -e "s|__DIR__|$INSTALL_DIR|g" \
+        -e "s|__PATH__|$SERVICE_PATH|g" -e "s|__WORKROOTS__|$WORKROOTS|g" \
+        "$INSTALL_DIR/deploy/amritad.service" > "$HOME/.config/systemd/user/amritad.service"
       sed -e "s|__NODE__|$NODE_BIN|g" -e "s|__DIR__|$INSTALL_DIR|g" \
         -e "s|__PATH__|$SERVICE_PATH|g" \
-        "$INSTALL_DIR/deploy/amritad.service" > "$HOME/.config/systemd/user/amritad.service"
+        "$INSTALL_DIR/deploy/amrita-web.service" > "$HOME/.config/systemd/user/amrita-web.service"
       systemctl --user daemon-reload
-      systemctl --user enable --now amritad
-      ok "service running — logs: journalctl --user -u amritad -f"
+      systemctl --user enable --now amritad amrita-web
+      ok "daemon + web running — open http://localhost:7461 · logs: journalctl --user -u amritad -f"
       ;;
     *) say "  → skipped — start manually with: amritad --http --telegram" ;;
   esac

@@ -16,6 +16,11 @@ ExecStartPost=/bin/sh -c 'for i in $(seq 1 40); do curl -sf http://127.0.0.1:746
 # Subscription-CLI providers (claude-code) spawn `claude` from PATH — systemd's
 # default PATH misses user bins, so the installer substitutes a full one here.
 Environment=PATH=__PATH__
+# Community onboarding (finding 10): a real, non-Amrita project workspace root so
+# coding lanes never confine to the source checkout, and $HOME never becomes the
+# jail. WorkingDirectory pins cwd off the checkout too.
+WorkingDirectory=__WORKROOTS__
+Environment=AMRITA_LANES_ALLOWED_ROOTS=__WORKROOTS__
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

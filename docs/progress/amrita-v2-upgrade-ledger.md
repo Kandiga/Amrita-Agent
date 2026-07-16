@@ -1652,3 +1652,41 @@ send path (login/trust/blocked screens refuse → an honest Inbox note; never a 
 Audited via `lane.progress: routed into the running session`; the orchestrator preamble tells
 Amrita to say exactly that. 3 new tests (routed+audited / blocked→Inbox+no-sibling / setting-off
 restores spawning). Root 807, all gates clean.
+
+## Phase P — Community install & onboarding (audit remediation, 2026-07-17)
+
+A clean-room audit (fresh non-root user, disposable HOME) found 17 gaps between "usable dev loop"
+and "a stranger can install + open + connect their own brain safely". Fixed in evidence-first slices
+(worktree feat/community-onboarding):
+
+- **P1 security floor.** The subscription CLI children (`claude -p`/`codex exec`) and the auth probes
+  now run under the deny-by-default `scrubEnv` — a stray `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` in the
+  daemon env can no longer bill the wrong account or fake a subscription `ready` (proven with a real
+  child process). `drizzle-orm 0.44.7→0.45.2` closes GHSA-gpj5-g38j-94v9; `pnpm audit --prod` clean.
+- **P2 honest auth mode.** The runtime probe parses the CLI's OWN status (`claude auth status` JSON
+  `authMethod`; `codex login status`) into an observed `authMode` (subscription|api-key) — never from
+  exit code; the label derives from it (an API key is never mislabelled a subscription). Login hints
+  corrected to the official `claude auth login` / `codex login`. The API-key wizard stops claiming
+  "connected" on env-presence (validated on the first turn instead of a false green).
+- **P3 doctor profiles.** Sections carry `core|optional|private`; the top-line status rolls up CORE
+  only; the private Cinema/brain-bridge module is hidden unless `BRAIN_BRIDGE_TOKEN`/URL is set; an
+  installed-but-unauthenticated EXECUTABLE runtime (codex parity) warns instead of masking `ok`.
+- **P4 lane safety.** A blocked/aborted/non-done real lane exits the CLI with code 3 (was a
+  misleading 0). The installer now binds an explicit non-Amrita workspace root + `WorkingDirectory`
+  so `$HOME`/the source checkout never becomes the jail (finding 10).
+- **P5 one-command open.** `amrita open` (a launcher, before any in-process kernel) starts whatever
+  is down (daemon→web), waits for readiness, and opens ONE URL carrying a one-time `#token=` the SPA
+  adopts then strips — the bearer is never hand-copied. Live cold-start smoke: generated token→
+  secrets.env(0600), started both, GET / → 200, unauthenticated RPC → 401, cleaned up.
+- **P6 installer + CI.** `install.sh`: user-local pnpm activation (no EACCES/sudo), builds the web UI,
+  installs BOTH systemd units (daemon + web) with the workspace root, and ends with `amrita open`.
+  New `.github/workflows/ci.yml`: frozen install + typecheck/lint/test + web build + `pnpm audit
+  --prod` + secret scan, plus a clean-install job proving install→build→serve `GET / = 200` and
+  unauthenticated RPC = 401 on every push.
+- **P7 docs.** README: 60-second `amrita open` quickstart, honest billing-owner copy, and a truthful
+  supported/experimental/not-supported platform matrix.
+
+Gates: root **823** tests, web **186**, typecheck/lint clean, `pnpm audit --prod` clean, secret scan
+clean. Deferred (honest): full hosted-API-key live validation (no test creds), macOS CI evidence,
+version-pinned release channel, kernel fail-closed on missing roots (3 tests + the live daemon rely
+on the cwd default; the installer now writes explicit roots instead).

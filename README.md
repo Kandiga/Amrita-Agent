@@ -49,19 +49,49 @@ for what is matched vs planned against a Hermes-grade operational skeleton):
 **Try it:** [`docs/smoke.md`](docs/smoke.md) walks the whole loop in ten minutes — daemon → web →
 streamed chat → project knowledge → safe lane → doctor.
 
-## Quick start
-
-End-user install (Linux/macOS/WSL — checks prerequisites, installs launchers, optional service):
+## Quick start — 60 seconds, no sudo
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kandiga/Amrita-Agent/v2-main/scripts/install.sh | bash
-amrita setup     # choose a brain (subscription login / API key / local endpoint) + Telegram
-amrita doctor    # verify everything, with exact fix commands
+amrita open      # starts the daemon + web UI and opens Amrita in your browser
 ```
 
-Before you run `amrita setup`, `amrita doctor` exits **`ok with warnings`** — that is expected: a
-fresh machine has no brain, no Telegram token, and no stable control-surface token yet. Each
-warning carries the exact command to clear it; nothing is faked green.
+`amrita open` starts whatever is not already running (the daemon and the web
+UI), waits until both are ready, and opens **one URL** — with the control token
+handed to the browser automatically (you never copy-paste a token). On a
+headless host it prints the URL instead of claiming a browser opened.
+
+Then connect your own brain (optional — a deterministic **Mock/Demo** mode works
+with zero credentials):
+
+```bash
+amrita setup     # Claude Pro/Max · ChatGPT+Codex · an Anthropic/OpenAI/OpenRouter/Gemini API key · a local Ollama/vLLM endpoint · or Mock
+amrita doctor    # core readiness, with the exact fix command for anything missing
+```
+
+Every connection tells you **who is billed** before you connect — “this uses
+your local Claude login”, “this bills your OpenAI API account”, or “this stays
+local” — never an ambiguous “connected”. `amrita doctor`’s top line reflects
+**core** readiness only (your brain + the local UI); optional integrations
+(Telegram, GitHub) and private modules stay neutral until you enable them, so a
+fresh install is never falsely red.
+
+**Supported platforms** (honest matrix):
+
+| Platform | Status | Notes |
+|---|---|---|
+| Linux x64 | **supported** | primary target; CI runs the full gate + clean-install smoke |
+| WSL2 | **supported** | same path as Linux |
+| macOS (x64/ARM64) | **experimental** | the install path is written for it; not yet proven in CI |
+| Native Windows | **not supported** | use WSL2 |
+
+### Lifecycle
+
+```bash
+amrita open      # start daemon + web, open the URL (idempotent — reuses what's already up)
+amrita doctor    # core/optional/private readiness + machine-readable `--json`
+amrita setup     # (re)connect a brain, roles, coding runtime, allowed project folders
+```
 
 **Where your data lives** (all under `~/.amrita`, override with `AMRITA_HOME`):
 
@@ -84,7 +114,9 @@ pnpm --filter @amrita/web dev        # http://localhost:5173 (proxies /rpc + /ev
 ```
 
 In HTTP mode every route except `GET /health` needs the bearer token `amritad` prints at startup
-(or set `AMRITA_AUTH_TOKEN` for a stable one); paste it into the web app's access-token panel.
+(or set `AMRITA_AUTH_TOKEN` for a stable one). `amrita open` hands it to the browser automatically
+via a one-time `#token=` fragment; if you start the pieces by hand, paste it into the web app's
+access-token panel.
 
 ## Why a rewrite
 
