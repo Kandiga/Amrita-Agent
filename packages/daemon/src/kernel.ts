@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   ClaudeCodeLaneRunner,
@@ -100,6 +108,7 @@ import {
   AUTO_TASK_TRANSITION_SETTING,
   CONTEXT_PACK_SETTING,
   ORCHESTRATION_SETTING,
+  SESSION_EYES_LINES_SETTING,
   type SessionBrief,
   buildProjectContextPack,
 } from './context-pack.ts';
@@ -2989,21 +2998,36 @@ export class AmritaKernel {
         sessions = [];
       }
     }
-    const pack = buildProjectContextPack({
-      project: { name: project.name },
-      brief,
-      charterFindings: auditCharter({ brief, tasks, risks, questions }),
-      tasks,
-      milestones: this.store.listMilestones({ projectId }),
-      questions,
-      risks,
-      decisions: this.store.listDecisions({ projectId }),
-      memory: this.store.listMemoryEntries(projectId),
-      gaps: brain.gaps,
-      sources: brain.sources,
-      context,
-      sessions,
-    });
+    const pack = buildProjectContextPack(
+      {
+        project: { name: project.name },
+        brief,
+        charterFindings: auditCharter({ brief, tasks, risks, questions }),
+        tasks,
+        milestones: this.store.listMilestones({ projectId }),
+        questions,
+        risks,
+        decisions: this.store.listDecisions({ projectId }),
+        memory: this.store.listMemoryEntries(projectId),
+        gaps: brain.gaps,
+        sources: brain.sources,
+        context,
+        sessions,
+      },
+      // Deep session eyes need room: the 6KB briefing budget is right for project
+      // state, but the operator asked for the WHOLE session picture — grow the
+      // ceiling with the tail actually exposed (still bounded, ~7K tokens worst case).
+      sessions.length > 0
+        ? {
+            maxChars:
+              6_000 +
+              Math.min(
+                22_000,
+                sessions.reduce((n, b) => n + b.screenTail.length * 170, 0),
+              ),
+          }
+        : {},
+    );
     // The preamble is a property of Amrita, not the project, so it goes on EVERY
     // turn. When orchestration is on (default), she delegates builds to a session
     // (AMRITA_ORCHESTRATOR); the kill-switch reverts to the legacy inline canvas.
@@ -3019,6 +3043,37 @@ export class AmritaKernel {
    * stored, and a probe failure degrades to "no brief", never a failed turn.
    * Index is newest-first and matches what the relay seam resolves ("סשן 2").
    */
+  /** Newest files in the lane's jailed workspace — name · KB · HH:MM, read-only. */
+  private workspaceNewestFiles(lane: LaneRow): string[] {
+    try {
+      const root = laneMandateSchema.parse(JSON.parse(lane.mandateJson)).scope.paths?.[0];
+      if (!root) return [];
+      return readdirSync(root)
+        .flatMap((name) => {
+          try {
+            const st = statSync(join(root, name));
+            return [
+              {
+                name: st.isDirectory() ? `${name}/` : name,
+                mtime: st.mtimeMs,
+                kb: Math.max(1, Math.round(st.size / 1024)),
+              },
+            ];
+          } catch {
+            return [];
+          }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 8)
+        .map((f) => {
+          const t = new Date(f.mtime).toISOString().slice(11, 16);
+          return `${f.name} · ${f.kb}KB · ${t}`;
+        });
+    } catch {
+      return [];
+    }
+  }
+
   private async collectSessionBriefs(projectId: string): Promise<SessionBrief[]> {
     const lanes = this.store
       .listLanes({ projectId })
@@ -3035,12 +3090,22 @@ export class AmritaKernel {
         } catch {
           /* malformed history — keep the honest placeholder */
         }
+        // The operator's ask: Amrita sees the WHOLE picture while the agent works.
+        // `snap.text` already holds ~500 redacted scrollback lines; expose a deep
+        // window (setting-tunable), newest session deepest — older ones shallower
+        // so three sessions cannot flood the pack.
+        const configured = Number(this.getSetting(SESSION_EYES_LINES_SETTING) ?? 120);
+        const eyesLines = Math.max(
+          8,
+          Math.min(300, Number.isFinite(configured) ? configured : 120),
+        );
+        const depth = i === 0 ? eyesLines : Math.min(24, eyesLines);
         const screenTail = snap.live
           ? snap.text
               .split('\n')
               .map((l) => l.replace(/\s+$/, ''))
               .filter((l) => l.trim().length > 0)
-              .slice(-8)
+              .slice(-depth)
           : [];
         briefs.push({
           index: i + 1,
@@ -3048,6 +3113,7 @@ export class AmritaKernel {
           state: snap.state,
           goal,
           screenTail,
+          files: this.workspaceNewestFiles(lane),
         });
       } catch {
         /* a dead/foreign/raced lane simply has no brief */

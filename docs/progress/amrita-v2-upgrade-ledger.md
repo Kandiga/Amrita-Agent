@@ -1630,3 +1630,14 @@ repaint. Fix in the bridge: on attach, `capture-pane -e` hydrates the CURRENT sc
 (clear+home, colors kept, LF→CRLF, redacted), while racing deltas buffer until the snapshot lands —
 snapshot first, then deltas, always. Real-tmux test asserts the first output is the hydration frame.
 Root 804, lint/secret-scan clean. Daemon-only deploy (tmux sessions survive the restart by design).
+
+### Full session eyes — Amrita sees the whole picture, live (ADR-0051 follow-up, 2026-07-17)
+
+Natanel: "אני רוצה שלאמריטה תהייה אפשרות לראות את כל מה שקלוד עושה… גם תוך כדי". The kernel already
+captured ~500 redacted scrollback lines per session — but the brief kept 8 and the renderer kept 8.
+Now: the NEWEST session exposes a deep tail (`orchestration.sessionEyesLines`, clamped 8..300,
+default 120; older sessions get 24 so three sessions cannot flood a turn), each brief also carries
+the workspace's NEWEST FILES (name · KB · mtime, read-only — artifact truth, not just screen), and
+the pack budget grows with the exposed tail (bounded +22KB). Screen bytes still never enter the
+store; the window is derived fresh per turn from tmux's own scrollback (the SSOT of "what he did").
+Root 804, all gates clean.

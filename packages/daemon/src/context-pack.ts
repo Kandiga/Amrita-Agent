@@ -100,6 +100,14 @@ export const ORCHESTRATION_SETTING = 'orchestration.enabled';
 export const AUTO_TASK_TRANSITION_SETTING = 'orchestration.autoTaskTransition';
 
 /**
+ * How many recent terminal-history lines Amrita's session eyes read for the
+ * NEWEST session (older ones get a shallow tail). Clamped 8..300, default 120.
+ * Screen bytes still NEVER enter the store — this only widens the derived,
+ * per-turn window (ADR-0051).
+ */
+export const SESSION_EYES_LINES_SETTING = 'orchestration.sessionEyesLines';
+
+/**
  * Amrita's ORCHESTRATOR preamble (ADR-0048). Used in place of `AMRITA_CAPABILITIES`
  * when orchestration is enabled: she is the managerial brain; Claude Code and Codex
  * are the execution arms. Owner decision (2026-07-15): EVERYTHING to a session — she
@@ -175,6 +183,8 @@ export interface SessionBrief {
   state: string;
   goal: string;
   screenTail: string[];
+  /** Newest workspace files (name · size · mtime) — the ARTIFACT truth, not just the screen. */
+  files?: string[];
 }
 
 export interface ProjectContextPackInput {
@@ -267,10 +277,15 @@ export function buildProjectContextPack(
     const lines: string[] = [];
     for (const s of sessions.slice(0, 3)) {
       lines.push(`- Session ${s.index} — ${s.agent} · ${s.state} · goal: ${line(s.goal, 140)}`);
-      for (const t of s.screenTail.slice(-8)) lines.push(`    ${line(t, 120)}`);
+      // The FULL recent history the kernel chose to expose (it bounds the depth);
+      // the renderer only clips row width. The operator asked for the whole
+      // picture, not an 8-line keyhole.
+      for (const t of s.screenTail.slice(-300)) lines.push(`    ${line(t, 160)}`);
+      for (const f of (s.files ?? []).slice(0, 8)) lines.push(`    file: ${line(f, 140)}`);
     }
     lines.push('');
-    lines.push('- You can SEE these sessions (redacted live screens above).');
+    lines.push('- You can SEE these sessions: the redacted recent terminal history above');
+    lines.push('  (not just the visible screen) plus the newest files in each workspace.');
     lines.push('- When the operator asks to choose an option or type into a session, the');
     lines.push('  system relays it for you BEFORE your reply — a "SESSION RELAY" note below');
     lines.push('  the pack tells you exactly what was (or was not) sent. Confirm that');
