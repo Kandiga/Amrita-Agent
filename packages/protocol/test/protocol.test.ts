@@ -556,11 +556,16 @@ describe('ADR-0055 — acceptance criteria + verification (additive-optional)', 
     expect(eventPayloads['task.updated'].parse(payload)).toEqual(payload);
   });
 
-  it('an unknown criterion kind is refused (closed union, ADR-gated growth)', () => {
+  it('a github-pr criterion round-trips (CONN-1) and unknown kinds stay refused', () => {
+    const payload = {
+      taskId: T,
+      acceptance: [{ kind: 'github-pr' as const, repo: 'Kandiga/Amrita-Agent', number: 12 }],
+    };
+    expect(eventPayloads['task.updated'].parse(payload)).toEqual(payload);
     expect(() =>
       eventPayloads['task.updated'].parse({
         taskId: T,
-        acceptance: [{ kind: 'github-pr', ref: 'x#1' }],
+        acceptance: [{ kind: 'jira', ref: 'AMR-1' }],
       }),
     ).toThrow();
   });

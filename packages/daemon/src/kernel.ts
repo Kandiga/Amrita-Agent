@@ -111,7 +111,7 @@ import {
   looksLikeBuildIntent,
   routeFor,
 } from './execution-route.ts';
-import { fetchGithubIssues } from './github.ts';
+import { fetchGithubIssues, fetchPrMerged } from './github.ts';
 import {
   HARNESS_TOPOLOGY,
   baseKnowledgeSources,
@@ -119,6 +119,7 @@ import {
   cinemaKnowledgeSource,
 } from './harness.ts';
 import { type PublicHub, SLUG_RE, buildPublicHub, contentHash, renderPublicHub } from './hub.ts';
+import { parseIcsEvents } from './ingest-ics.ts';
 import { resolveApprovalPolicy } from './lane-approval.ts';
 import { activeScopeConflicts } from './lane-scope.ts';
 import { buildMandateFromChat } from './mandate-synth.ts';
@@ -2016,6 +2017,8 @@ export class AmritaKernel {
       root,
       fileExists: (p) => existsSync(p),
       exec: this.verifyExecImpl,
+      // CONN-1: merged-PR evidence, read-only via the injectable fetch.
+      prMerged: (repo, number) => fetchPrMerged(this.fetchImpl, repo, number),
       now: () => new Date().toISOString(),
     });
     this.store.updateTask({
@@ -2895,7 +2898,7 @@ export class AmritaKernel {
       budget: { maxMinutes: 30 },
     });
 
-    await this.startLane({
+    const lane = await this.startLane({
       conversationId: input.conversationId,
       goal: mandate.goal,
       kind,
@@ -2904,6 +2907,40 @@ export class AmritaKernel {
       approvals: mandate.approvals,
       detach: true,
     });
+
+    // HARMONY-5 (Planner v2): PROPOSE the decomposition — a tracking task linked
+    // to the session, plus one proposal per deliverable when the mandate broke
+    // the ask into pieces. Proposed, never forced (lane proposes, human
+    // disposes, ADR-0045); triaging the tracker makes the thread visible in
+    // Mission Control.
+    try {
+      this.store.captureInboxItem({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        origin: 'agent',
+        text: `Track this delegated build as a task: ${mandate.goal.slice(0, 160)}`,
+        suggestedKind: 'task',
+        suggested: { laneId: lane.laneId },
+        rationale:
+          (mandate.deliverables ?? []).length > 0
+            ? `deliverables: ${(mandate.deliverables ?? []).join(' · ').slice(0, 200)}`
+            : 'a delegated session should be a tracked thread',
+        confidence: 'medium',
+      });
+      for (const deliverable of (mandate.deliverables ?? []).slice(0, 6)) {
+        this.store.captureInboxItem({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          origin: 'agent',
+          text: deliverable,
+          suggestedKind: 'task',
+          rationale: 'proposed decomposition of the build request (Planner v2)',
+          confidence: 'low',
+        });
+      }
+    } catch {
+      // proposals are best-effort; the session itself is already running
+    }
   }
 
   /**
@@ -3813,6 +3850,106 @@ export class AmritaKernel {
    * `resolveApproval` (web/Telegram/CLI), a timeout (→ DENY, audited), or the
    * provided abort signal. Deny-by-default: only an explicit `allow` proceeds.
    */
+  /** HARMONY-2: channel notifiers (telegram, …) — registered by running channel
+   * runners; the kernel stays channel-agnostic. Errors are swallowed: a push is
+   * a nicety, never a failure path. */
+  private readonly channelNotifiers = new Map<
+    string,
+    (projectId: string, text: string, opts?: { approvalId?: string }) => Promise<void> | void
+  >();
+
+  registerChannelNotifier(
+    id: string,
+    notify: (
+      projectId: string,
+      text: string,
+      opts?: { approvalId?: string },
+    ) => Promise<void> | void,
+  ): void {
+    this.channelNotifiers.set(id, notify);
+  }
+
+  notifyChannels(projectId: string, text: string, opts?: { approvalId?: string }): void {
+    for (const notify of this.channelNotifiers.values()) {
+      try {
+        void Promise.resolve(notify(projectId, text, opts)).catch(() => {});
+      } catch {
+        // a notifier must never break the caller
+      }
+    }
+  }
+
+  /**
+   * HARMONY-2: the daily digest — what runs, what waits for the operator, what
+   * failed its checks. DERIVED, value-free, null when everything is quiet
+   * (a silent day sends nothing — the Hermes watchdog convention).
+   */
+  buildDailyDigest(projectId: string): string | null {
+    const approvals = this.listPendingApprovals().filter((a) => a.projectId === projectId);
+    const lanes = this.store
+      .listLanes({ projectId })
+      .filter((l) => l.status === 'running' || l.status === 'merging');
+    const tasks = this.store.listTasks({ projectId });
+    const waiting = tasks.filter(
+      (t) => t.blockedReason && t.status !== 'done' && t.status !== 'dropped',
+    );
+    const failed = tasks.filter((t) => {
+      if (t.status === 'done' || t.status === 'dropped' || !t.verificationJson) return false;
+      try {
+        return (JSON.parse(t.verificationJson) as { passed?: boolean }).passed === false;
+      } catch {
+        return false;
+      }
+    });
+    if (!approvals.length && !lanes.length && !waiting.length && !failed.length) return null;
+    const lines: string[] = ['Amrita daily digest'];
+    if (approvals.length) {
+      lines.push(
+        `⏳ ${approvals.length} approval(s) waiting: ${approvals.map((a) => a.action).join(', ')}`,
+      );
+    }
+    if (lanes.length) lines.push(`▶ ${lanes.length} session(s) running`);
+    if (failed.length) {
+      lines.push(
+        `✗ checks failing on: ${failed
+          .map((t) => t.title)
+          .slice(0, 5)
+          .join(' · ')}`,
+      );
+    }
+    if (waiting.length) {
+      lines.push(
+        `⏸ waiting on you: ${waiting
+          .map((t) => t.title)
+          .slice(0, 5)
+          .join(' · ')}`,
+      );
+    }
+    return lines.join('\n');
+  }
+
+  /** HARMONY-6: calendar ingestion by IMPORT — each VEVENT becomes a Brain
+   * record with provenance `calendar-import` (an honest import source; no fake
+   * live connector is claimed). */
+  importIcs(input: { projectId: string; conversationId: string; ics: string } & EntityWriteOpts): {
+    imported: number;
+  } {
+    const events = parseIcsEvents(input.ics);
+    for (const ev of events) {
+      this.captureKnowledge({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        kind: 'meeting-note',
+        title: ev.title,
+        ...(ev.body ? { body: ev.body } : {}),
+        ...(ev.date ? { date: ev.date } : {}),
+        source: 'calendar-import',
+        ...(input.origin ? { origin: input.origin } : {}),
+      });
+    }
+    return { imported: events.length };
+  }
+
   requestApproval(
     ctx: { projectId: string; conversationId: string; laneId?: string },
     action: string,
@@ -3839,6 +3976,12 @@ export class AmritaKernel {
       type: 'approval.requested',
       payload: { approvalId, action, ...(detail ? { detail } : {}) },
     } as UnsealedEvent);
+    // HARMONY-2: push to paired chats — approve/deny from the phone.
+    this.notifyChannels(
+      ctx.projectId,
+      `Approval waiting: ${action}${detail ? `\n${detail}` : ''}`,
+      { approvalId },
+    );
 
     return new Promise((resolve) => {
       const timeoutMs = opts.timeoutMs ?? this.approvalTimeoutMs;

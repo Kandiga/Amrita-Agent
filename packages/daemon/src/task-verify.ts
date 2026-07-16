@@ -15,6 +15,8 @@ export interface VerifyIO {
   fileExists: (absolutePath: string) => boolean;
   /** Run a gate command in the root; resolves with the exit code only. */
   exec: (run: string, cwd: string, timeoutMs: number) => Promise<{ code: number }>;
+  /** CONN-1: is a PR merged? null = unknowable (no token/network) → honest fail. */
+  prMerged?: (repo: string, number: number) => Promise<boolean | null>;
   now: () => string;
   timeoutMs?: number;
 }
@@ -50,6 +52,20 @@ export async function runAcceptance(
         const ok = io.fileExists(abs);
         results.push({ criterion, ok, ...(ok ? {} : { detail: 'missing' }) });
       }
+      continue;
+    }
+    if (criterion.kind === 'github-pr') {
+      const merged = io.prMerged ? await io.prMerged(criterion.repo, criterion.number) : null;
+      results.push({
+        criterion,
+        ok: merged === true,
+        detail:
+          merged === true
+            ? 'merged'
+            : merged === false
+              ? 'not merged'
+              : 'unknown (GITHUB_TOKEN not set or unreachable)',
+      });
       continue;
     }
     if (criterion.kind !== 'command') continue; // manual — filtered above; narrows the type

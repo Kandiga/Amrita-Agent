@@ -850,6 +850,12 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.captureKnowledge(clean(p)),
   ),
 
+  // HARMONY-6: calendar ingestion by import (.ics paste/upload) — honest source.
+  'harness.importIcs': def(
+    z.object({ ...convCtx, ...writeOpts, ics: z.string().min(1).max(500_000) }),
+    (k, p) => k.importIcs(clean(p)),
+  ),
+
   // Read-only project context probe (ADR-0034).
   'projects.context': def(z.object({ projectId: z.string() }), (k, p) =>
     k.getProjectContext(p.projectId),

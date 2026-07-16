@@ -32,7 +32,7 @@ const MAX_INTERVAL_MINUTES = 7 * 24 * 60;
 export const schedulerJobSchema = z
   .object({
     id: z.string().min(1).max(60),
-    kind: z.enum(['system-health', 'project-review']),
+    kind: z.enum(['system-health', 'project-review', 'daily-digest']),
     title: z.string().min(1).max(120),
     intervalMinutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(MAX_INTERVAL_MINUTES),
     enabled: z.boolean(),
@@ -70,6 +70,15 @@ export const DEFAULT_REVIEW_JOB: SchedulerJob = {
   kind: 'project-review',
   title: 'Weekly project review (proposes, never acts)',
   intervalMinutes: 7 * 24 * 60,
+  enabled: true,
+};
+
+/** HARMONY-2: the daily digest — what runs/waits/fails, pushed to paired chats. */
+export const DEFAULT_DIGEST_JOB: SchedulerJob = {
+  id: 'daily-digest',
+  kind: 'daily-digest',
+  title: 'Daily digest to paired chats (silent when quiet)',
+  intervalMinutes: 24 * 60,
   enabled: true,
 };
 
@@ -112,7 +121,9 @@ export class Scheduler {
   jobs(): SchedulerJob[] {
     const raw = this.kernel.getSetting(SCHEDULER_JOBS_SETTING);
     const parsed = schedulerJobsSchema.safeParse(raw);
-    return parsed.success ? parsed.data : [DEFAULT_HEALTH_JOB, DEFAULT_REVIEW_JOB];
+    return parsed.success
+      ? parsed.data
+      : [DEFAULT_HEALTH_JOB, DEFAULT_REVIEW_JOB, DEFAULT_DIGEST_JOB];
   }
 
   /**
@@ -217,6 +228,20 @@ export class Scheduler {
           if (this.kernel.runProjectReview(projectId, this.now())) anything = true;
         }
         return anything ? 'problem' : 'ok'; // 'problem' = there is something to look at
+      }
+      // HARMONY-2: what runs / waits / fails, pushed to paired chats. Silent when quiet.
+      case 'daily-digest': {
+        const projects = job.projectId
+          ? [job.projectId]
+          : this.kernel
+              .listProjects()
+              .filter((p) => p.activatedAt)
+              .map((p) => p.id);
+        for (const projectId of projects) {
+          const digest = this.kernel.buildDailyDigest(projectId);
+          if (digest) this.kernel.notifyChannels(projectId, digest);
+        }
+        return 'ok';
       }
       case 'system-health': {
         const report = await runDoctor(this.kernel);

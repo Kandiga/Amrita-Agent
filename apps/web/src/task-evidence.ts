@@ -24,7 +24,10 @@ export function parseCriteria(
         typeof c === 'object' &&
         c !== null &&
         'kind' in c &&
-        (c.kind === 'file' || c.kind === 'command' || c.kind === 'manual'),
+        (c.kind === 'file' ||
+          c.kind === 'command' ||
+          c.kind === 'manual' ||
+          c.kind === 'github-pr'),
     );
   } catch {
     return [];
@@ -65,5 +68,6 @@ export function evidenceView(
 export function criterionLabel(c: AcceptanceCriterionLite): string {
   if (c.kind === 'file') return `file: ${c.path}`;
   if (c.kind === 'command') return `run: ${c.run}`;
+  if (c.kind === 'github-pr') return `pr: ${c.repo}#${c.number}`;
   return `manual: ${c.text}`;
 }

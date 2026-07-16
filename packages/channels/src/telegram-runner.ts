@@ -94,16 +94,46 @@ export function startTelegramRunner(
   const channel = new TelegramChannel(
     kernel,
     {
-      async sendMessage(chatId, text) {
+      async sendMessage(chatId, text, extra) {
+        // HARMONY-2: an approval push carries inline Allow/Deny buttons; the
+        // callback data goes back through the SAME deny-by-default owner gate.
+        const replyMarkup = extra?.approvalId
+          ? {
+              inline_keyboard: [
+                [
+                  { text: 'Allow ✓', callback_data: `apr:${extra.approvalId}:allow` },
+                  { text: 'Deny ✗', callback_data: `apr:${extra.approvalId}:deny` },
+                ],
+              ],
+            }
+          : undefined;
         await fetchImpl(api('sendMessage'), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text }),
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+          }),
         });
       },
     },
     { allowedUserIds: opts.allowedUserIds },
   );
+
+  // HARMONY-2: register the push seam — approval prompts and digests reach every
+  // chat PAIRED to the project (a Telegram DM's chat id IS the paired user id).
+  kernel.registerChannelNotifier('telegram', async (projectId, text, notifyOpts) => {
+    const chatIds = new Set(
+      kernel
+        .listPairings('telegram')
+        .filter((pr) => pr.projectId === projectId && pr.claimedBy)
+        .map((pr) => String(pr.claimedBy)),
+    );
+    for (const chatId of chatIds) {
+      await channel.notify(chatId, text, notifyOpts);
+    }
+  });
 
   let stopped = false;
   let offset = 0;

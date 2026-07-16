@@ -1600,3 +1600,24 @@ attention-ranked (pending approval > failed checks > running session > waiting r
 nudge) with a one-line "what now". `MissionControlPanel` renders at the top of the Project stage;
 read-only (actions stay with their owning panels); empty board stays quiet. Web 183 (+4),
 typecheck/lint/build clean. No daemon change.
+
+## Phase O — Harmony 2-6 in one arc (ADR-0056, 2026-07-16)
+
+- **HARMONY-2 — notifications + rhythm.** Channel-notifier seam (`registerChannelNotifier` /
+  `notifyChannels`, errors swallowed); `requestApproval` pushes to every chat paired to the project
+  with inline **Allow/Deny** (callback `apr:<id>:<verdict>` re-enters the same deny-by-default owner
+  gate → `resolveApproval`); scheduler kind `daily-digest` (default 24h job, silent when quiet:
+  approvals waiting / sessions running / failing checks / waiting-on-you); weekly review auto-run
+  already existed (`project-review` default job).
+- **HARMONY-3 — GitHub evidence (CONN-1 phase 1).** Criterion union += `github-pr {repo, number}`,
+  verified read-only via `pulls/{n}/merge` with GITHUB_TOKEN (204/404 definitive; unknown = honest
+  failed check, never a silent pass).
+- **HARMONY-4 — QA/Compare one click.** SessionsPanel buttons: completed lane → "QA with <other
+  agent>" (`verifiesLaneId` — inherits workspace/group/role); any goal-ful lane → "Compare with
+  <other>" (same goal, `groupId` = source lane, role `compare`).
+- **HARMONY-5 — Planner v2.** A chat-delegated build now PROPOSES its decomposition: a tracking
+  task linked to the session + one Inbox proposal per mandate deliverable (proposed, never forced).
+- **HARMONY-6 — first real Brain ingestion.** `harness.importIcs`: pure bounded RFC-5545 parser →
+  Brain records with `calendar-import` provenance (an honest import source; no fake connector).
+- Gates: root **803** (+11: notify 4, channels callbacks 3, ingest 3, github-pr 1) · web 183 ·
+  typecheck/lint/protocol/web builds · secret scan (395) · diff-check — all clean. ADR-0056.

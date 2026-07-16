@@ -96,3 +96,34 @@ export async function fetchGithubIssues(
     .filter((i) => i.pull_request === undefined)
     .map((i) => ({ number: i.number, title: i.title, url: i.html_url, state: i.state }));
 }
+
+/**
+ * CONN-1 (HARMONY-3): is this pull request MERGED? Read-only evidence for the
+ * ADR-0055 `github-pr` criterion. Returns null when the answer is unknowable
+ * (no token / network / 404) — an unknown is an honest failed check upstream,
+ * never a silent pass.
+ */
+export async function fetchPrMerged(
+  fetchImpl: FetchLike,
+  repo: string,
+  number: number,
+): Promise<boolean | null> {
+  const token = process.env[GITHUB_TOKEN_ENV];
+  if (!token) return null;
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${repo}/pulls/${number}/merge`, {
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'amrita-daemon',
+      },
+    });
+    // 204 = merged; 404 = not merged (or no such PR) — both are definitive.
+    if (res.status === 204) return true;
+    if (res.status === 404) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}

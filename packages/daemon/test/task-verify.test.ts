@@ -69,6 +69,23 @@ describe('runAcceptance (pure, injected IO)', () => {
     expect(v.passed).toBe(false);
   });
 
+  it('github-pr criteria pass only on a MERGED pr; unknown is an honest failure (CONN-1)', async () => {
+    const v = await runAcceptance(
+      [
+        { kind: 'github-pr', repo: 'o/r', number: 1 },
+        { kind: 'github-pr', repo: 'o/r', number: 2 },
+        { kind: 'github-pr', repo: 'o/r', number: 3 },
+      ],
+      IO({ prMerged: async (_r, n) => (n === 1 ? true : n === 2 ? false : null) }),
+    );
+    expect(v.results.map((r) => [r.ok, r.detail])).toEqual([
+      [true, 'merged'],
+      [false, 'not merged'],
+      [false, 'unknown (GITHUB_TOKEN not set or unreachable)'],
+    ]);
+    expect(v.passed).toBe(false);
+  });
+
   it('resolveWithinRoot refuses escapes and accepts the root itself', () => {
     expect(resolveWithinRoot('/proj', 'src/a.ts')).toBe('/proj/src/a.ts');
     expect(resolveWithinRoot('/proj', '.')).toBe('/proj');

@@ -109,7 +109,8 @@ export type { CapsuleItem };
 export type AcceptanceCriterionLite =
   | { kind: 'file'; path: string }
   | { kind: 'command'; run: string }
-  | { kind: 'manual'; text: string };
+  | { kind: 'manual'; text: string }
+  | { kind: 'github-pr'; repo: string; number: number };
 
 export type TaskRowLite = {
   /** ADR-0055 — evidence-based done (raw JSON; parse on use). */
@@ -291,6 +292,29 @@ export class RpcClient {
 
   lanesCancel(laneId: string): Promise<LaneCancelResultLite> {
     return this.call<LaneCancelResultLite>('lanes.cancel', { laneId });
+  }
+
+  /** HARMONY-4: start a correlated lane — QA (verifies) or Compare (same group). */
+  startCorrelatedLane(
+    conversationId: string,
+    params: {
+      kind: string;
+      goal: string;
+      verifiesLaneId?: string;
+      groupId?: string;
+      role?: 'qa' | 'compare';
+    },
+  ): Promise<LaneStartResultLite> {
+    return this.call<LaneStartResultLite>('lanes.start', {
+      conversationId,
+      goal: params.goal,
+      kind: params.kind,
+      real: true,
+      detach: true,
+      ...(params.verifiesLaneId ? { verifiesLaneId: params.verifiesLaneId } : {}),
+      ...(params.groupId ? { groupId: params.groupId } : {}),
+      ...(params.role ? { role: params.role } : {}),
+    });
   }
 
   /** Open an interactive tmux session for an agent (ADR-0049). Gated by approval. */

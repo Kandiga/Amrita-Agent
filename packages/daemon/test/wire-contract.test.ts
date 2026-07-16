@@ -127,6 +127,11 @@ describe('wire-contract round-trip (ADR-0032)', () => {
       blockedReason: 'waiting on the permit',
     });
     await run('tasks.complete', { ...ctx, taskId: t.taskId });
+    // HARMONY-6: calendar ingestion by import
+    await run('harness.importIcs', {
+      ...ctx,
+      ics: 'BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Wire kickoff\nDTSTART:20260720\nEND:VEVENT\nEND:VCALENDAR',
+    });
 
     await run('projects.brief.update', { ...ctx, goal: 'close the wire' });
     await run('projects.brand.update', { ...ctx, name: 'Amrita' });

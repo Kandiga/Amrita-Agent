@@ -75,6 +75,28 @@ export async function runChannelUpdate(
     return { channel, handled: true, outcome: 'unpaired', replies: [reply] };
   }
 
+  // HARMONY-2: inline approval buttons — `apr:<id>:allow|deny` callback data.
+  // Behind the same owner gate as everything else; unknown/settled ids answer
+  // honestly instead of pretending.
+  const apr = update.text.trim().match(/^apr:([A-Za-z0-9]+):(allow|deny)$/);
+  if (apr?.[1] && apr[2]) {
+    const verdict = apr[2] === 'allow' ? 'allow' : 'deny';
+    const out = kernel.resolveApproval(apr[1], verdict);
+    const reply = out.resolved
+      ? verdict === 'allow'
+        ? 'approved ✓'
+        : 'denied ✗'
+      : 'that approval is gone (already settled or timed out)';
+    const replies = await sendChunks(update.chatId, reply);
+    return {
+      channel,
+      handled: true,
+      outcome: 'command',
+      conversationId: link.conversationId,
+      replies,
+    };
+  }
+
   // Operator commands (ADR-0021/R2): ONE kernel-side interpreter for every surface.
   if (isOperatorCommand(update.text)) {
     const reply = await runOperatorCommand(kernel, update.text.trim(), link.projectId);

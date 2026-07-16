@@ -800,6 +800,7 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'tasks.complete': okTrueSchema,
   // ADR-0055: an operator-initiated acceptance-verification run.
   'tasks.verify': z.object({ passed: z.boolean(), results: z.array(verificationResultSchema) }),
+  'harness.importIcs': z.object({ imported: z.number().int().nonnegative() }),
 
   'projects.companion.get': companionStateSchema,
   'projects.brief.update': okTrueSchema,

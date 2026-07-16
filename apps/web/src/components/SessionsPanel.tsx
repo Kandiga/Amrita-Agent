@@ -360,6 +360,46 @@ export function SessionsPanel({
                     {lane.summary}
                   </p>
                 ) : null}
+
+                {/* HARMONY-4: the kernel's cross-QA + compare, one click away. The
+                    new lane opens under the OTHER agent's tab (same project). */}
+                <div className="session-correlate">
+                  {lane.status === 'completed' ? (
+                    <button
+                      type="button"
+                      disabled={isActing || !conversationId}
+                      onClick={() =>
+                        void act(lane.id, async () => {
+                          await client.startCorrelatedLane(conversationId, {
+                            kind: agent === 'claude' ? 'codex-tmux' : 'claude-code-tmux',
+                            goal: `Independently verify the finished work of this ${TITLE[agent]} session: ${lane.goal ?? lane.id}. Inspect the files in your working folder and report what passes and what does not.`,
+                            verifiesLaneId: lane.id,
+                          });
+                        })
+                      }
+                    >
+                      QA with {agent === 'claude' ? TITLE.codex : TITLE.claude}
+                    </button>
+                  ) : null}
+                  {lane.goal && lane.status !== 'aborted' ? (
+                    <button
+                      type="button"
+                      disabled={isActing || !conversationId}
+                      onClick={() =>
+                        void act(lane.id, async () => {
+                          await client.startCorrelatedLane(conversationId, {
+                            kind: agent === 'claude' ? 'codex-tmux' : 'claude-code-tmux',
+                            goal: lane.goal ?? '',
+                            groupId: lane.id,
+                            role: 'compare',
+                          });
+                        })
+                      }
+                    >
+                      Compare with {agent === 'claude' ? TITLE.codex : TITLE.claude}
+                    </button>
+                  ) : null}
+                </div>
               </li>
             );
           })}

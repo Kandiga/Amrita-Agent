@@ -4,7 +4,7 @@ import type { Channel, ChannelResult, InboundUpdate } from './types.ts';
 
 /** The outbound surface a real Telegram bot provides — injected (faked in tests). */
 export interface TelegramSender {
-  sendMessage(chatId: string, text: string): Promise<void> | void;
+  sendMessage(chatId: string, text: string, extra?: { approvalId?: string }): Promise<void> | void;
 }
 
 export interface TelegramChannelOptions {
@@ -38,6 +38,11 @@ export class TelegramChannel implements Channel {
     this.sender = sender;
     this.allowed = new Set(opts.allowedUserIds);
     this.chunkSize = opts.chunkSize ?? TELEGRAM_MAX;
+  }
+
+  /** HARMONY-2: outbound push (approval prompts, digests) — no inbound update. */
+  async notify(chatId: string, text: string, extra?: { approvalId?: string }): Promise<void> {
+    await this.sender.sendMessage(chatId, text, extra);
   }
 
   async handleUpdate(update: InboundUpdate): Promise<ChannelResult> {

@@ -256,6 +256,15 @@ export const acceptanceCriterionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('file'), path: z.string().min(1).max(500) }).strict(),
   z.object({ kind: z.literal('command'), run: z.string().min(1).max(500) }).strict(),
   z.object({ kind: z.literal('manual'), text: z.string().min(1).max(500) }).strict(),
+  // CONN-1 (HARMONY-3): a merged pull request IS evidence. Read-only check
+  // against the GitHub API; the token stays an env NAME everywhere.
+  z
+    .object({
+      kind: z.literal('github-pr'),
+      repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+      number: z.number().int().positive(),
+    })
+    .strict(),
 ]);
 export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>;
 

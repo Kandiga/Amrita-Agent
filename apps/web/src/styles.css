@@ -3886,3 +3886,18 @@ code {
     flex-basis: 100%;
   }
 }
+
+/* HARMONY-4 — cross-QA / compare buttons on a session row. */
+.session-correlate {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.3rem 0 0;
+}
+.session-correlate button {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--border-mid);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}

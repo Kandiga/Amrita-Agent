@@ -295,3 +295,51 @@ describe('telegram operator commands (ADR-0021)', () => {
     expect(unknown.replies.join('')).toContain('/help');
   });
 });
+
+describe('inline approval buttons (HARMONY-2)', () => {
+  it('an allowed apr: callback resolves the real approval and confirms', async () => {
+    const { code } = linkedConversation(123);
+    const ch = new TelegramChannel(kernel, sender, { allowedUserIds: [123] });
+    await ch.handleUpdate({ kind: 'message', userId: '123', chatId: 'c', text: `/pair ${code}` });
+
+    const projectId = kernel.listProjects()[0]?.id ?? '';
+    const conversationId = kernel.createConversation({ projectId }).id;
+    const decision = kernel.requestApproval({ projectId, conversationId }, 'lane.run-real');
+    const approvalId = kernel.listPendingApprovals()[0]?.approvalId ?? '';
+
+    const r = await ch.handleUpdate({
+      kind: 'callback',
+      userId: '123',
+      chatId: 'c',
+      text: `apr:${approvalId}:allow`,
+    });
+    expect(r.outcome).toBe('command');
+    expect(sender.sent.at(-1)?.text).toBe('approved ✓');
+    await expect(decision).resolves.toBe('allow');
+  });
+
+  it('a settled/unknown approval answers honestly', async () => {
+    const { code } = linkedConversation(123);
+    const ch = new TelegramChannel(kernel, sender, { allowedUserIds: [123] });
+    await ch.handleUpdate({ kind: 'message', userId: '123', chatId: 'c', text: `/pair ${code}` });
+    await ch.handleUpdate({
+      kind: 'callback',
+      userId: '123',
+      chatId: 'c',
+      text: 'apr:01ABC:deny',
+    });
+    expect(sender.sent.at(-1)?.text).toMatch(/gone/);
+  });
+
+  it('notify() sends the approval keyboard extra through the sender', async () => {
+    const extras: unknown[] = [];
+    const spy: TelegramSender = {
+      sendMessage: (_c, _t, extra) => {
+        extras.push(extra);
+      },
+    };
+    const ch = new TelegramChannel(kernel, spy, { allowedUserIds: [123] });
+    await ch.notify('55', 'Approval waiting: x', { approvalId: 'A1' });
+    expect(extras[0]).toEqual({ approvalId: 'A1' });
+  });
+});
