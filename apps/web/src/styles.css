@@ -3493,10 +3493,151 @@ code {
 .sessions-panel .empty {
   color: var(--gray-500);
 }
+
+/* ── ADR-0052: Claude-web chrome around a faithful terminal ─────────────────
+   Reference: Claude's web artifact panel (Mobbin) — bone chrome, rounded ink
+   panel, coral accent, chip-shaped meta. The terminal stays a terminal; the
+   frame speaks claude.ai. */
+.sessions-panel {
+  --cl-bone: #faf9f5;
+  --cl-bone-deep: #f0eee7;
+  --cl-ink: #1f1e1d;
+  --cl-line: #e8e6df;
+  --cl-text: #141413;
+  --cl-muted: #6e6d66;
+  --cl-coral: #d97757;
+}
+.session-card {
+  border: 1px solid var(--cl-line);
+  border-radius: 16px;
+  background: var(--cl-bone);
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(20 20 19 / 4%), 0 8px 24px rgb(20 20 19 / 5%);
+}
+.session-meta {
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--cl-line);
+  background: var(--cl-bone);
+}
+.session-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 999px;
+  background: var(--cl-bone-deep);
+  color: var(--cl-text);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.session-agent::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--cl-coral);
+}
+.session-goal {
+  color: var(--cl-muted);
+  font-size: 0.85rem;
+}
+.session-runtime-running {
+  background: color-mix(in srgb, var(--cl-coral) 14%, transparent);
+  color: var(--cl-coral);
+}
+.session-screen-head {
+  padding: 0.45rem 0.9rem 0;
+  align-items: center;
+}
+.session-reconnect {
+  border: none;
+  background: none;
+  color: var(--cl-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.session-reconnect:hover {
+  color: var(--cl-coral);
+}
+.session-terminal-wrap {
+  position: relative;
+  margin: 0.5rem 0.9rem;
+  background: var(--cl-ink);
+  border-radius: 12px;
+  padding: 0.65rem 0.35rem 0.65rem 0.65rem;
+  height: 26rem;
+  box-shadow: inset 0 0 0 1px rgb(250 249 245 / 6%);
+}
+.session-terminal {
+  width: 100%;
+  height: 100%;
+}
+.session-terminal .xterm,
+.session-terminal .xterm-viewport,
+.session-terminal .xterm-screen {
+  height: 100% !important;
+}
+.session-terminal .xterm-viewport {
+  background: transparent !important;
+  border-radius: 8px;
+}
+.session-terminal-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--cl-ink) 78%, transparent);
+  color: #eceae4;
+  font-size: 0.85rem;
+  border-radius: 12px;
+  pointer-events: none;
+}
+.session-pane {
+  margin: 0.5rem 0.9rem;
+  border-radius: 12px;
+}
+.session-controls {
+  padding: 0.55rem 0.9rem 0.8rem;
+  align-items: center;
+}
+.session-hint {
+  flex: 1;
+  font-size: 0.78rem;
+  color: var(--cl-muted);
+}
+.session-controls button {
+  border-radius: 999px;
+  border-color: var(--cl-line);
+  background: var(--cl-bone-deep);
+  color: var(--cl-text);
+  font-size: 0.82rem;
+}
+.session-controls button:hover:not(:disabled) {
+  border-color: var(--cl-coral);
+  color: var(--cl-coral);
+}
+.session-approval {
+  margin: 0.6rem 0.9rem 0;
+}
+.session-auth-warning {
+  margin: 0.6rem 0.9rem 0;
+}
+.session-summary {
+  padding: 0 0.9rem 0.8rem;
+}
+
 @media (max-width: 720px) {
   .sessions-head,
   .sessions-open {
     flex-direction: column;
+  }
+  .session-terminal-wrap {
+    height: 19rem;
+    margin: 0.5rem 0.5rem;
   }
   .session-refresh,
   .sessions-open button {

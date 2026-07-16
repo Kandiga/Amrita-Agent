@@ -4,6 +4,7 @@ import { client } from '../client.ts';
 import { type LaneView, isActive } from '../lanes-state.ts';
 import { textDir } from '../lib.ts';
 import type { SessionPanes } from '../session-state.ts';
+import { SessionTerminal } from './SessionTerminal.tsx';
 
 interface SessionsPanelProps {
   /** Which agent this tab drives. */
@@ -15,6 +16,8 @@ interface SessionsPanelProps {
   sessions: SessionPanes;
   approvals: OperatorApprovalLite[];
   realExecAvailable: boolean;
+  /** Bearer for the terminal socket (ADR-0052); the daemon re-validates it. */
+  authToken?: string | undefined;
   /** Refetch durable lane rows, approval state, and on-demand tmux snapshots. */
   onChanged: () => void | Promise<void>;
   onError: (e: unknown) => void;
@@ -67,6 +70,7 @@ export function SessionsPanel({
   sessions,
   approvals,
   realExecAvailable,
+  authToken,
   onChanged,
   onError,
 }: SessionsPanelProps) {
@@ -75,6 +79,8 @@ export function SessionsPanel({
   const [busy, setBusy] = useState(false);
   const [actingLane, setActingLane] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
+  /** Per-lane terminal reconnect epochs (ADR-0052). */
+  const [termEpochs, setTermEpochs] = useState<Record<string, number>>({});
 
   const mine = lanes.filter((lane) => lane.kind === kind);
 
@@ -165,6 +171,10 @@ export function SessionsPanel({
             const input = inputs[lane.id] ?? '';
             const isActing = actingLane === lane.id;
             const canWrite = active && runtime === 'running' && pane?.live === true;
+            // The embedded terminal IS the CLI (ADR-0052) — full keyboard control,
+            // including auth screens (the human at the keyboard is who MAY answer
+            // them). It waits only for the approval gate.
+            const showTerminal = active && runtime !== 'awaiting-approval';
             return (
               <li key={lane.id} className="session-card">
                 <div className="session-meta">
@@ -221,50 +231,84 @@ export function SessionsPanel({
                   </output>
                 ) : null}
 
-                <div className="session-screen-head">
-                  <span>{pane?.live ? 'Live tmux screen' : 'Recovered session state'}</span>
-                  {pane?.capturedAt ? (
-                    <time dateTime={pane.capturedAt}>
-                      {new Date(pane.capturedAt).toLocaleTimeString()}
-                    </time>
-                  ) : null}
-                </div>
-                <pre className="session-pane" aria-label="redacted live session output">
-                  {pane?.text ||
-                    (active
-                      ? runtime === 'unavailable'
-                        ? 'The tmux session is not available. You can safely cancel this lane.'
-                        : 'Waiting for the session to produce output…'
-                      : 'No live output remains for this completed session.')}
-                </pre>
+                {showTerminal ? (
+                  <>
+                    <div className="session-screen-head">
+                      <span>Interactive terminal — full CLI control</span>
+                      <button
+                        type="button"
+                        className="session-reconnect"
+                        onClick={() =>
+                          setTermEpochs((s) => ({ ...s, [lane.id]: (s[lane.id] ?? 0) + 1 }))
+                        }
+                      >
+                        Reconnect
+                      </button>
+                    </div>
+                    <SessionTerminal
+                      projectId={projectId}
+                      laneId={lane.id}
+                      authToken={authToken}
+                      epoch={termEpochs[lane.id] ?? 0}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <div className="session-screen-head">
+                      <span>{pane?.live ? 'Live tmux screen' : 'Recovered session state'}</span>
+                      {pane?.capturedAt ? (
+                        <time dateTime={pane.capturedAt}>
+                          {new Date(pane.capturedAt).toLocaleTimeString()}
+                        </time>
+                      ) : null}
+                    </div>
+                    <pre className="session-pane" aria-label="redacted live session output">
+                      {pane?.text ||
+                        (active
+                          ? runtime === 'unavailable'
+                            ? 'The tmux session is not available. You can safely cancel this lane.'
+                            : 'Waiting for the session to produce output…'
+                          : 'No live output remains for this completed session.')}
+                    </pre>
+                  </>
+                )}
 
                 {active ? (
                   <div className="session-controls">
-                    <input
-                      value={input}
-                      dir={textDir(input)}
-                      onChange={(e) =>
-                        setInputs((state) => ({ ...state, [lane.id]: e.target.value }))
-                      }
-                      placeholder={inputPlaceholder(runtime)}
-                      disabled={!canWrite || isActing}
-                    />
+                    {!showTerminal ? (
+                      <>
+                        <input
+                          value={input}
+                          dir={textDir(input)}
+                          onChange={(e) =>
+                            setInputs((state) => ({ ...state, [lane.id]: e.target.value }))
+                          }
+                          placeholder={inputPlaceholder(runtime)}
+                          disabled={!canWrite || isActing}
+                        />
+                        <button
+                          type="button"
+                          disabled={!canWrite || !input.trim() || isActing}
+                          onClick={() =>
+                            void act(lane.id, async () => {
+                              const result = await client.sessionSend(projectId, lane.id, input);
+                              if (!result.sent)
+                                throw new Error('The session no longer accepts input.');
+                              setInputs((state) => ({ ...state, [lane.id]: '' }));
+                            })
+                          }
+                        >
+                          {isActing ? 'Working…' : 'Send'}
+                        </button>
+                      </>
+                    ) : (
+                      <span className="session-hint muted">
+                        Type directly in the terminal — arrows, Esc and /commands all work.
+                      </span>
+                    )}
                     <button
                       type="button"
-                      disabled={!canWrite || !input.trim() || isActing}
-                      onClick={() =>
-                        void act(lane.id, async () => {
-                          const result = await client.sessionSend(projectId, lane.id, input);
-                          if (!result.sent) throw new Error('The session no longer accepts input.');
-                          setInputs((state) => ({ ...state, [lane.id]: '' }));
-                        })
-                      }
-                    >
-                      {isActing ? 'Working…' : 'Send'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!canWrite || isActing}
+                      disabled={isActing || (!showTerminal && !canWrite)}
                       onClick={() =>
                         void act(lane.id, async () => {
                           const result = await client.sessionFinish(projectId, lane.id);

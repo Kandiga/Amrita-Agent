@@ -1,11 +1,19 @@
 import { createReadStream, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
-import { type AmritaEvent, type WsServerFrame, isProjectDomainEvent } from '@amrita/protocol';
+import {
+  type AmritaEvent,
+  type TerminalClientFrame,
+  type WsServerFrame,
+  isProjectDomainEvent,
+  terminalClientFrameSchema,
+  terminalServerFrameSchema,
+} from '@amrita/protocol';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { requestToken, tokensMatch } from './auth.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
+import { type TerminalBridge, attachTerminalBridge } from './terminal-bridge.ts';
 
 /** Seal one WS frame to the protocol union (ADR-0032) before serializing. */
 function wsFrame(frame: WsServerFrame): string {
@@ -521,7 +529,8 @@ export function startHttpServer(
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== '/events/ws') {
+    const terminalMatch = /^\/lanes\/([A-Za-z0-9_-]+)\/terminal$/.exec(url.pathname);
+    if (url.pathname !== '/events/ws' && !terminalMatch) {
       socket.destroy();
       return;
     }
@@ -541,6 +550,61 @@ export function startHttpServer(
         socket.destroy();
         return;
       }
+    }
+    // The embedded session terminal (ADR-0052): one socket ⇄ one tmux control-
+    // mode child. Ownership rules mirror the snapshot RPC — the lane must belong
+    // to the REQUESTED project and be interactive; foreign and missing lanes are
+    // indistinguishable. Frames are schema-parsed on both sides; nothing persists.
+    if (terminalMatch) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const live = ws as LiveSocket;
+        live.isAlive = true;
+        ws.on('pong', () => {
+          live.isAlive = true;
+        });
+        const laneId = terminalMatch[1] ?? '';
+        const projectId = url.searchParams.get('projectId');
+        const lane = kernel.getLane(laneId);
+        if (
+          !projectId ||
+          !lane ||
+          lane.projectId !== projectId ||
+          !lane.kind.endsWith('-tmux') ||
+          lane.status === 'completed' ||
+          lane.status === 'aborted'
+        ) {
+          ws.close(1008, 'no such session');
+          return;
+        }
+        let bridge: TerminalBridge;
+        try {
+          bridge = attachTerminalBridge({
+            sessionName: `amrita-${laneId}`,
+            onOutput: (data) =>
+              safeSend(ws, JSON.stringify(terminalServerFrameSchema.parse({ t: 'output', data }))),
+            onExit: (reason) => {
+              safeSend(ws, JSON.stringify(terminalServerFrameSchema.parse({ t: 'exit', reason })));
+              ws.close(1000, 'session ended');
+            },
+          });
+        } catch {
+          ws.close(1011, 'terminal unavailable');
+          return;
+        }
+        ws.on('message', (raw) => {
+          let frame: TerminalClientFrame;
+          try {
+            frame = terminalClientFrameSchema.parse(JSON.parse(String(raw)));
+          } catch {
+            return; // an unparseable frame is dropped, never interpreted
+          }
+          if (frame.t === 'input') bridge.write(frame.data);
+          else bridge.resize(frame.cols, frame.rows);
+        });
+        ws.on('close', () => bridge.close());
+        ws.on('error', () => bridge.close());
+      });
+      return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const live = ws as LiveSocket;

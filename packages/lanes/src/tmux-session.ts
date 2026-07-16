@@ -84,6 +84,28 @@ export function classifyBootPane(pane: string): 'prompt' | 'login' | 'blocked' |
 /** Durable progress marker used to decide whether a restarted session still needs its goal. */
 export const SESSION_GOAL_SENT_PROGRESS = 'sent the goal to the session';
 
+/**
+ * A CONFIRMED identity/workspace conflict (ADR-0052) — a security stop. Returns a
+ * reason string ONLY when a field is present AND actually wrong (a different agent,
+ * a cwd outside the mandate). `null` fields mean the control read could not confirm
+ * (a transient race on a shared tmux control server); those are NOT a conflict and
+ * must never abort a healthy session. Returns null when there is no confirmed
+ * conflict.
+ */
+export function confirmedConflict(
+  state: { agent: string | null; cwd: string | null },
+  expectedAgent: 'claude' | 'codex',
+  expectedCwd: string,
+): string | null {
+  if (state.agent !== null && state.agent !== expectedAgent) {
+    return `refused: tmux session identity mismatch (expected ${expectedAgent})`;
+  }
+  if (state.cwd !== null && resolvePath(state.cwd) !== resolvePath(expectedCwd)) {
+    return 'refused: tmux session escaped its mandated workspace';
+  }
+  return null;
+}
+
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) return resolve();
@@ -203,19 +225,16 @@ export class TmuxSessionLaneRunner implements LaneRunner {
     } else {
       ctx?.onProgress?.('re-attached to the running session', 5);
     }
-    if (
-      state.dead ||
-      state.agent !== this.cfg.agent ||
-      state.cwd === null ||
-      resolvePath(state.cwd) !== resolvePath(cwd)
-    ) {
+    // A CONFIRMED conflict (a non-null field that is actually wrong) is a security
+    // stop. A null field means "could not confirm" — a transient control-read race
+    // (ADR-0052), NOT a wrong-agent attach — and must never abort a healthy session.
+    const conflict = confirmedConflict(state, this.cfg.agent, cwd);
+    if (state.dead || conflict) {
       const summary = state.dead
         ? `${this.cfg.agent} session exited before it became ready`
-        : state.agent !== this.cfg.agent
-          ? `refused: tmux session identity mismatch (expected ${this.cfg.agent})`
-          : 'refused: tmux session escaped its mandated workspace';
+        : conflict;
       await ensureSessionGone();
-      return buildReport(mandate, 'aborted', summary);
+      return buildReport(mandate, 'aborted', summary as string);
     }
 
     const start = clock();
@@ -235,13 +254,11 @@ export class TmuxSessionLaneRunner implements LaneRunner {
 
     while (ended === null) {
       state = await tmux.sessionState(name);
-      if (
-        !state.exists ||
-        state.dead ||
-        state.agent !== this.cfg.agent ||
-        state.cwd === null ||
-        resolvePath(state.cwd) !== resolvePath(cwd)
-      ) {
+      // Only a CONFIRMED gone/dead/wrong session ends the run. A transient read
+      // race (null identity fields on a still-existing session) is skipped — the
+      // next iteration re-reads — so a busy shared control server never
+      // false-aborts a live session (ADR-0052).
+      if (!state.exists || state.dead || confirmedConflict(state, this.cfg.agent, cwd)) {
         ended = 'partial';
         break;
       }

@@ -1277,6 +1277,7 @@ export function App() {
                 sessions={sessions}
                 approvals={pendingApprovals}
                 realExecAvailable={realExecAvailable}
+                authToken={authToken}
                 onChanged={async () => {
                   await Promise.all([loadProjectSessions(), loadApprovals()]);
                 }}

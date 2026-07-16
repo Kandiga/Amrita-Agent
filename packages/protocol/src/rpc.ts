@@ -166,6 +166,32 @@ export const wsServerFrameSchema = z.discriminatedUnion('t', [
 ]);
 export type WsServerFrame = z.infer<typeof wsServerFrameSchema>;
 
+/**
+ * The embedded session TERMINAL socket (ADR-0052) — a dedicated endpoint
+ * (`GET /lanes/<laneId>/terminal`), NOT part of the events union above. The
+ * browser sends raw key bytes (as a UTF-8 string; the daemon hex-encodes them
+ * into `send-keys -H`, so they are bytes, never a command) and resize hints;
+ * the daemon streams redacted pane output and an honest exit. Nothing on this
+ * socket is ever persisted.
+ */
+export const terminalClientFrameSchema = z.discriminatedUnion('t', [
+  z.object({ t: z.literal('input'), data: z.string().min(1).max(8192) }).strict(),
+  z
+    .object({
+      t: z.literal('resize'),
+      cols: z.number().int().min(20).max(500),
+      rows: z.number().int().min(5).max(300),
+    })
+    .strict(),
+]);
+export type TerminalClientFrame = z.infer<typeof terminalClientFrameSchema>;
+
+export const terminalServerFrameSchema = z.discriminatedUnion('t', [
+  z.object({ t: z.literal('output'), data: z.string() }).strict(),
+  z.object({ t: z.literal('exit'), reason: z.string().max(200) }).strict(),
+]);
+export type TerminalServerFrame = z.infer<typeof terminalServerFrameSchema>;
+
 export function parseWsServerFrame(input: unknown): WsServerFrame {
   return wsServerFrameSchema.parse(input);
 }

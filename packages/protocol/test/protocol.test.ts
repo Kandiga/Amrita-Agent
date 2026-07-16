@@ -176,6 +176,24 @@ describe('lane contract', () => {
 });
 
 describe('rpc wire contract (ADR-0032)', () => {
+  it('terminal frames round-trip and reject junk (ADR-0052)', async () => {
+    const { terminalClientFrameSchema, terminalServerFrameSchema } = await import('../src/rpc.ts');
+    expect(terminalClientFrameSchema.parse({ t: 'input', data: '\x1b[A' })).toEqual({
+      t: 'input',
+      data: '\x1b[A',
+    });
+    expect(terminalClientFrameSchema.parse({ t: 'resize', cols: 120, rows: 32 })).toEqual({
+      t: 'resize',
+      cols: 120,
+      rows: 32,
+    });
+    expect(() => terminalClientFrameSchema.parse({ t: 'input', data: '' })).toThrow();
+    expect(() => terminalClientFrameSchema.parse({ t: 'resize', cols: 5, rows: 2 })).toThrow();
+    expect(() => terminalClientFrameSchema.parse({ t: 'exec', cmd: 'rm -rf' })).toThrow();
+    expect(terminalServerFrameSchema.parse({ t: 'output', data: 'hi' }).t).toBe('output');
+    expect(terminalServerFrameSchema.parse({ t: 'exit', reason: 'ended' }).t).toBe('exit');
+  });
+
   it('parses success and error response envelopes', () => {
     const okFrame = parseRpcResponse({ id: 1, result: { pong: true } });
     expect('error' in okFrame).toBe(false);

@@ -110,27 +110,35 @@ export function createNodeTmuxController(): TmuxController {
       // the delimiter reconstructs exactly; the fixed-vocabulary fields
       // (0/1, claude/codex, 0/1) never can.
       const D = ':::';
-      const r = await runTmux([
-        'display-message',
-        '-p',
-        '-t',
-        name,
-        `#{pane_dead}${D}#{@amrita_agent}${D}#{@amrita_goal_sent}${D}#{pane_current_path}`,
-      ]);
-      if (r.code !== 0) {
-        return { exists: false, dead: true, agent: null, goalSent: false, cwd: null };
+      const fmt = `#{pane_dead}${D}#{@amrita_agent}${D}#{@amrita_goal_sent}${D}#{pane_current_path}`;
+      // A single `display-message` can lose a race when two control clients share
+      // the server (the daemon's capture loop + a live browser terminal, ADR-0052)
+      // and return non-zero — or a briefly-empty read before the option is visible
+      // to this client. A spurious empty read would look like a WRONG-AGENT attach
+      // and false-abort a healthy session (found live, 2026-07-16). So retry, and
+      // only conclude "gone" when `has-session` ALSO reports it gone.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const r = await runTmux(['display-message', '-p', '-t', name, fmt]);
+        if (r.code === 0) {
+          const [dead = '', agent = '', goalSent = '', ...cwdParts] = r.stdout
+            .replace(/\r?\n$/, '')
+            .split(D);
+          const cwd = cwdParts.join(D);
+          // Trust the read only when identity fields actually came back; an empty
+          // agent/cwd on a live session is a race artifact, not the truth.
+          if (agent !== '' && cwd !== '') {
+            return { exists: true, dead: dead === '1', agent, goalSent: goalSent === '1', cwd };
+          }
+        }
+        if ((await runTmux(['has-session', '-t', name])).code !== 0) {
+          return { exists: false, dead: true, agent: null, goalSent: false, cwd: null };
+        }
+        await new Promise((res) => setTimeout(res, 40 * (attempt + 1)));
       }
-      const [dead = '', agent = '', goalSent = '', ...cwdParts] = r.stdout
-        .replace(/\r?\n$/, '')
-        .split(D);
-      const cwd = cwdParts.join(D);
-      return {
-        exists: true,
-        dead: dead === '1',
-        agent: agent || null,
-        goalSent: goalSent === '1',
-        cwd: cwd || null,
-      };
+      // The session EXISTS (has-session kept succeeding) but its control read kept
+      // racing. Report it alive with unknown identity; the caller must treat null
+      // fields as "unconfirmed", never as a mismatch.
+      return { exists: true, dead: false, agent: null, goalSent: false, cwd: null };
     },
     async newSession(spec) {
       if (spec.command.length === 0) throw new Error('tmux session command is required');

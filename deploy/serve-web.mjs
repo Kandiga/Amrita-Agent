@@ -123,10 +123,13 @@ const server = createServer((req, res) => {
   }
 });
 
-// WS passthrough for /events/ws: replay the original handshake to the daemon
-// and splice the sockets. The daemon still authenticates the ?token= itself.
+// WS passthrough for /events/ws and the embedded session terminal (ADR-0052):
+// replay the original handshake to the daemon and splice the sockets. The daemon
+// still authenticates the ?token= and validates lane ownership itself.
 server.on('upgrade', (req, socket, head) => {
-  if (!(req.url ?? '').startsWith('/events/ws')) {
+  const path = req.url ?? '';
+  const isTerminal = /^\/lanes\/[A-Za-z0-9_-]+\/terminal(\?|$)/.test(path);
+  if (!path.startsWith('/events/ws') && !isTerminal) {
     socket.destroy();
     return;
   }

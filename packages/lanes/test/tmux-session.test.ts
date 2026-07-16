@@ -4,6 +4,7 @@ import {
   FakeTmuxController,
   TmuxSessionLaneRunner,
   classifyBootPane,
+  confirmedConflict,
   redactPane,
 } from '../src/index.ts';
 
@@ -34,6 +35,24 @@ class RecordingTmux extends FakeTmuxController {
     const sent = await super.sendGoalOnce(name, text);
     if (sent) this.sent.push(text);
     return sent;
+  }
+}
+
+/** Simulates a shared control server: the first `flaky` sessionState reads return
+ *  a transient "unconfirmed" state (session exists, identity fields null). */
+class FlakyTmux extends RecordingTmux {
+  flaky: number;
+  constructor(flaky: number) {
+    super();
+    this.flaky = flaky;
+  }
+  override async sessionState(name: string) {
+    if (this.flaky > 0) {
+      this.flaky -= 1;
+      const exists = await this.hasSession(name);
+      return { exists, dead: false, agent: null, goalSent: false, cwd: null };
+    }
+    return super.sessionState(name);
   }
 }
 
@@ -411,6 +430,38 @@ describe('TmuxSessionLaneRunner (ADR-0049)', () => {
     // Everything before it was only the safe Enter that accepted the trust dialog.
     expect(tmux.sent.slice(0, -1).every((entry) => entry === '')).toBe(true);
     expect(tmux.sent.slice(0, -1).length).toBeGreaterThan(0);
+  });
+
+  it('confirmedConflict flags only a PRESENT-and-wrong field, never a null (unconfirmed) one', () => {
+    // A transient control-read race returns null identity — that is "unknown", not
+    // "wrong", and must never be a conflict (the ADR-0052 false-abort root cause).
+    expect(confirmedConflict({ agent: null, cwd: null }, 'claude', '/ws/L1')).toBeNull();
+    expect(confirmedConflict({ agent: 'claude', cwd: '/ws/L1' }, 'claude', '/ws/L1')).toBeNull();
+    expect(confirmedConflict({ agent: 'codex', cwd: '/ws/L1' }, 'claude', '/ws/L1')).toMatch(
+      /identity mismatch/,
+    );
+    expect(confirmedConflict({ agent: 'claude', cwd: '/ws/OTHER' }, 'claude', '/ws/L1')).toMatch(
+      /escaped/,
+    );
+    expect(confirmedConflict({ agent: null, cwd: '/ws/OTHER' }, 'claude', '/ws/L1')).toMatch(
+      /escaped/,
+    );
+  });
+
+  it('a transient sessionState read race never false-aborts a healthy session (ADR-0052)', async () => {
+    const tmux = new FlakyTmux(5); // the first 5 reads come back "unconfirmed"
+    const runner = mkRunner(tmux);
+    const m = mandate('survive the race');
+    const name = `amrita-${m.laneId}`;
+    const finish = new AbortController();
+    setTimeout(() => tmux.emit(name, '\n❯ '), 20);
+    setTimeout(() => finish.abort(), 90);
+
+    const report = await runner.run(m, { finishSignal: finish.signal });
+
+    // It ran to a graceful finish — NOT aborted with an identity mismatch.
+    expect(report.exit).toBe('done');
+    expect(report.summary).not.toMatch(/identity mismatch/);
   });
 
   it('a persistent login screen receives no keypress and no goal, even after the goal delay', async () => {
