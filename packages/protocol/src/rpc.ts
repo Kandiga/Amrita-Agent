@@ -22,13 +22,16 @@ import {
   taskRowSchema,
 } from './entities.ts';
 import {
+  type EventType,
   authModeSchema,
   inboxKindSchema,
+  isStreamOnly,
   laneRowStatusSchema,
   providerConfigStatusSchema,
   providerRoleSchema,
   riskSeveritySchema,
   sealedEventShellSchema,
+  sessionRuntimeStateSchema,
 } from './events.ts';
 import { harnessTopologySchema, knowledgeSourceSchema, projectBrainSchema } from './harness.ts';
 import { idSchema, isoTimestampSchema } from './ids.ts';
@@ -107,6 +110,7 @@ export function parseRpcResponse(input: unknown): RpcResponseFrame {
  */
 export const PROJECT_DOMAIN_EVENT_PREFIXES = [
   'task.',
+  'approval.', // ADR-0050: a session can await approval in another conversation
   'milestone.',
   'question.',
   'risk.',
@@ -119,8 +123,20 @@ export const PROJECT_DOMAIN_EVENT_PREFIXES = [
   'publication.',
 ] as const;
 
+// Durable lane lifecycle only. `lane.progress` can be extremely high-volume and
+// must not trigger a project-wide projection/snapshot refetch storm (ADR-0050).
+const PROJECT_DOMAIN_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'lane.spawned',
+  'lane.completed',
+  'lane.aborted',
+]);
+
 export function isProjectDomainEvent(type: string): boolean {
-  return PROJECT_DOMAIN_EVENT_PREFIXES.some((p) => type.startsWith(p));
+  // Unknown strings are harmless here: Set.has returns false at runtime. The cast
+  // keeps this boundary usable by intentionally loose event projections such as the web UI.
+  if (isStreamOnly(type as EventType)) return false;
+  if (PROJECT_DOMAIN_EVENT_TYPES.has(type)) return true;
+  return PROJECT_DOMAIN_EVENT_PREFIXES.some((prefix) => type.startsWith(prefix));
 }
 
 export const wsServerFrameSchema = z.discriminatedUnion('t', [
@@ -140,6 +156,13 @@ export const wsServerFrameSchema = z.discriminatedUnion('t', [
    * (a refetch is idempotent).
    */
   z.object({ t: z.literal('project-event'), event: sealedEventShellSchema }),
+  /**
+   * A project-scoped interactive-session screen update (ADR-0050). Unlike
+   * `project-event`, this is ephemeral and must never trigger a projection
+   * refetch; unlike `event`, it may originate in another conversation. Only
+   * the explicit `lane.pane` allowlist may use this frame.
+   */
+  z.object({ t: z.literal('project-session-event'), event: sealedEventShellSchema }),
 ]);
 export type WsServerFrame = z.infer<typeof wsServerFrameSchema>;
 
@@ -380,6 +403,16 @@ export const laneCancelResultSchema = z.object({
   status: laneRowStatusSchema.nullable(),
 });
 export type LaneCancelResultWire = z.infer<typeof laneCancelResultSchema>;
+
+/** Ephemeral, redacted tmux snapshot (ADR-0050). Never persisted. */
+export const sessionSnapshotSchema = z.object({
+  laneId: idSchema,
+  live: z.boolean(),
+  state: sessionRuntimeStateSchema,
+  text: z.string().max(64_000),
+  capturedAt: isoTimestampSchema,
+});
+export type SessionSnapshotWire = z.infer<typeof sessionSnapshotSchema>;
 
 /** A pending operator approval (ADR-0021). Runtime state; events are the audit. */
 export const pendingApprovalSchema = z.object({
@@ -727,6 +760,8 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'lanes.workspace.ticket': z.object({ ticket: z.string(), expiresAt: z.string() }),
   'lanes.session.send': z.object({ laneId: idSchema, sent: z.boolean() }),
   'lanes.session.finish': z.object({ laneId: idSchema, finished: z.boolean() }),
+  'lanes.session.cancel': laneCancelResultSchema,
+  'lanes.session.snapshot': sessionSnapshotSchema,
   'project.delete': z.object({ deleted: z.literal(true) }),
 
   'message.user.record': z.object({ messageId: idSchema, event: sealedEventShellSchema }),

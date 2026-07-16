@@ -23,6 +23,21 @@ function sealedEvent(seq: number, text: string) {
   };
 }
 
+function paneEvent(text: string) {
+  const laneId = newId();
+  return {
+    id: newId(),
+    seq: 0,
+    ts: '2026-07-11T10:00:00.000Z',
+    projectId: newId(),
+    conversationId: newId(),
+    laneId,
+    origin: 'lane',
+    type: 'lane.pane',
+    payload: { laneId, text, state: 'running' },
+  };
+}
+
 /** A controllable fake socket: tests drive open/message/close by hand. */
 class FakeSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
@@ -50,6 +65,7 @@ interface Harness {
   handle: EventStreamHandle;
   sockets: FakeSocket[];
   events: AmritaEventLite[];
+  projectSessionEvents: AmritaEventLite[];
   states: StreamState[];
   replays: number[];
   runPending(): void;
@@ -58,6 +74,7 @@ interface Harness {
 function harness(opts: { maxRetries?: number } = {}): Harness {
   const sockets: FakeSocket[] = [];
   const events: AmritaEventLite[] = [];
+  const projectSessionEvents: AmritaEventLite[] = [];
   const states: StreamState[] = [];
   const replays: number[] = [];
   let pending: (() => void) | null = null;
@@ -66,6 +83,7 @@ function harness(opts: { maxRetries?: number } = {}): Harness {
     'c1',
     {
       onEvent: (e) => events.push(e),
+      onProjectSessionEvent: (e) => projectSessionEvents.push(e),
       onState: (s) => states.push(s),
       onReplayed: (n) => replays.push(n),
     },
@@ -92,6 +110,7 @@ function harness(opts: { maxRetries?: number } = {}): Harness {
     handle,
     sockets,
     events,
+    projectSessionEvents,
     states,
     replays,
     runPending: () => {
@@ -134,6 +153,21 @@ describe('event stream client', () => {
     expect(h.replays).toEqual([3]);
   });
 
+  it('delivers only lane.pane project-session frames and does not advance the chat cursor', () => {
+    const h = harness();
+    h.sockets[0]?.open();
+    const pane = paneEvent('screen from another conversation');
+    h.sockets[0]?.emit({ t: 'project-session-event', event: pane });
+    // Defense in depth: even a contract-valid non-pane event on this frame is dropped.
+    h.sockets[0]?.emit({ t: 'project-session-event', event: sealedEvent(99, 'private') });
+
+    expect(h.projectSessionEvents.map((event) => event.id)).toEqual([pane.id]);
+    expect(h.events).toHaveLength(0);
+    h.sockets[0]?.fail();
+    h.runPending();
+    expect(h.sockets[1]?.url).toContain('sinceSeq=0');
+  });
+
   it('reconnects with backoff after a drop and resumes from the last seq', () => {
     const h = harness();
     h.sockets[0]?.open();
@@ -152,6 +186,25 @@ describe('event stream client', () => {
     expect(h.sockets).toHaveLength(2);
     h.sockets[1]?.fail(); // retries already at max → give up
     expect(h.handle.state()).toBe('error');
+  });
+
+  it('ignores late open/message callbacks from a closed or superseded socket', () => {
+    const h = harness();
+    const old = h.sockets[0] as FakeSocket;
+    old.fail();
+    h.runPending();
+    const current = h.sockets[1] as FakeSocket;
+    current.open();
+
+    old.open();
+    old.emit({ t: 'event', event: sealedEvent(4, 'stale') });
+    expect(h.events).toHaveLength(0);
+    expect(h.handle.state()).toBe('open');
+
+    h.handle.close();
+    current.emit({ t: 'event', event: sealedEvent(5, 'after close') });
+    expect(h.events).toHaveLength(0);
+    expect(h.handle.state()).toBe('closed');
   });
 
   it('appends an encoded token to the ws url when provided', () => {

@@ -30,6 +30,9 @@ export interface LaneRunContext {
   /** Graceful finish (ADR-0049) — the operator ended an interactive session; the
    *  runner wraps up and reports `done`/`partial` (vs `signal` → `cancelled`). */
   finishSignal?: AbortSignal;
+  /** Restart recovery (ADR-0050): durable evidence that the initial goal already
+   *  reached an existing tmux session. Omitted keeps legacy runner behavior. */
+  sessionGoalAlreadySent?: boolean;
 }
 
 export interface LaneRunner {

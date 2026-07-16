@@ -708,13 +708,19 @@ export const METHODS: Record<string, RpcMethod> = {
     (k, p) => k.resolveApproval(p.approvalId, p.decision),
   ),
   'lanes.cancel': def(z.object({ laneId: z.string() }), (k, p) => k.cancelLane(p.laneId)),
-  // Interactive tmux sessions (ADR-0049): type into the pane, or gracefully finish.
+  // Interactive tmux sessions (ADR-0049/0050): every control is project-scoped.
   'lanes.session.send': def(
-    z.object({ laneId: z.string(), text: z.string().min(1).max(4000) }),
-    (k, p) => k.sendSessionInput(p.laneId, p.text),
+    z.object({ projectId: z.string(), laneId: z.string(), text: z.string().min(1).max(4000) }),
+    (k, p) => k.sendSessionInput(p.projectId, p.laneId, p.text),
   ),
-  'lanes.session.finish': def(z.object({ laneId: z.string() }), (k, p) =>
-    k.finishSession(p.laneId),
+  'lanes.session.finish': def(z.object({ projectId: z.string(), laneId: z.string() }), (k, p) =>
+    k.finishSession(p.projectId, p.laneId),
+  ),
+  'lanes.session.cancel': def(z.object({ projectId: z.string(), laneId: z.string() }), (k, p) =>
+    k.cancelSession(p.projectId, p.laneId),
+  ),
+  'lanes.session.snapshot': def(z.object({ projectId: z.string(), laneId: z.string() }), (k, p) =>
+    k.getSessionSnapshot(p.projectId, p.laneId),
   ),
   // ADR-0039 amendment: lane-scoped read-only ticket for the canvas iframe —
   // the global bearer never enters a frame URL.

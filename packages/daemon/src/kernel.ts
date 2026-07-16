@@ -6,8 +6,12 @@ import {
   CodexLaneRunner,
   type LaneRunner,
   ResearchLaneRunner,
+  SESSION_GOAL_SENT_PROGRESS,
+  type TmuxController,
   TmuxSessionLaneRunner,
+  classifyBootPane,
   createNodeTmuxController,
+  redactPane,
 } from '@amrita/lanes';
 import {
   type AmritaEvent,
@@ -24,6 +28,8 @@ import {
   type ProjectBrain,
   type ProjectContextWire,
   type ProjectRow,
+  type SessionRuntimeState,
+  type SessionSnapshotWire,
   type SkillStatus,
   type UnsealedEvent,
   cinemaMandateReportSchema,
@@ -225,6 +231,8 @@ export interface KernelOptions {
   laneRunner?: LaneRunner;
   /** Additional kind-dispatched runners (ADR-0023); override the built-ins by kind. */
   extraLaneRunners?: LaneRunner[];
+  /** Injectable tmux boundary shared by runners and session-control RPCs (ADR-0050). */
+  tmuxController?: TmuxController;
   /** Opt-in to REAL Claude Code lane execution. Default false (also `AMRITA_LANES_ALLOW_REAL_EXECUTION=1`). */
   allowRealLaneExecution?: boolean;
   /** Workspace roots a real lane's cwd must resolve within (also `AMRITA_LANES_ALLOWED_ROOTS`, `:`-sep). */
@@ -377,10 +385,12 @@ export class AmritaKernel {
       finishController?: AbortController;
     }
   >();
+  /** Cached durable evidence that an interactive session already received its initial goal. */
+  private readonly sessionGoalSentLanes = new Set<string>();
   /** Listeners for STREAM-ONLY events (model.delta, lane.pane) — never persisted (D8). */
   private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
-  /** tmux boundary for operator session I/O (ADR-0049); the session name is derivable. */
-  private readonly tmux = createNodeTmuxController();
+  /** tmux boundary shared by interactive runners and control/snapshot RPCs (ADR-0050). */
+  private readonly tmux: TmuxController;
   /**
    * Short-TTL cache for the coding-runtime status. The auth probe spawns
    * `claude auth status` / `codex` (~4s each), and the Planner + router ask for it on
@@ -409,6 +419,7 @@ export class AmritaKernel {
     realLaneExecution: boolean,
     laneWorkspacesRoot: string | null,
     laneAllowedTools: string[],
+    tmux: TmuxController,
     codingRuntimeProber: CommandProber | undefined,
     cliExec: CliExec | undefined,
     approvalTimeoutMs: number,
@@ -422,6 +433,7 @@ export class AmritaKernel {
     this.realLaneExecution = realLaneExecution;
     this.laneWorkspacesRoot = laneWorkspacesRoot;
     this.laneAllowedTools = laneAllowedTools;
+    this.tmux = tmux;
     this.codingRuntimeProber = codingRuntimeProber;
     this.cliExec = cliExec;
     this.approvalTimeoutMs = approvalTimeoutMs;
@@ -468,14 +480,12 @@ export class AmritaKernel {
     // Interactive tmux sessions (ADR-0049): register only on a real-exec daemon —
     // there is no "safe refusal" variant, so on a non-opted daemon the `*-tmux` kinds
     // stay unknown and abort honestly. Tests override by kind via `extraLaneRunners`.
+    const tmux = opts.tmuxController ?? createNodeTmuxController();
     const tmuxSessionRunners: LaneRunner[] = realLaneExecution
-      ? (() => {
-          const tmux = createNodeTmuxController();
-          return [
-            new TmuxSessionLaneRunner({ agent: 'claude', tmux, allowedRoots }),
-            new TmuxSessionLaneRunner({ agent: 'codex', tmux, allowedRoots }),
-          ];
-        })()
+      ? [
+          new TmuxSessionLaneRunner({ agent: 'claude', tmux, allowedRoots }),
+          new TmuxSessionLaneRunner({ agent: 'codex', tmux, allowedRoots }),
+        ]
       : [];
     for (const r of [
       new ResearchLaneRunner(),
@@ -495,6 +505,7 @@ export class AmritaKernel {
       realLaneExecution,
       allowedRoots[0] ?? null,
       allowedTools,
+      tmux,
       opts.codingRuntimeProber,
       opts.cliExec,
       // Deny-by-default stays; only the WINDOW is tunable. 120s proved too short
@@ -1284,7 +1295,21 @@ export class AmritaKernel {
     }
   }
 
-  /** Emit one stream-only `lane.pane` (ADR-0049) — the live tmux tail, never stored. */
+  private sessionGoalWasSent(conversationId: string, laneId: string): boolean {
+    if (this.sessionGoalSentLanes.has(laneId)) return true;
+    const sent = this.store
+      .getEvents(conversationId, 0)
+      .some(
+        (event) =>
+          event.laneId === laneId &&
+          event.type === 'lane.progress' &&
+          (event.payload as { note?: unknown }).note === SESSION_GOAL_SENT_PROGRESS,
+      );
+    if (sent) this.sessionGoalSentLanes.add(laneId);
+    return sent;
+  }
+
+  /** Emit one stream-only `lane.pane` (ADR-0050) — the live tmux tail, never stored. */
   private emitLanePane(
     projectId: string,
     conversationId: string,
@@ -1292,6 +1317,17 @@ export class AmritaKernel {
     text: string,
   ): void {
     if (this.closed || this.streamListeners.size === 0) return;
+    // The daemon boundary owns redaction and bounding even when a future/injected
+    // runner forgets to sanitize its pane before invoking the callback.
+    const safeText = redactPane(text).slice(-64_000);
+    const boot = classifyBootPane(safeText);
+    const goalSent = this.sessionGoalWasSent(conversationId, laneId);
+    const state: SessionRuntimeState =
+      boot === 'login'
+        ? 'awaiting-auth'
+        : boot === 'prompt' || boot === 'blocked' || safeText.trim().length === 0 || !goalSent
+          ? 'starting'
+          : 'running';
     const ev = parseEvent({
       id: newId(),
       seq: 0, // stream-only: never store-sealed, never persisted
@@ -1301,7 +1337,7 @@ export class AmritaKernel {
       laneId,
       origin: 'lane',
       type: 'lane.pane',
-      payload: { laneId, text },
+      payload: { laneId, text: safeText, state },
     });
     for (const listener of this.streamListeners) {
       try {
@@ -3128,6 +3164,88 @@ export class AmritaKernel {
   }
 
   /**
+   * Capture the current interactive pane on demand (ADR-0050). This is a
+   * read-only runtime probe: the redacted snapshot is bounded and is never
+   * appended to the event log or stored in the lane projection.
+   */
+  async getSessionSnapshot(projectId: string, laneId: string): Promise<SessionSnapshotWire> {
+    const lane = this.store.getLane(laneId);
+    // Project scope is part of the lookup, not a post-read UI filter. Return the same
+    // absence error for missing and foreign lanes so no project can probe another.
+    if (!lane || lane.projectId !== projectId) throw new Error(`no such lane: ${laneId}`);
+    if (!lane.kind.endsWith('-tmux')) {
+      throw new Error(`conflict: lane ${laneId} is not an interactive session`);
+    }
+
+    const capturedAt = new Date().toISOString();
+    if (lane.status === 'completed' || lane.status === 'aborted') {
+      return {
+        laneId,
+        live: false,
+        state: lane.status,
+        text: '',
+        capturedAt,
+      };
+    }
+
+    const pendingApproval = [...this.pendingApprovals.values()].some(
+      ({ info }) => info.laneId === laneId,
+    );
+    const entry = this.activeLanes.get(laneId);
+    const name = `amrita-${laneId}`;
+    const tmuxState = await this.tmux.sessionState(name);
+    const expectedAgent = lane.kind === 'codex-tmux' ? 'codex' : 'claude';
+    let expectedCwd: string | null = null;
+    try {
+      const mandate = laneMandateSchema.parse(JSON.parse(lane.mandateJson));
+      expectedCwd = mandate.scope.paths?.[0] ?? null;
+    } catch {
+      expectedCwd = null;
+    }
+    const live =
+      tmuxState.exists &&
+      !tmuxState.dead &&
+      tmuxState.agent === expectedAgent &&
+      tmuxState.cwd !== null &&
+      expectedCwd !== null &&
+      resolve(tmuxState.cwd) === resolve(expectedCwd);
+    if (!live) {
+      const state: SessionRuntimeState = pendingApproval
+        ? 'awaiting-approval'
+        : entry
+          ? 'starting'
+          : 'unavailable';
+      return { laneId, live: false, state, text: '', capturedAt };
+    }
+
+    let raw: string;
+    let visible: string;
+    try {
+      raw = await this.tmux.capturePane(name, 500);
+      // Lifecycle classification reads the VISIBLE SCREEN only: a non-clearing TUI
+      // (Codex) keeps its answered trust dialog in scrollback, and classifying the
+      // history tail would report `starting` forever (found live, 2026-07-16).
+      visible = await this.tmux.capturePane(name, 0);
+    } catch {
+      return { laneId, live: true, state: 'unavailable', text: '', capturedAt };
+    }
+    // Redact BEFORE truncation so a credential crossing the size boundary cannot
+    // survive as an unclassified fragment. Keep the tail, which is the current TUI.
+    const text = redactPane(raw).slice(-64_000);
+    let state: SessionRuntimeState;
+    if (entry?.finishController?.signal.aborted) state = 'finishing';
+    else {
+      const boot = classifyBootPane(redactPane(visible));
+      const goalSent = tmuxState.goalSent || this.sessionGoalWasSent(lane.conversationId, laneId);
+      if (boot === 'login') state = 'awaiting-auth';
+      else if (boot === 'prompt' || boot === 'blocked' || text.trim().length === 0 || !goalSent) {
+        state = 'starting';
+      } else state = 'running';
+    }
+    return { laneId, live: true, state, text, capturedAt };
+  }
+
+  /**
    * The Conclusion Capsule for a conversation (ADR-0048) — the derived view Amrita
    * shows instead of code and logs. Read-only: assembled fresh from the lanes, their
    * merge reports, the lane-origin Inbox proposals and pending approvals. It never
@@ -3240,13 +3358,15 @@ export class AmritaKernel {
   async resumeTmuxSessions(): Promise<{ resumed: number; aborted: number }> {
     let resumed = 0;
     let aborted = 0;
-    for (const status of ['running', 'merging'] as const) {
+    for (const status of ['spawned', 'running', 'merging'] as const) {
       for (const lane of this.store.listLanes({ status })) {
         if (!lane.kind.endsWith('-tmux') || this.activeLanes.has(lane.id)) continue;
         if (await this.tmux.hasSession(`amrita-${lane.id}`)) {
           this.resumeLane(lane);
           resumed++;
-        } else {
+        } else if (status !== 'spawned') {
+          // A spawned row may be an intentional dry-run and never had a process.
+          // Running/merging rows, however, are lying unless their tmux survived.
           this.store.appendEvent({
             id: newId(),
             ts: new Date().toISOString(),
@@ -3276,6 +3396,7 @@ export class AmritaKernel {
     }
     const controller = new AbortController();
     const finishController = new AbortController();
+    const sessionGoalAlreadySent = this.sessionGoalWasSent(lane.conversationId, lane.id);
     const promise = this.runLaneToCompletion(
       lane.projectId,
       lane.conversationId,
@@ -3285,6 +3406,7 @@ export class AmritaKernel {
       controller.signal,
       false, // already approved on first start
       finishController.signal,
+      sessionGoalAlreadySent,
     ).finally(() => this.activeLanes.delete(lane.id));
     this.activeLanes.set(lane.id, { controller, promise, durable: true, finishController });
   }
@@ -3595,6 +3717,7 @@ export class AmritaKernel {
     signal: AbortSignal,
     requireApproval = false,
     finishSignal?: AbortSignal,
+    sessionGoalAlreadySent?: boolean,
   ): Promise<LaneSettleResult> {
     if (requireApproval) {
       this.safeEmitLane(projectId, conversationId, laneId, 'lane.progress', {
@@ -3619,14 +3742,17 @@ export class AmritaKernel {
       const report = await runner.run(mandate, {
         signal,
         ...(finishSignal ? { finishSignal } : {}),
-        onProgress: (note, pct) =>
+        ...(sessionGoalAlreadySent !== undefined ? { sessionGoalAlreadySent } : {}),
+        onProgress: (note, pct) => {
+          if (note === SESSION_GOAL_SENT_PROGRESS) this.sessionGoalSentLanes.add(laneId);
           this.safeEmitLane(
             projectId,
             conversationId,
             laneId,
             'lane.progress',
             clean({ note, pct }),
-          ),
+          );
+        },
         // ADR-0049: the live tmux pane, stream-only — for the operator to watch, never
         // persisted (domain truth is the workspace files, not the screen).
         onPane: (text) => this.emitLanePane(projectId, conversationId, laneId, text),
@@ -3681,27 +3807,100 @@ export class AmritaKernel {
    * final pane, tears the session down, and reports `done`/`partial` — distinct from
    * `cancelLane`, which aborts to `cancelled`. No-op on a non-session lane.
    */
-  finishSession(laneId: string): { laneId: string; finished: boolean } {
+  finishSession(projectId: string, laneId: string): { laneId: string; finished: boolean } {
+    const lane = this.store.getLane(laneId);
+    if (!lane || lane.projectId !== projectId || !lane.kind.endsWith('-tmux')) {
+      return { laneId, finished: false };
+    }
     const entry = this.activeLanes.get(laneId);
     if (!entry?.finishController) return { laneId, finished: false };
     entry.finishController.abort();
     return { laneId, finished: true };
   }
 
-  /**
-   * Type literal input into an interactive session's pane (ADR-0049) — the operator
-   * (or Amrita) answering a prompt or redirecting mid-session. The session name is
-   * derivable (`amrita-<laneId>`); tmux `send-keys -l` never interprets the text as a
-   * shell command. Only for an active `*-tmux` lane.
-   */
-  async sendSessionInput(laneId: string, text: string): Promise<{ laneId: string; sent: boolean }> {
-    const entry = this.activeLanes.get(laneId);
+  /** Project-scoped cancellation for Session Workspace; never reveals another project. */
+  async cancelSession(projectId: string, laneId: string): Promise<LaneCancelResult> {
     const lane = this.store.getLane(laneId);
-    if (!entry?.durable || !lane || !lane.kind.endsWith('-tmux')) {
+    if (!lane || lane.projectId !== projectId || !lane.kind.endsWith('-tmux')) {
+      return { laneId, cancelled: false, status: null };
+    }
+    return this.cancelLane(laneId);
+  }
+
+  /**
+   * Type literal input into an interactive session's pane (ADR-0050) — the operator
+   * (or Amrita) answering or redirecting mid-session. The session name is derivable
+   * (`amrita-<laneId>`); tmux `send-keys -l` never interprets text as a shell command.
+   *
+   * Safety boundary: capture and classify immediately before every write. Login and
+   * boot/trust screens reject text instead of accepting credentials or a goal by
+   * accident. The durable lane row + live tmux session are sufficient during a
+   * restart re-attachment window; an in-memory runner entry is not treated as SSOT.
+   */
+  async sendSessionInput(
+    projectId: string,
+    laneId: string,
+    text: string,
+  ): Promise<{ laneId: string; sent: boolean }> {
+    const lane = this.store.getLane(laneId);
+    if (
+      !lane ||
+      lane.projectId !== projectId ||
+      !lane.kind.endsWith('-tmux') ||
+      lane.status === 'completed' ||
+      lane.status === 'aborted'
+    ) {
       return { laneId, sent: false };
     }
     const name = `amrita-${laneId}`;
-    if (!(await this.tmux.hasSession(name))) return { laneId, sent: false };
+    const state = await this.tmux.sessionState(name);
+    const expectedAgent = lane.kind === 'codex-tmux' ? 'codex' : 'claude';
+    let expectedCwd: string | null = null;
+    try {
+      const mandate = laneMandateSchema.parse(JSON.parse(lane.mandateJson));
+      expectedCwd = mandate.scope.paths?.[0] ?? null;
+    } catch {
+      return { laneId, sent: false };
+    }
+    if (
+      !state.exists ||
+      state.dead ||
+      state.agent !== expectedAgent ||
+      state.cwd === null ||
+      expectedCwd === null ||
+      resolve(state.cwd) !== resolve(expectedCwd)
+    ) {
+      return { laneId, sent: false };
+    }
+    let pane: string;
+    try {
+      // Visible screen only — scrollback would re-detect an already-answered
+      // trust dialog and wrongly refuse legitimate input (found live, 2026-07-16).
+      pane = await this.tmux.capturePane(name, 0);
+    } catch {
+      throw new Error(`conflict: session ${laneId} became unavailable before input`);
+    }
+    const boot = classifyBootPane(pane);
+    if (boot === 'login') {
+      throw new Error(`conflict: session ${laneId} is awaiting authentication`);
+    }
+    if (boot === 'prompt') {
+      throw new Error(`conflict: session ${laneId} is still at a trusted startup prompt`);
+    }
+    if (boot === 'blocked') {
+      throw new Error(`conflict: session ${laneId} needs an operator choice in the CLI`);
+    }
+    const auditedGoal = this.sessionGoalWasSent(lane.conversationId, laneId);
+    if (!state.goalSent && !auditedGoal) {
+      throw new Error(`conflict: session ${laneId} has not received its initial goal yet`);
+    }
+    if (state.goalSent && !auditedGoal) {
+      this.sessionGoalSentLanes.add(laneId);
+      this.safeEmitLane(lane.projectId, lane.conversationId, laneId, 'lane.progress', {
+        note: SESSION_GOAL_SENT_PROGRESS,
+        pct: 15,
+      });
+    }
     await this.tmux.sendKeys(name, text, { enter: true });
     return { laneId, sent: true };
   }

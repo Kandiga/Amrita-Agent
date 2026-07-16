@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { AmritaEventLite } from '../src/api.ts';
+import type { AmritaEventLite, LaneRowLite } from '../src/api.ts';
 import {
   type LaneView,
   emptyLanes,
   foldLaneEvents,
   isActive,
+  lanesFromRows,
   lanesList,
+  mergeLanesFromRows,
   reduceLaneEvent,
 } from '../src/lanes-state.ts';
 
@@ -99,6 +101,94 @@ describe('lanes-state reducer', () => {
     const twice = foldLaneEvents(once, events); // a reconnect replay
     expect(lanesList(twice)[0]?.progress).toHaveLength(1); // not doubled
     expect(reduceLaneEvent(once, events[0] as AmritaEventLite)).toBe(once); // no-op, same ref
+  });
+
+  it('hydrates project-scoped lane rows as the durable session source of truth', () => {
+    const row = (partial: Partial<LaneRowLite> & Pick<LaneRowLite, 'id'>): LaneRowLite => ({
+      projectId: '01J00000000000000000000001',
+      conversationId: '01J00000000000000000000002',
+      kind: 'claude-code-tmux',
+      status: 'running',
+      mandateJson: JSON.stringify({
+        goal: 'build the project',
+        scope: { paths: ['/workspace/project'] },
+      }),
+      budgetJson: null,
+      mergeJson: null,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      updatedAt: '2026-07-15T00:00:00.000Z',
+      ...partial,
+    });
+    const state = lanesFromRows([
+      row({ id: '01J00000000000000000000003' }),
+      row({
+        id: '01J00000000000000000000004',
+        status: 'completed',
+        createdAt: '2026-07-15T01:00:00.000Z',
+        mandateJson: '{malformed',
+        mergeJson: JSON.stringify({ exit: 'done', summary: 'completed safely' }),
+      }),
+    ]);
+
+    const list = lanesList(state);
+    expect(list.map((l) => l.id)).toEqual([
+      '01J00000000000000000000004',
+      '01J00000000000000000000003',
+    ]);
+    expect(list[1]).toMatchObject({
+      kind: 'claude-code-tmux',
+      status: 'running',
+      goal: 'build the project',
+      workspace: '/workspace/project',
+    });
+    expect(list[0]).toMatchObject({
+      status: 'completed',
+      exit: 'done',
+      summary: 'completed safely',
+    });
+    expect(list[0]?.goal).toBeUndefined();
+  });
+
+  it('merges row hydration without wiping replayed progress or event-only lanes', () => {
+    let live = reduceLaneEvent(
+      emptyLanes(),
+      ev({ id: 'spawn-1', type: 'lane.spawned', payload: { laneId: LANE, kind: 'codex-tmux' } }),
+    );
+    live = reduceLaneEvent(
+      live,
+      ev({
+        id: 'progress-1',
+        type: 'lane.progress',
+        laneId: LANE,
+        payload: { note: 'working', pct: 35 },
+      }),
+    );
+    live = reduceLaneEvent(
+      live,
+      ev({ id: 'spawn-2', type: 'lane.spawned', payload: { laneId: 'EVENT_ONLY', kind: 'x' } }),
+    );
+    const row: LaneRowLite = {
+      id: LANE,
+      projectId: '01J00000000000000000000001',
+      conversationId: '01J00000000000000000000002',
+      kind: 'codex-tmux',
+      status: 'spawned',
+      mandateJson: JSON.stringify({ goal: 'from durable row' }),
+      budgetJson: null,
+      mergeJson: null,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      updatedAt: '2026-07-15T00:00:00.000Z',
+    };
+
+    const merged = mergeLanesFromRows(live, [row]);
+
+    expect(merged.seen).toEqual(live.seen);
+    expect(merged.byId[LANE]).toMatchObject({
+      goal: 'from durable row',
+      status: 'running',
+      progress: [{ note: 'working', pct: 35 }],
+    });
+    expect(merged.byId.EVENT_ONLY).toBeDefined();
   });
 
   it('lists lanes most-recent-first and flags active ones', () => {

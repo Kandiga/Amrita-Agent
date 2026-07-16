@@ -3313,6 +3313,12 @@ code {
   flex-direction: column;
   gap: 1rem;
 }
+.sessions-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
 .sessions-head h2 {
   margin: 0 0 0.25rem;
 }
@@ -3320,6 +3326,15 @@ code {
   color: var(--gray-500);
   margin: 0;
   font-size: 0.9rem;
+  max-width: 48rem;
+}
+.session-refresh {
+  flex: none;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border-mid);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
 }
 .sessions-open {
   display: flex;
@@ -3344,7 +3359,8 @@ code {
   cursor: pointer;
 }
 .sessions-open button:disabled,
-.session-controls button:disabled {
+.session-controls button:disabled,
+.session-approval button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -3377,6 +3393,50 @@ code {
   align-items: center;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+.session-runtime {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--pampas);
+  color: var(--slate);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.session-runtime-running,
+.session-runtime-completed {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.session-runtime-awaiting-approval,
+.session-runtime-starting,
+.session-runtime-finishing {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+.session-runtime-awaiting-auth,
+.session-runtime-aborted {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+.session-auth-warning {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--error) 8%, var(--surface));
+  color: var(--error);
+  font-size: 0.86rem;
+}
+.session-screen-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--gray-500);
+  font-size: 0.72rem;
 }
 .session-agent {
   font-weight: 600;
@@ -3434,9 +3494,11 @@ code {
   color: var(--gray-500);
 }
 @media (max-width: 720px) {
+  .sessions-head,
   .sessions-open {
     flex-direction: column;
   }
+  .session-refresh,
   .sessions-open button {
     width: 100%;
   }

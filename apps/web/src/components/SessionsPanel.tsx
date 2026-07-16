@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { OperatorApprovalLite } from '../api.ts';
+import type { OperatorApprovalLite, SessionSnapshotLite } from '../api.ts';
 import { client } from '../client.ts';
 import { type LaneView, isActive } from '../lanes-state.ts';
 import { textDir } from '../lib.ts';
@@ -8,37 +8,83 @@ import type { SessionPanes } from '../session-state.ts';
 interface SessionsPanelProps {
   /** Which agent this tab drives. */
   agent: 'claude' | 'codex';
-  /** All lanes; the panel filters to this agent's `*-tmux` sessions. */
+  /** Project-wide lanes; conversationId is only the provenance for a new session. */
   lanes: LaneView[];
+  projectId: string;
   conversationId: string;
   sessions: SessionPanes;
   approvals: OperatorApprovalLite[];
   realExecAvailable: boolean;
+  /** Refetch durable lane rows, approval state, and on-demand tmux snapshots. */
+  onChanged: () => void | Promise<void>;
   onError: (e: unknown) => void;
 }
 
 const TITLE = { claude: 'Claude Code', codex: 'Codex' } as const;
+type RuntimeState = SessionSnapshotLite['state'];
+
+const RUNTIME_LABEL: Record<RuntimeState, string> = {
+  'awaiting-approval': 'Awaiting approval',
+  starting: 'Starting',
+  'awaiting-auth': 'Authentication required',
+  running: 'Running',
+  finishing: 'Finishing',
+  completed: 'Completed',
+  aborted: 'Cancelled',
+  unavailable: 'Screen unavailable',
+};
+
+function runtimeFor(
+  lane: LaneView,
+  pane: SessionPanes[string] | undefined,
+  approval: OperatorApprovalLite | undefined,
+): RuntimeState {
+  if (lane.status === 'completed') return 'completed';
+  if (lane.status === 'aborted') return 'aborted';
+  if (approval) return 'awaiting-approval';
+  return pane?.state ?? 'starting';
+}
+
+function inputPlaceholder(state: RuntimeState): string {
+  if (state === 'awaiting-auth') return 'Complete authentication in the session first';
+  if (state === 'awaiting-approval') return 'Approve the session before sending input';
+  if (state === 'unavailable') return 'The tmux screen is unavailable';
+  if (state === 'starting') return 'Wait for the agent prompt…';
+  if (state === 'finishing') return 'The session is finishing…';
+  return 'Type into the session…';
+}
 
 /**
- * The Claude / Codex tab (ADR-0049) — open an INTERACTIVE session and watch the agent
- * work live in a tmux pane, send it input, and finish it. This is the observable,
- * operator-attended execution mode (autonomous work stays headless).
+ * Project-level interactive Session Workspace (ADR-0050). Durable lane rows recover
+ * membership/lifecycle; redacted on-demand snapshots and project-scoped pane events
+ * recover the live screen without persisting terminal output.
  */
 export function SessionsPanel({
   agent,
   lanes,
+  projectId,
   conversationId,
   sessions,
   approvals,
   realExecAvailable,
+  onChanged,
   onError,
 }: SessionsPanelProps) {
   const kind = agent === 'claude' ? 'claude-code-tmux' : 'codex-tmux';
   const [goal, setGoal] = useState('');
   const [busy, setBusy] = useState(false);
+  const [actingLane, setActingLane] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
 
-  const mine = lanes.filter((l) => l.kind === kind);
+  const mine = lanes.filter((lane) => lane.kind === kind);
+
+  async function refresh(): Promise<void> {
+    try {
+      await onChanged();
+    } catch (e) {
+      onError(e);
+    }
+  }
 
   async function open(): Promise<void> {
     if (!goal.trim() || !conversationId || busy) return;
@@ -46,6 +92,7 @@ export function SessionsPanel({
     try {
       await client.openSession(conversationId, kind, goal.trim());
       setGoal('');
+      await onChanged();
     } catch (e) {
       onError(e);
     } finally {
@@ -53,22 +100,33 @@ export function SessionsPanel({
     }
   }
 
-  async function act(fn: () => Promise<unknown>): Promise<void> {
+  async function act(laneId: string, fn: () => Promise<void>): Promise<void> {
+    if (actingLane) return;
+    setActingLane(laneId);
     try {
       await fn();
+      await onChanged();
     } catch (e) {
       onError(e);
+    } finally {
+      setActingLane(null);
     }
   }
 
   return (
     <section className="sessions-panel">
       <header className="sessions-head">
-        <h2>{TITLE[agent]} sessions</h2>
-        <p className="muted">
-          Open an interactive session and watch {TITLE[agent]} work live. You can type into it and
-          finish it when it is done — this is the attended execution mode.
-        </p>
+        <div>
+          <h2>{TITLE[agent]} Session Workspace</h2>
+          <p className="muted">
+            Every interactive {TITLE[agent]} session in this project stays here when you switch
+            conversations or reconnect. Terminal output is redacted and read directly from tmux —
+            never stored in the project database.
+          </p>
+        </div>
+        <button type="button" className="session-refresh" onClick={() => void refresh()}>
+          Refresh screens
+        </button>
       </header>
 
       {realExecAvailable ? (
@@ -80,7 +138,11 @@ export function SessionsPanel({
             placeholder={`What should ${TITLE[agent]} do in this project?`}
             rows={2}
           />
-          <button type="button" onClick={() => void open()} disabled={!goal.trim() || busy}>
+          <button
+            type="button"
+            onClick={() => void open()}
+            disabled={!conversationId || !goal.trim() || busy}
+          >
             {busy ? 'Opening…' : 'Open session'}
           </button>
         </div>
@@ -92,19 +154,25 @@ export function SessionsPanel({
       )}
 
       {mine.length === 0 ? (
-        <p className="muted empty">No {TITLE[agent]} sessions yet. Open one above.</p>
+        <p className="muted empty">No {TITLE[agent]} sessions in this project yet.</p>
       ) : (
         <ul className="sessions-list">
           {mine.map((lane) => {
-            const pane = sessions[lane.id] ?? '';
+            const pane = sessions[lane.id];
             const active = isActive(lane);
-            const appr = approvals.find((a) => a.laneId === lane.id);
+            const approval = approvals.find((item) => item.laneId === lane.id);
+            const runtime = runtimeFor(lane, pane, approval);
             const input = inputs[lane.id] ?? '';
+            const isActing = actingLane === lane.id;
+            const canWrite = active && runtime === 'running' && pane?.live === true;
             return (
               <li key={lane.id} className="session-card">
                 <div className="session-meta">
-                  <span className={`lane-status lane-${lane.status}`}>
-                    {lane.exit ?? lane.status}
+                  <span
+                    className={`session-runtime session-runtime-${runtime}`}
+                    aria-label={`Session state: ${RUNTIME_LABEL[runtime]}`}
+                  >
+                    {RUNTIME_LABEL[runtime]}
                   </span>
                   <span className="session-agent">{TITLE[agent]}</span>
                   <span className="session-goal" dir={textDir(lane.goal ?? '')}>
@@ -112,31 +180,33 @@ export function SessionsPanel({
                   </span>
                 </div>
 
-                {appr ? (
+                {approval ? (
                   <div className="session-approval">
-                    <span>Waiting for your approval to run: {appr.action}</span>
+                    <span>Waiting for your approval to run: {approval.action}</span>
                     <button
                       type="button"
+                      disabled={isActing}
                       onClick={() =>
-                        void act(() =>
-                          client.approvalsResolve({
-                            approvalId: appr.approvalId,
+                        void act(lane.id, async () => {
+                          await client.approvalsResolve({
+                            approvalId: approval.approvalId,
                             decision: 'allow',
-                          }),
-                        )
+                          });
+                        })
                       }
                     >
                       Approve
                     </button>
                     <button
                       type="button"
+                      disabled={isActing}
                       onClick={() =>
-                        void act(() =>
-                          client.approvalsResolve({
-                            approvalId: appr.approvalId,
+                        void act(lane.id, async () => {
+                          await client.approvalsResolve({
+                            approvalId: approval.approvalId,
                             decision: 'deny',
-                          }),
-                        )
+                          });
+                        })
                       }
                     >
                       Deny
@@ -144,8 +214,28 @@ export function SessionsPanel({
                   </div>
                 ) : null}
 
-                <pre className="session-pane" aria-label="live session output">
-                  {pane || (active ? 'waiting for the session to produce output…' : 'no output')}
+                {runtime === 'awaiting-auth' ? (
+                  <output className="session-auth-warning">
+                    Authentication is required in this tmux screen. Amrita will not type the goal,
+                    credentials, or operator input into it. Complete login manually, then refresh.
+                  </output>
+                ) : null}
+
+                <div className="session-screen-head">
+                  <span>{pane?.live ? 'Live tmux screen' : 'Recovered session state'}</span>
+                  {pane?.capturedAt ? (
+                    <time dateTime={pane.capturedAt}>
+                      {new Date(pane.capturedAt).toLocaleTimeString()}
+                    </time>
+                  ) : null}
+                </div>
+                <pre className="session-pane" aria-label="redacted live session output">
+                  {pane?.text ||
+                    (active
+                      ? runtime === 'unavailable'
+                        ? 'The tmux session is not available. You can safely cancel this lane.'
+                        : 'Waiting for the session to produce output…'
+                      : 'No live output remains for this completed session.')}
                 </pre>
 
                 {active ? (
@@ -153,31 +243,46 @@ export function SessionsPanel({
                     <input
                       value={input}
                       dir={textDir(input)}
-                      onChange={(e) => setInputs((s) => ({ ...s, [lane.id]: e.target.value }))}
-                      placeholder="type into the session…"
+                      onChange={(e) =>
+                        setInputs((state) => ({ ...state, [lane.id]: e.target.value }))
+                      }
+                      placeholder={inputPlaceholder(runtime)}
+                      disabled={!canWrite || isActing}
                     />
                     <button
                       type="button"
-                      disabled={!input.trim()}
+                      disabled={!canWrite || !input.trim() || isActing}
                       onClick={() =>
-                        void act(async () => {
-                          await client.sessionSend(lane.id, input);
-                          setInputs((s) => ({ ...s, [lane.id]: '' }));
+                        void act(lane.id, async () => {
+                          const result = await client.sessionSend(projectId, lane.id, input);
+                          if (!result.sent) throw new Error('The session no longer accepts input.');
+                          setInputs((state) => ({ ...state, [lane.id]: '' }));
                         })
                       }
                     >
-                      Send
+                      {isActing ? 'Working…' : 'Send'}
                     </button>
                     <button
                       type="button"
-                      onClick={() => void act(() => client.sessionFinish(lane.id))}
+                      disabled={!canWrite || isActing}
+                      onClick={() =>
+                        void act(lane.id, async () => {
+                          const result = await client.sessionFinish(projectId, lane.id);
+                          if (!result.finished) throw new Error('The session is no longer active.');
+                        })
+                      }
                     >
                       Finish
                     </button>
                     <button
                       type="button"
                       className="danger"
-                      onClick={() => void act(() => client.lanesCancel(lane.id))}
+                      disabled={isActing}
+                      onClick={() =>
+                        void act(lane.id, async () => {
+                          await client.sessionCancel(projectId, lane.id);
+                        })
+                      }
                     >
                       Cancel
                     </button>

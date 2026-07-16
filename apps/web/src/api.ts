@@ -55,6 +55,7 @@ import {
   type RoleResolution,
   type RouteVerdictWire,
   type RuntimeStatusWire,
+  type SessionSnapshotWire,
   type SkillStatus,
   type SystemAuditResultWire,
   type SystemHealthResultWire,
@@ -99,6 +100,7 @@ export interface AmritaEventLite {
 export type LaneRowLite = LaneRowWire;
 export type LaneStartResultLite = LaneStartResultWire;
 export type LaneCancelResultLite = LaneCancelResultWire;
+export type SessionSnapshotLite = SessionSnapshotWire;
 export type TaskRowLite = {
   id: string;
   title: string;
@@ -288,12 +290,24 @@ export class RpcClient {
     });
   }
 
-  sessionSend(laneId: string, text: string): Promise<{ laneId: string; sent: boolean }> {
-    return this.call('lanes.session.send', { laneId, text });
+  sessionSend(
+    projectId: string,
+    laneId: string,
+    text: string,
+  ): Promise<{ laneId: string; sent: boolean }> {
+    return this.call('lanes.session.send', { projectId, laneId, text });
   }
 
-  sessionFinish(laneId: string): Promise<{ laneId: string; finished: boolean }> {
-    return this.call('lanes.session.finish', { laneId });
+  sessionFinish(projectId: string, laneId: string): Promise<{ laneId: string; finished: boolean }> {
+    return this.call('lanes.session.finish', { projectId, laneId });
+  }
+
+  sessionCancel(projectId: string, laneId: string): Promise<LaneCancelResultLite> {
+    return this.call<LaneCancelResultLite>('lanes.session.cancel', { projectId, laneId });
+  }
+
+  sessionSnapshot(projectId: string, laneId: string): Promise<SessionSnapshotLite> {
+    return this.call('lanes.session.snapshot', { projectId, laneId });
   }
 
   // ── project knowledge (typed wrappers; auth header is applied by call()) ───

@@ -47,6 +47,11 @@ function projectEventFrame(ev: AmritaEvent): WsServerFrame {
   return { t: 'project-event', event: ev };
 }
 
+/** A project-scoped, stream-only session update (ADR-0050). */
+function projectSessionEventFrame(ev: AmritaEvent): WsServerFrame {
+  return { t: 'project-session-event', event: ev };
+}
+
 /**
  * A small local HTTP + WebSocket surface over the kernel/RPC. Binds to localhost
  * by default. No framework — three routes + one WS endpoint. No frame or response
@@ -548,34 +553,29 @@ export function startHttpServer(
         ws.close(1008, 'conversationId is required');
         return;
       }
-      let lastSeq = Number(url.searchParams.get('sinceSeq') ?? '0') || 0;
-      // Bounded replay: a fresh connect with sinceSeq=0 would otherwise pull an
-      // entire long conversation into memory at once. Cap it; the client falls
-      // back to GET /events for anything older than the window.
-      let replayed = 0;
-      for (const ev of kernel.listEvents(conversationId, lastSeq)) {
-        if (replayed >= WS_MAX_REPLAY) break; // older history is fetched via GET /events
-        if (!safeSend(ws, wsFrame(eventFrame(ev)))) return;
-        lastSeq = ev.seq;
-        replayed += 1;
-      }
-      safeSend(ws, wsFrame({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
-
-      // ADR-0044: an optional project subscription. The board must update when a
-      // task changes ANYWHERE in the project — a second tab, the CLI, Telegram,
-      // the Scribe — not only in the conversation this socket happens to watch.
       const projectId = url.searchParams.get('projectId');
+      const conversation = kernel.getConversation(conversationId);
+      if (!conversation) {
+        ws.close(1008, 'conversation not found');
+        return;
+      }
+      if (projectId && conversation.projectId !== projectId) {
+        ws.close(1008, 'project does not own conversation');
+        return;
+      }
+      let lastSeq = Number(url.searchParams.get('sinceSeq') ?? '0') || 0;
+      let replaying = true;
+      const durableBuffer: AmritaEvent[] = [];
+      const streamBuffer: AmritaEvent[] = [];
 
-      // Live fan-out: forward newly appended events for this conversation.
-      const unsubscribe = kernel.store.subscribe((ev) => {
+      const forwardDurable = (ev: AmritaEvent): void => {
         if (ev.conversationId === conversationId && ev.seq > lastSeq) {
           lastSeq = ev.seq;
           safeSend(ws, wsFrame(eventFrame(ev)));
           return;
         }
         // A domain change elsewhere in the same project. Sent WITHOUT a cursor —
-        // `seq` is per-conversation, so a project-wide stream has no global
-        // sequence. It is a notification: the client refetches the projection.
+        // `seq` is per-conversation, so a project-wide stream has no global sequence.
         if (
           projectId &&
           ev.projectId === projectId &&
@@ -584,20 +584,56 @@ export function startHttpServer(
         ) {
           safeSend(ws, wsFrame(projectEventFrame(ev)));
         }
-      });
-      // Stream-only fan-out (model.delta): ephemeral, seq 0, never replayed —
-      // forwarded as-is without touching lastSeq.
-      const unsubscribeStream = kernel.subscribeStream((ev) => {
+      };
+      const forwardStream = (ev: AmritaEvent): void => {
         if (ev.conversationId === conversationId) {
           safeSend(ws, wsFrame(eventFrame(ev)));
+          return;
         }
+        if (projectId && ev.projectId === projectId && ev.type === 'lane.pane') {
+          safeSend(ws, wsFrame(projectSessionEventFrame(ev)));
+        }
+      };
+
+      // Subscribe BEFORE replay. Anything appended while the snapshot is read is
+      // buffered, then deduplicated by the conversation sequence when flushed. This
+      // closes the replay→subscribe gap that could otherwise lose an event forever.
+      const unsubscribe = kernel.store.subscribe((ev) => {
+        if (replaying) durableBuffer.push(ev);
+        else forwardDurable(ev);
       });
+      const unsubscribeStream = kernel.subscribeStream((ev) => {
+        if (replaying) streamBuffer.push(ev);
+        else forwardStream(ev);
+      });
+      let cleaned = false;
       const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         unsubscribe();
         unsubscribeStream();
       };
       ws.on('close', cleanup);
       ws.on('error', cleanup);
+
+      // Bounded replay: a fresh connect with sinceSeq=0 would otherwise pull an
+      // entire long conversation into memory at once. Cap it; the client falls
+      // back to GET /events for anything older than the window.
+      let replayed = 0;
+      for (const ev of kernel.listEvents(conversationId, lastSeq)) {
+        if (replayed >= WS_MAX_REPLAY) break;
+        if (!safeSend(ws, wsFrame(eventFrame(ev)))) {
+          replaying = false;
+          cleanup();
+          return;
+        }
+        lastSeq = ev.seq;
+        replayed += 1;
+      }
+      replaying = false;
+      for (const ev of durableBuffer) forwardDurable(ev);
+      for (const ev of streamBuffer) forwardStream(ev);
+      safeSend(ws, wsFrame({ t: 'replayed', conversationId, sinceSeq: lastSeq }));
     });
   });
 

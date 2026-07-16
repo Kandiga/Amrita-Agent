@@ -239,8 +239,16 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     await run('lanes.list', { projectId: p.id });
     await run('lanes.get', { laneId: lane.laneId });
     await run('orchestration.capsule', { conversationId: c.id });
-    await run('lanes.session.send', { laneId: lane.laneId, text: 'hi' });
-    await run('lanes.session.finish', { laneId: lane.laneId });
+    await run('lanes.session.send', { projectId: p.id, laneId: lane.laneId, text: 'hi' });
+    await run('lanes.session.finish', { projectId: p.id, laneId: lane.laneId });
+    const interactiveLane = (await run('lanes.start', {
+      conversationId: c.id,
+      goal: 'snapshot target',
+      kind: 'claude-code-tmux',
+      dryRun: true,
+    })) as { laneId: string };
+    await run('lanes.session.snapshot', { projectId: p.id, laneId: interactiveLane.laneId });
+    await run('lanes.session.cancel', { projectId: p.id, laneId: interactiveLane.laneId });
     await run('lanes.cancel', { laneId: lane.laneId });
 
     await run('approvals.list');

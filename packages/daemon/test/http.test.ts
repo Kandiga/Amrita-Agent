@@ -1,3 +1,5 @@
+import type { LaneRunner } from '@amrita/lanes';
+import { type UnsealedEvent, newId } from '@amrita/protocol';
 import { MIGRATIONS } from '@amrita/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
@@ -147,6 +149,47 @@ describe('websocket event stream', () => {
     ws.close();
   });
 
+  it('buffers an event appended after the replay snapshot and delivers it exactly once', async () => {
+    const proj = await rpc<{ id: string }>('project.ensure', { slug: 'race', name: 'Race' });
+    const conv = await rpc<{ id: string }>('conversation.create', { projectId: proj.id });
+    const original = kernel.listEvents.bind(kernel);
+    let inject = true;
+    kernel.listEvents = ((conversationId: string, sinceSeq: number) => {
+      const snapshot = original(conversationId, sinceSeq);
+      if (inject && conversationId === conv.id) {
+        inject = false;
+        kernel.store.appendEvent({
+          id: newId(),
+          ts: new Date().toISOString(),
+          projectId: proj.id,
+          conversationId: conv.id,
+          origin: 'user',
+          type: 'message.user',
+          payload: { text: 'inside replay-subscribe gap' },
+        } as UnsealedEvent);
+      }
+      return snapshot;
+    }) as typeof kernel.listEvents;
+
+    const ws = new WebSocket(`${wsBase}/events/ws?conversationId=${conv.id}`);
+    const texts: string[] = [];
+    const replayed = new Promise<void>((resolve) => {
+      ws.on('message', (data: Buffer) => {
+        const frame = JSON.parse(data.toString()) as {
+          t: string;
+          event?: { payload?: { text?: string } };
+        };
+        if (frame.event?.payload?.text) texts.push(frame.event.payload.text);
+        if (frame.t === 'replayed') resolve();
+      });
+    });
+    await onceOpen(ws);
+    await replayed;
+
+    expect(texts.filter((text) => text === 'inside replay-subscribe gap')).toHaveLength(1);
+    ws.close();
+  });
+
   it('close() resolves promptly even with a live client connected (no 90s stop-hang)', async () => {
     // Regression: server.close() fires only once every connection is gone, and a
     // persistent /events/ws socket never closes itself — so without terminating
@@ -218,6 +261,110 @@ describe('websocket event stream', () => {
     await gotUpdate;
     expect(projectFrames.map((e) => e.type)).toEqual(['task.created', 'task.updated']);
     ws.close();
+  });
+
+  it('routes lane.pane across conversations in one project without leaking model.delta', async () => {
+    await running.close();
+    kernel.close();
+
+    const paneRunner: LaneRunner = {
+      kind: 'pane-test',
+      async run(mandate, ctx) {
+        ctx?.onPane?.('PROJECT-SCOPED-PANE\nTOKEN=stream-secret-value');
+        return {
+          laneId: mandate.laneId,
+          summary: 'pane emitted',
+          artifacts: [],
+          decisions: [],
+          tasks: [],
+          followUps: [],
+          usage: { inputTokens: 0, outputTokens: 0 },
+          exit: 'done',
+        };
+      },
+    };
+    kernel = AmritaKernel.open({ dbPath: ':memory:', extraLaneRunners: [paneRunner] });
+    running = await startHttpServer(kernel, { port: 0 });
+    base = `http://127.0.0.1:${running.port}`;
+    wsBase = `ws://127.0.0.1:${running.port}`;
+
+    const proj = await rpc<{ id: string }>('project.ensure', {
+      slug: 'sessions',
+      name: 'Sessions',
+    });
+    const a = await rpc<{ id: string }>('conversation.create', { projectId: proj.id });
+    const b = await rpc<{ id: string }>('conversation.create', { projectId: proj.id });
+    const ws = new WebSocket(`${wsBase}/events/ws?conversationId=${a.id}&projectId=${proj.id}`);
+    const frames: { t: string; event?: { type: string; payload?: { text?: string } } }[] = [];
+    ws.on('message', (d: Buffer) => frames.push(JSON.parse(d.toString())));
+    await onceOpen(ws);
+
+    await rpc('lanes.start', {
+      conversationId: b.id,
+      goal: 'emit a pane',
+      kind: 'pane-test',
+      approvals: 'auto-safe',
+    });
+    await rpc('chat.turn', { conversationId: b.id, text: 'private model stream' });
+    await kernel.requestApproval(
+      { projectId: proj.id, conversationId: b.id },
+      'session-approval-project-routing',
+      undefined,
+      { timeoutMs: 10 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(
+      frames.some(
+        (f) =>
+          f.t === 'project-session-event' &&
+          f.event?.type === 'lane.pane' &&
+          f.event.payload?.text?.includes('PROJECT-SCOPED-PANE') &&
+          f.event.payload.text.includes('‹redacted›'),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(frames)).not.toContain('stream-secret-value');
+    expect(frames.some((f) => f.t === 'project-event' && f.event?.type === 'lane.spawned')).toBe(
+      true,
+    );
+    expect(frames.some((f) => f.t === 'project-event' && f.event?.type === 'lane.completed')).toBe(
+      true,
+    );
+    expect(
+      frames.some((f) => f.t === 'project-event' && f.event?.type === 'approval.requested'),
+    ).toBe(true);
+    expect(frames.some((f) => f.event?.type === 'model.delta')).toBe(false);
+    ws.close();
+  });
+
+  it('rejects a project subscription that does not own the conversation', async () => {
+    const first = await rpc<{ id: string }>('project.ensure', {
+      slug: 'first-project',
+      name: 'First project',
+    });
+    const second = await rpc<{ id: string }>('project.ensure', {
+      slug: 'second-project',
+      name: 'Second project',
+    });
+    const conversation = await rpc<{ id: string }>('conversation.create', {
+      projectId: first.id,
+    });
+    const ws = new WebSocket(
+      `${wsBase}/events/ws?conversationId=${conversation.id}&projectId=${second.id}`,
+    );
+    const closed = new Promise<number>((resolve) => {
+      ws.on('close', (code) => resolve(code));
+    });
+    await onceOpen(ws);
+    try {
+      const code = await Promise.race([
+        closed,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 120)),
+      ]);
+      expect(code).toBe(1008);
+    } finally {
+      ws.terminate();
+    }
   });
 
   it('sends NO project frames when the socket did not ask for a project', async () => {

@@ -55,6 +55,7 @@ import {
   emptyLanes,
   foldLaneEvents,
   lanesList,
+  mergeLanesFromRows,
   reduceLaneEvent,
 } from './lanes-state.ts';
 import { type ChatMessage, formatUsage, safeErrorMessage, textDir } from './lib.ts';
@@ -66,7 +67,12 @@ import {
   transcriptMessages,
 } from './live-transcript.ts';
 import { buildSandboxedPreview } from './sandbox.ts';
-import { type SessionPanes, emptySessions, reduceSessionPane } from './session-state.ts';
+import {
+  type SessionPanes,
+  emptySessions,
+  hydrateSessionSnapshot,
+  reduceSessionPane,
+} from './session-state.ts';
 import { type EventStreamHandle, type StreamState, openEventStream } from './stream.ts';
 import { buildSurfaceArtifacts } from './surface.ts';
 
@@ -129,6 +135,19 @@ const STAGE_TABS: { id: Exclude<StageView, 'settings'>; label: string; hint: str
   { id: 'claude', label: 'Claude', hint: 'live Claude Code sessions (ADR-0049)' },
   { id: 'codex', label: 'Codex', hint: 'live Codex sessions (ADR-0049)' },
 ];
+
+const SESSION_PROJECTION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'lane.spawned',
+  'lane.completed',
+  'lane.aborted',
+  'approval.requested',
+  'approval.resolved',
+  'approval.timed_out',
+]);
+
+function shouldRefreshSessions(type: string): boolean {
+  return SESSION_PROJECTION_EVENT_TYPES.has(type);
+}
 
 function extractArray<T>(value: unknown, keys: string[]): T[] {
   if (Array.isArray(value)) return value as T[];
@@ -273,6 +292,8 @@ export function App() {
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
   const loadSeq = useRef(0);
+  /** Orders overlapping project-session hydrations within the same project. */
+  const sessionLoadSeq = useRef(0);
 
   // A 401/403 surfaces the Access section instead of a raw error line.
   function reportError(e: unknown): void {
@@ -295,6 +316,8 @@ export function App() {
   );
   /** Stable id for the stream effect: the socket must not churn on every render. */
   const streamProjectId = selectedProject?.id;
+  const projectIdRef = useRef(streamProjectId);
+  projectIdRef.current = streamProjectId;
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === provider),
     [providers, provider],
@@ -350,9 +373,11 @@ export function App() {
   // same event stream feeds the transcript and the Lanes panel.
   useEffect(() => {
     if (!conversationId) return;
+    const streamConversationId = conversationId;
+    const isCurrentStream = () =>
+      conversationIdRef.current === streamConversationId &&
+      projectIdRef.current === streamProjectId;
     setTranscript(emptyTranscript());
-    setLanes(emptyLanes());
-    setSessions(emptySessions());
     setActivity([]);
     setPending([]);
     setStreamState('connecting');
@@ -361,19 +386,41 @@ export function App() {
       conversationId,
       {
         onEvent: (ev) => {
+          if (!isCurrentStream()) return;
           setTranscript((s) => reduceEvent(s, ev));
           setLanes((s) => reduceLaneEvent(s, ev));
-          setSessions((s) => reduceSessionPane(s, ev)); // ADR-0049 live pane
+          setSessions((s) => reduceSessionPane(s, ev)); // same-conversation live pane
           setActivity((s) => pushActivity(s, ev));
-          if (ev.type.startsWith('approval.')) void loadApprovals();
-          // ADR-0044: the Scribe writes AFTER the turn, so its proposals (and any
-          // question it auto-opened) arrive on the stream, not in the turn result.
-          if (isProjectDomainEvent(ev.type)) refreshProject();
+          // ADR-0044/0050: durable project projections are refetched after a
+          // conversation-local change; raw pane/progress output is never part of that fetch.
+          if (isProjectDomainEvent(ev.type)) {
+            if (streamProjectId && shouldRefreshSessions(ev.type)) {
+              void loadProjectSessions(streamProjectId);
+            }
+            void refreshProject();
+          }
         },
         // A domain change ELSEWHERE in this project (another tab, the CLI,
-        // Telegram). No cursor — it is a notification, so we refetch (ADR-0044).
-        onProjectEvent: () => refreshProject(),
-        onState: (s) => setStreamState(s),
+        // Telegram). No cursor — it is a notification, so we refetch (ADR-0044/0050).
+        onProjectEvent: (ev) => {
+          if (!isCurrentStream()) return;
+          if (streamProjectId && shouldRefreshSessions(ev.type)) {
+            void loadProjectSessions(streamProjectId);
+          }
+          void refreshProject();
+        },
+        // Pane output from another conversation in this project is explicitly
+        // isolated from the transcript cursor and folded only into Session Workspace.
+        onProjectSessionEvent: (ev) => {
+          if (isCurrentStream()) setSessions((s) => reduceSessionPane(s, ev));
+        },
+        onState: (s) => {
+          if (!isCurrentStream()) return;
+          setStreamState(s);
+          if (s === 'open' && streamProjectId) {
+            void loadProjectSessions(streamProjectId);
+          }
+        },
       },
       {
         sinceSeq: 0,
@@ -428,6 +475,39 @@ export function App() {
       setProjectSlug(nextProjects[0]?.slug ?? 'system');
   }
 
+  async function loadProjectSessions(projectId = selectedProject?.id): Promise<void> {
+    if (!projectId) return;
+    sessionLoadSeq.current += 1;
+    const myLoad = sessionLoadSeq.current;
+    const current = () => projectIdRef.current === projectId && sessionLoadSeq.current === myLoad;
+    try {
+      const rows = await client.lanesList({ projectId });
+      if (!current()) return;
+      setLanes((live) => mergeLanesFromRows(live, rows));
+
+      // Durable lane rows recover membership/lifecycle; tmux remains the screen SSOT.
+      // Terminal lanes need no capture because their runtime state comes from the row.
+      const activeInteractive = rows.filter(
+        (row) =>
+          row.kind.endsWith('-tmux') &&
+          (row.status === 'spawned' || row.status === 'running' || row.status === 'merging'),
+      );
+      const settled = await Promise.allSettled(
+        activeInteractive.map((row) => client.sessionSnapshot(projectId, row.id)),
+      );
+      if (!current()) return;
+      setSessions((currentSessions) => {
+        let next = currentSessions;
+        for (const result of settled) {
+          if (result.status === 'fulfilled') next = hydrateSessionSnapshot(next, result.value);
+        }
+        return next;
+      });
+    } catch (e) {
+      if (current()) reportError(e);
+    }
+  }
+
   async function ensureProjectAndLoad(slug: string) {
     // A monotonic token: if the operator clicks a second project while this one is
     // still loading, the older call's late setStates are dropped, so two concurrent
@@ -435,10 +515,18 @@ export function App() {
     loadSeq.current += 1;
     const myLoad = loadSeq.current;
     const current = () => loadSeq.current === myLoad;
+    sessionLoadSeq.current += 1;
+    if (refreshTimer.current) {
+      clearTimeout(refreshTimer.current);
+      refreshTimer.current = null;
+    }
     // Optimistic: the click responds NOW; data streams in behind the skeleton.
     setProjectSlug(slug);
     setProjectLoading(true);
     setConversations([]);
+    projectIdRef.current = undefined;
+    setLanes(emptyLanes());
+    setSessions(emptySessions());
     setCanvasId(null);
     knownArtifactIds.current = null;
     setDeleteArm(null);
@@ -458,6 +546,7 @@ export function App() {
       // A freshly ensured project (e.g. `system` on a brand-new DB) must join
       // the list immediately — selectedProject/writeCtx derive from it.
       setProjects((old) => (old.some((p) => p.id === project.id) ? old : [...old, project]));
+      projectIdRef.current = project.id;
       setProjectSlug(project.slug);
       const listResult = await client.call('conversation.list', { projectId: project.id });
       if (!current()) return;
@@ -472,6 +561,7 @@ export function App() {
         loadCompanion(project.id),
         loadInbox(project.id),
         loadApprovals(),
+        loadProjectSessions(project.id),
       ]);
     } catch (e) {
       if (current()) reportError(e);
@@ -590,12 +680,16 @@ export function App() {
   /** Manual replay fallback — folds `GET /events` into the reducers (de-duped). */
   async function refreshTranscript() {
     if (!conversationId) return;
+    const requestedConversationId = conversationId;
     try {
-      const replay = await client.events(conversationId, 0);
+      const replay = await client.events(requestedConversationId, 0);
+      if (conversationIdRef.current !== requestedConversationId) return;
       setTranscript(foldEvents(emptyTranscript(), replay));
-      setLanes(foldLaneEvents(emptyLanes(), replay));
+      await loadProjectSessions();
+      if (conversationIdRef.current !== requestedConversationId) return;
+      setLanes((current) => foldLaneEvents(current, replay));
     } catch (e) {
-      reportError(e);
+      if (conversationIdRef.current === requestedConversationId) reportError(e);
     }
   }
 
@@ -606,32 +700,39 @@ export function App() {
     if (!projectId) return;
     try {
       const result = await client.call('tasks.list', { projectId });
+      if (projectIdRef.current !== projectId) return;
       setTasks(extractArray<Task>(result, ['tasks']));
     } catch (e) {
-      reportError(e);
+      if (projectIdRef.current === projectId) reportError(e);
     }
   }
 
   async function loadDecisions(projectId = selectedProject?.id) {
     if (!projectId) return;
     try {
-      setDecisions(await client.decisionsList({ projectId }));
+      const next = await client.decisionsList({ projectId });
+      if (projectIdRef.current !== projectId) return;
+      setDecisions(next);
     } catch (e) {
-      reportError(e);
+      if (projectIdRef.current === projectId) reportError(e);
     }
   }
 
   async function loadInbox(projectId = selectedProject?.id) {
     if (!projectId) return;
     try {
-      setInbox(await client.inboxList({ projectId, status: 'pending' }));
+      const next = await client.inboxList({ projectId, status: 'pending' });
+      if (projectIdRef.current !== projectId) return;
+      setInbox(next);
     } catch (e) {
-      reportError(e);
+      if (projectIdRef.current === projectId) reportError(e);
     }
   }
 
   /**
-   * Refetch every project projection after a domain change (ADR-0044).
+   * Refetch durable project projections after a domain change (ADR-0044).
+   * Session snapshots are intentionally refreshed separately and only for lane /
+   * approval lifecycle events: pane capture must not join every task event burst.
    *
    * Debounced, because one turn can land a burst of events (the Scribe files
    * several proposals at once) and each of them would otherwise trigger a full
@@ -645,6 +746,7 @@ export function App() {
       void loadInbox();
       void loadCompanion(); // also reloads the charter status and the phases
       void loadDecisions();
+      void loadApprovals();
     }, 120);
   }
 
@@ -673,13 +775,14 @@ export function App() {
         client.charterStatus(projectId),
         client.phasesList(projectId),
       ]);
+      if (projectIdRef.current !== projectId) return;
       setCompanion(state);
       setTimeline(events);
       setRoleInfo(roles.roles);
       setCharter(charterStatus);
       setPhases(phaseList);
     } catch (e) {
-      reportError(e);
+      if (projectIdRef.current === projectId) reportError(e);
     }
   }
 
@@ -1169,10 +1272,14 @@ export function App() {
               <SessionsPanel
                 agent={stageView === 'claude' ? 'claude' : 'codex'}
                 lanes={laneViews}
+                projectId={selectedProject?.id ?? ''}
                 conversationId={conversationId ?? ''}
                 sessions={sessions}
                 approvals={pendingApprovals}
                 realExecAvailable={realExecAvailable}
+                onChanged={async () => {
+                  await Promise.all([loadProjectSessions(), loadApprovals()]);
+                }}
                 onError={reportError}
               />
             </div>

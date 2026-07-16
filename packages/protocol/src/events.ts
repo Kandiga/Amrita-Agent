@@ -163,6 +163,19 @@ export const laneRowStatusSchema = z.enum([
 ]);
 export type LaneRowStatus = z.infer<typeof laneRowStatusSchema>;
 
+/** Ephemeral lifecycle of an interactive tmux session (ADR-0050). */
+export const sessionRuntimeStateSchema = z.enum([
+  'awaiting-approval',
+  'starting',
+  'awaiting-auth',
+  'running',
+  'finishing',
+  'completed',
+  'aborted',
+  'unavailable',
+]);
+export type SessionRuntimeState = z.infer<typeof sessionRuntimeStateSchema>;
+
 export const connectorStatusSchema = z.enum(['needs_setup', 'ready', 'error', 'disabled']);
 export type ConnectorStatus = z.infer<typeof connectorStatusSchema>;
 
@@ -295,7 +308,9 @@ export const eventPayloads = {
   // STREAM ONLY — the live tmux pane snapshot (ADR-0049), never persisted (like
   // model.delta). For human observation on the Canvas; domain truth comes from the
   // workspace files, not the screen. Redacted of secret-shaped content by the runner.
-  'lane.pane': z.object({ laneId: idSchema, text: z.string() }).strict(),
+  'lane.pane': z
+    .object({ laneId: idSchema, text: z.string(), state: sessionRuntimeStateSchema })
+    .strict(),
 
   // module mandates (ADR-0029): Amrita → Cinema delegation. Issued/resolved
   // are the only lifecycle events — progress stays module-local by design.

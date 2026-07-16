@@ -49,6 +49,12 @@ export interface StreamHandlers {
    * refetch is idempotent).
    */
   onProjectEvent?(ev: AmritaEventLite): void;
+  /**
+   * A live `lane.pane` snapshot from another conversation in this project
+   * (ADR-0050). It is ephemeral, does not advance the conversation cursor, and
+   * updates only the interactive-session workspace.
+   */
+  onProjectSessionEvent?(ev: AmritaEventLite): void;
   /** Connection-state transitions, for a status pill. */
   onState?(state: StreamState): void;
   /** The server finished replaying history (fires on every (re)connect). */
@@ -162,10 +168,12 @@ export function openEventStream(
     if (state !== 'connecting') setState('connecting');
 
     socket.onopen = () => {
+      if (closed || ws !== socket) return;
       retries = 0;
       setState('open');
     };
     socket.onmessage = (m) => {
+      if (closed || ws !== socket) return;
       let raw: unknown;
       try {
         raw = JSON.parse(String(m.data));
@@ -183,6 +191,10 @@ export function openEventStream(
         // Deliberately does NOT touch `lastSeq`: this event belongs to another
         // conversation, and the cursor is per-conversation.
         handlers.onProjectEvent?.(frame.event);
+      } else if (frame.t === 'project-session-event') {
+        // Defense in depth: the server has the same allowlist, but never let a
+        // non-pane stream event cross conversation boundaries in the browser.
+        if (frame.event.type === 'lane.pane') handlers.onProjectSessionEvent?.(frame.event);
       } else {
         handlers.onReplayed?.(frame.sinceSeq);
       }

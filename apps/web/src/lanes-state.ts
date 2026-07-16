@@ -7,7 +7,7 @@
  * idempotent. No secret value ever appears in a lane event payload.
  */
 
-import type { AmritaEventLite } from './api.ts';
+import type { AmritaEventLite, LaneRowLite } from './api.ts';
 
 export type LaneStatus = 'spawned' | 'running' | 'merging' | 'completed' | 'aborted';
 
@@ -41,6 +41,103 @@ export interface LanesState {
 
 export function emptyLanes(): LanesState {
   return { seen: new Set(), byId: {}, order: [] };
+}
+
+function parsedObject(json: string | null): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    const value: unknown = JSON.parse(json);
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hydrate the durable project-wide lane projection returned by `lanes.list`.
+ * Live/replayed events can then continue reducing over this state. Malformed
+ * historical JSON is treated as absent metadata, never invented UI truth.
+ */
+export function lanesFromRows(rows: readonly LaneRowLite[]): LanesState {
+  const byId: Record<string, LaneView> = {};
+  const ordered = [...rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (const row of ordered) {
+    const mandate = parsedObject(row.mandateJson);
+    const merge = parsedObject(row.mergeJson);
+    const scope = mandate?.scope;
+    const paths =
+      typeof scope === 'object' && scope !== null && !Array.isArray(scope)
+        ? (scope as Record<string, unknown>).paths
+        : undefined;
+    const workspace = Array.isArray(paths) && typeof paths[0] === 'string' ? paths[0] : undefined;
+    const goal = typeof mandate?.goal === 'string' ? mandate.goal : undefined;
+    const exit = typeof merge?.exit === 'string' ? merge.exit : undefined;
+    const summary = typeof merge?.summary === 'string' ? merge.summary : undefined;
+    const rawUsage = merge?.usage;
+    const usage =
+      typeof rawUsage === 'object' &&
+      rawUsage !== null &&
+      !Array.isArray(rawUsage) &&
+      typeof (rawUsage as Record<string, unknown>).inputTokens === 'number' &&
+      typeof (rawUsage as Record<string, unknown>).outputTokens === 'number'
+        ? (rawUsage as LaneView['usage'])
+        : undefined;
+    byId[row.id] = {
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      progress: [],
+      rev: 0,
+      ...(goal !== undefined ? { goal } : {}),
+      ...(workspace !== undefined ? { workspace } : {}),
+      ...(exit !== undefined ? { exit } : {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(usage !== undefined ? { usage } : {}),
+    };
+  }
+  return { seen: new Set(), byId, order: ordered.map((row) => row.id) };
+}
+
+const STATUS_RANK: Readonly<Record<LaneStatus, number>> = {
+  spawned: 0,
+  running: 1,
+  merging: 2,
+  completed: 3,
+  aborted: 3,
+};
+
+/**
+ * Merge a durable lane-list response into live/replayed state. A request can start
+ * before a WebSocket burst and finish after it; wholesale replacement would erase
+ * progress, de-duplication ids, or even a just-spawned lane. Rows own durable fields,
+ * while newer event-derived lifecycle/progress remains authoritative for that race.
+ */
+export function mergeLanesFromRows(state: LanesState, rows: readonly LaneRowLite[]): LanesState {
+  const hydrated = lanesFromRows(rows);
+  const byId: Record<string, LaneView> = { ...state.byId };
+  for (const id of hydrated.order) {
+    const row = hydrated.byId[id];
+    if (!row) continue;
+    const live = state.byId[id];
+    if (!live) {
+      byId[id] = row;
+      continue;
+    }
+    const liveIsNewer = live.rev > 0 && STATUS_RANK[live.status] >= STATUS_RANK[row.status];
+    byId[id] = {
+      ...live,
+      ...row,
+      status: liveIsNewer ? live.status : row.status,
+      progress: live.progress,
+      rev: live.rev,
+      ...(live.reason !== undefined ? { reason: live.reason } : {}),
+    };
+  }
+  const hydratedIds = new Set(hydrated.order);
+  const order = [...hydrated.order, ...state.order.filter((id) => !hydratedIds.has(id))];
+  return { seen: state.seen, byId, order };
 }
 
 /** The lane id of an event: envelope first (progress), then payload. */

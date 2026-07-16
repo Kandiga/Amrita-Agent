@@ -7,6 +7,7 @@ import {
   connectorManifestSchema,
   connectorStatusReportSchema,
   eventPayloads,
+  isProjectDomainEvent,
   isSafeEnvSecretRefName,
   isStreamOnly,
   laneMandateSchema,
@@ -101,6 +102,15 @@ describe('event protocol', () => {
     expect(isStreamOnly('model.delta')).toBe(true);
     expect(isStreamOnly('message.user')).toBe(false);
     expect(STREAM_ONLY_TYPES.has('model.delta')).toBe(true);
+  });
+
+  it('routes durable lane and approval lifecycle project-wide without treating pane output as a projection change', () => {
+    expect(isProjectDomainEvent('lane.spawned')).toBe(true);
+    expect(isProjectDomainEvent('lane.completed')).toBe(true);
+    expect(isProjectDomainEvent('approval.requested')).toBe(true);
+    expect(isProjectDomainEvent('lane.progress')).toBe(false);
+    expect(isProjectDomainEvent('lane.pane')).toBe(false);
+    expect(isProjectDomainEvent('model.delta')).toBe(false);
   });
 
   it('carries optional turnId/laneId/channel when present', () => {
