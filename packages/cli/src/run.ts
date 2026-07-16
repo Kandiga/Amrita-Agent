@@ -1,6 +1,7 @@
 import { AmritaKernel, defaultDbPath, ensureHome } from '@amrita/daemon';
 import { CliError, InProcessClient, RpcClientError } from './client.ts';
 import { COMMANDS, COMMAND_NAMES } from './commands.ts';
+import { runLauncher } from './launcher.ts';
 import { parseArgs } from './parse.ts';
 
 export interface IO {
@@ -10,7 +11,7 @@ export interface IO {
 
 const USAGE = `amrita — local client for the amritad kernel (no provider/tool execution yet)
 
-Usage: amrita <command> [args] [--db <PATH>] [--json]
+Usage: amrita <command> [args] [--db <PATH>] [--json]\n\n  amrita open      start the daemon + web UI and open one URL (community quickstart)
 
 Commands:
   ${COMMAND_NAMES.join('\n  ')}
@@ -53,6 +54,12 @@ export async function run(argv: string[], io: IO): Promise<number> {
   if (flags.help === true || positionals.length === 0) {
     io.out(USAGE);
     return positionals.length === 0 ? 2 : 0;
+  }
+
+  // `amrita open` is a LAUNCHER (starts the daemon+web as separate processes),
+  // not a kernel RPC op — handle it before any in-process kernel opens the DB.
+  if (positionals[0] === 'open') {
+    return runLauncher('open', flags, io);
   }
 
   const matched = matchCommand(positionals);

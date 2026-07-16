@@ -267,7 +267,7 @@ async function configureApiKey(
     // "connected" — say it is saved+bound and validated on the first turn, where
     // an invalid key surfaces a clear provider error (never a fake green here).
     out(`  ✓ ${envName} saved (0600) and ${entry.id} bound as your main brain.`);
-    out('    This bills YOUR ' + billingOwner(entry.id) + ' account.');
+    out(`    This bills YOUR ${billingOwner(entry.id)} account.`);
     out('    Amrita validates the key on your first chat turn — an invalid/expired');
     out('    key shows a clear error there, not a false success now.');
   } else {
