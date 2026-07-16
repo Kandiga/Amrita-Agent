@@ -94,6 +94,31 @@ describe('migrations', () => {
     db.close();
   });
 
+  it('migration 0018 reversibly adds lane idempotency and correlation metadata', () => {
+    const db = new Database(':memory:');
+    migrateUp(db);
+
+    const columns = () =>
+      (db.prepare('PRAGMA table_info(lanes)').all() as { name: string }[]).map((row) => row.name);
+    const indexes = () =>
+      (db.prepare('PRAGMA index_list(lanes)').all() as { name: string }[]).map((row) => row.name);
+    const addedColumns = ['idempotency_key', 'group_id', 'role', 'verifies_lane_id'];
+    const addedIndexes = ['idx_lanes_idempotency', 'idx_lanes_group', 'idx_lanes_verifies_lane'];
+
+    expect(currentVersion(db)).toBe(18);
+    for (const name of addedColumns) expect(columns()).toContain(name);
+    for (const name of addedIndexes) expect(indexes()).toContain(name);
+
+    expect(migrateDown(db, 17)).toBe(1);
+    for (const name of addedColumns) expect(columns()).not.toContain(name);
+    for (const name of addedIndexes) expect(indexes()).not.toContain(name);
+
+    expect(migrateUp(db)).toBe(1);
+    for (const name of addedColumns) expect(columns()).toContain(name);
+    for (const name of addedIndexes) expect(indexes()).toContain(name);
+    db.close();
+  });
+
   it('targets migrations with toVersion (step down from the top)', () => {
     const db = new Database(':memory:');
     migrateUp(db);
@@ -1035,6 +1060,55 @@ describe('Store API (WO#1.4)', () => {
     expect(store.listLanes({ projectId })).toHaveLength(1);
     expect(store.listLanes({ status: 'spawned' })[0]?.id).toBe(laneId);
     expect(store.listLanes({ status: 'completed' })).toHaveLength(0);
+  });
+
+  it('projects, uniquely claims, correlates, looks up, and replays lane metadata', () => {
+    const { projectId, conversationId } = setup();
+    const idempotencyKey = `rpc:${newId()}`;
+    const groupId = newId();
+    const verifiesLaneId = newId();
+    const firstLaneId = newId();
+    store.appendEvent(
+      unsealed(projectId, conversationId, 'lane.spawned', {
+        laneId: firstLaneId,
+        kind: 'codex',
+        idempotencyKey,
+        groupId,
+        role: 'qa',
+        verifiesLaneId,
+      }),
+    );
+
+    expect(store.getLane(firstLaneId)).toMatchObject({
+      idempotencyKey,
+      groupId,
+      role: 'qa',
+      verifiesLaneId,
+    });
+    expect(store.getLaneByIdempotencyKey(idempotencyKey)?.id).toBe(firstLaneId);
+    expect(store.listLanes({ groupId }).map((lane) => lane.id)).toEqual([firstLaneId]);
+    expect(store.listLanes({ verifiesLaneId }).map((lane) => lane.id)).toEqual([firstLaneId]);
+
+    const eventsBefore = store.getEvents(conversationId).length;
+    expect(() =>
+      store.appendEvent(
+        unsealed(projectId, conversationId, 'lane.spawned', {
+          laneId: newId(),
+          kind: 'codex',
+          idempotencyKey,
+        }),
+      ),
+    ).toThrow(/unique/i);
+    expect(store.getEvents(conversationId)).toHaveLength(eventsBefore);
+    expect(store.listLanes({ projectId })).toHaveLength(1);
+
+    store.rebuildProjections();
+    expect(store.getLaneByIdempotencyKey(idempotencyKey)).toMatchObject({
+      id: firstLaneId,
+      groupId,
+      role: 'qa',
+      verifiesLaneId,
+    });
   });
 
   it('spilled file is written only after commit (no orphan on rollback)', () => {

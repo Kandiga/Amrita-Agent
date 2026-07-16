@@ -369,6 +369,10 @@ export interface LaneRow {
   mandateJson: string;
   budgetJson: string | null;
   mergeJson: string | null;
+  idempotencyKey: string | null;
+  groupId: string | null;
+  role: 'build' | 'qa' | 'compare' | null;
+  verifiesLaneId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2568,14 +2572,34 @@ export class Store {
       .prepare(
         `SELECT id, project_id AS projectId, conversation_id AS conversationId, kind, status,
                 mandate_json AS mandateJson, budget_json AS budgetJson, merge_json AS mergeJson,
-                created_at AS createdAt, updated_at AS updatedAt
+                idempotency_key AS idempotencyKey, group_id AS groupId, role,
+                verifies_lane_id AS verifiesLaneId, created_at AS createdAt, updated_at AS updatedAt
          FROM lanes WHERE id = ?`,
       )
       .get(id) as LaneRow | undefined;
   }
 
+  /** Durable lookup used by ADR-0053's create-or-reuse boundary. */
+  getLaneByIdempotencyKey(idempotencyKey: string): LaneRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId, kind, status,
+                mandate_json AS mandateJson, budget_json AS budgetJson, merge_json AS mergeJson,
+                idempotency_key AS idempotencyKey, group_id AS groupId, role,
+                verifies_lane_id AS verifiesLaneId, created_at AS createdAt, updated_at AS updatedAt
+         FROM lanes WHERE idempotency_key = ?`,
+      )
+      .get(idempotencyKey) as LaneRow | undefined;
+  }
+
   listLanes(
-    filters: { projectId?: string; conversationId?: string; status?: LaneStatus } = {},
+    filters: {
+      projectId?: string;
+      conversationId?: string;
+      status?: LaneStatus;
+      groupId?: string;
+      verifiesLaneId?: string;
+    } = {},
   ): LaneRow[] {
     const where: string[] = [];
     const vals: string[] = [];
@@ -2591,12 +2615,21 @@ export class Store {
       where.push('status = ?');
       vals.push(filters.status);
     }
+    if (filters.groupId) {
+      where.push('group_id = ?');
+      vals.push(filters.groupId);
+    }
+    if (filters.verifiesLaneId) {
+      where.push('verifies_lane_id = ?');
+      vals.push(filters.verifiesLaneId);
+    }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     return this.db
       .prepare(
         `SELECT id, project_id AS projectId, conversation_id AS conversationId, kind, status,
                 mandate_json AS mandateJson, budget_json AS budgetJson, merge_json AS mergeJson,
-                created_at AS createdAt, updated_at AS updatedAt
+                idempotency_key AS idempotencyKey, group_id AS groupId, role,
+                verifies_lane_id AS verifiesLaneId, created_at AS createdAt, updated_at AS updatedAt
          FROM lanes ${clause} ORDER BY created_at ASC`,
       )
       .all(...vals) as LaneRow[];

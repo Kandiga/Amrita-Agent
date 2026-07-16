@@ -3644,3 +3644,81 @@ code {
     width: 100%;
   }
 }
+
+/* ── ADR-0048 §11: the Conclusion Capsule as an Amrita card in chat ───────── */
+.capsule-card {
+  margin: 0.6rem 0 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.capsule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.capsule-title {
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+.capsule-status {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--pampas, #eee);
+  color: var(--slate, #555);
+}
+.capsule-status-running {
+  background: color-mix(in srgb, var(--clay, #d97757) 14%, transparent);
+  color: var(--clay, #d97757);
+}
+.capsule-status-blocked,
+.capsule-status-aborted {
+  background: color-mix(in srgb, var(--error, #c0392b) 12%, transparent);
+  color: var(--error, #c0392b);
+}
+.capsule-status-done {
+  background: color-mix(in srgb, var(--ok, #2e7d32) 14%, transparent);
+  color: var(--ok, #2e7d32);
+}
+.capsule-section h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gray-500, #777);
+}
+.capsule-section ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.capsule-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.capsule-item::before {
+  content: "•";
+  color: var(--clay, #d97757);
+  flex: none;
+}
+.capsule-prov {
+  margin-left: auto;
+  font-size: 0.66rem;
+  color: var(--gray-500, #999);
+  white-space: nowrap;
+}
+.capsule-conflict h4 {
+  color: var(--error, #c0392b);
+}

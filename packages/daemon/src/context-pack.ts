@@ -93,6 +93,13 @@ export const AMRITA_CAPABILITIES = [
 export const ORCHESTRATION_SETTING = 'orchestration.enabled';
 
 /**
+ * ADR-0048 §8.4 kill-switch (default OFF). When truthy, a delegated lane exiting
+ * `done` with no unverifiable acceptance criteria auto-annotates its linked task
+ * for review (never a silent `done`). Off = every completion is an Inbox proposal.
+ */
+export const AUTO_TASK_TRANSITION_SETTING = 'orchestration.autoTaskTransition';
+
+/**
  * Amrita's ORCHESTRATOR preamble (ADR-0048). Used in place of `AMRITA_CAPABILITIES`
  * when orchestration is enabled: she is the managerial brain; Claude Code and Codex
  * are the execution arms. Owner decision (2026-07-15): EVERYTHING to a session — she

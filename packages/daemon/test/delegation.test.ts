@@ -232,6 +232,12 @@ describe("task → lane, and the lane's results (ADR-0045)", () => {
           (e.payload as { laneId?: string | null }).laneId === out.laneId,
       );
     expect(linked).toBe(true);
+    const spawned = kernel
+      .listEvents(ctx.conversationId, 0)
+      .find((event) => event.type === 'lane.spawned');
+    expect(spawned?.type === 'lane.spawned' ? spawned.payload.idempotencyKey : undefined).toBe(
+      `delegate:${taskId}`,
+    );
   });
 
   it('refuses to delegate the same task twice', async () => {

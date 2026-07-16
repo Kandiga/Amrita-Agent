@@ -113,6 +113,41 @@ describe('event protocol', () => {
     expect(isProjectDomainEvent('model.delta')).toBe(false);
   });
 
+  it('keeps legacy lane.spawned compatible and accepts bounded idempotency/correlation metadata', () => {
+    const laneId = newId();
+    const legacy = parseEvent(sealed('lane.spawned', { laneId, kind: 'claude-code' }));
+    expect(legacy.type).toBe('lane.spawned');
+
+    const idempotencyKey = `delegate:${newId()}`;
+    const groupId = newId();
+    const verifiesLaneId = newId();
+    const keyed = parseEvent(
+      sealed('lane.spawned', {
+        laneId: newId(),
+        kind: 'codex',
+        idempotencyKey,
+        groupId,
+        role: 'qa',
+        verifiesLaneId,
+      }),
+    );
+    expect(keyed.type === 'lane.spawned' && keyed.payload).toMatchObject({
+      idempotencyKey,
+      groupId,
+      role: 'qa',
+      verifiesLaneId,
+    });
+
+    for (const payload of [
+      { laneId: newId(), kind: 'claude-code', idempotencyKey: '' },
+      { laneId: newId(), kind: 'claude-code', idempotencyKey: 'x'.repeat(201) },
+      { laneId: newId(), kind: 'claude-code', role: 'manager' },
+      { laneId: newId(), kind: 'claude-code', groupId: 'not-an-id' },
+    ]) {
+      expect(() => parseEvent(sealed('lane.spawned', payload))).toThrow();
+    }
+  });
+
   it('carries optional turnId/laneId/channel when present', () => {
     const ev = parseEvent(
       sealed(

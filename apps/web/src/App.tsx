@@ -19,6 +19,13 @@ import {
   RpcError,
 } from './api.ts';
 import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import {
+  type CapsuleState,
+  capsuleHasContent,
+  emptyCapsule,
+  hydrateCapsule,
+  resetCapsuleFor,
+} from './capsule-state.ts';
 import { client } from './client.ts';
 import { nextActions } from './companion.ts';
 import { ActivationPanel } from './components/ActivationPanel.tsx';
@@ -28,6 +35,7 @@ import { BrainPanel } from './components/BrainPanel.tsx';
 import { BrandPanel } from './components/BrandPanel.tsx';
 import { BriefPanel } from './components/BriefPanel.tsx';
 import { CanvasFrame } from './components/CanvasFrame.tsx';
+import { CapsulePanel } from './components/CapsulePanel.tsx';
 import { CinemaPanel } from './components/CinemaPanel.tsx';
 import { ClaudeEcosystemPanel } from './components/ClaudeEcosystemPanel.tsx';
 import { DecisionsPanel } from './components/DecisionsPanel.tsx';
@@ -248,6 +256,8 @@ export function App() {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   /** Pending operator approvals (ADR-0021), refreshed from the live stream. */
   const [approvals, setApprovals] = useState<OperatorApprovalLite[]>([]);
+  /** The derived Conclusion Capsule for the open conversation (ADR-0048 §11). */
+  const [capsuleState, setCapsuleState] = useState<CapsuleState>(emptyCapsule);
   /** Live backstage feed (Hermes-style): what runs, waits, or thinks now. */
   const [activity, setActivity] = useState<readonly ActivityLine[]>([]);
   /** Optimistic project switch: the sidebar responds instantly, data follows. */
@@ -611,6 +621,29 @@ export function App() {
     // A card selection is scoped to the session it was made in; drop it on switch.
     setFocus(null);
     setConversationId(id);
+    // Clear the capsule immediately so a stale one never lingers over the new
+    // conversation, then fetch this one's (ADR-0048 §11).
+    setCapsuleState(resetCapsuleFor(id));
+    void loadCapsule(id);
+  }
+
+  /**
+   * Fetch the derived Conclusion Capsule for a conversation (ADR-0048 §11) and
+   * fold it in only if that conversation is still selected — a slow response for
+   * a past conversation can never paint over the current one. Read-only: it is
+   * never appended as a message or event.
+   */
+  async function loadCapsule(id: string): Promise<void> {
+    if (!id) {
+      setCapsuleState(resetCapsuleFor(null));
+      return;
+    }
+    try {
+      const capsule = await client.conclusionCapsule(id);
+      setCapsuleState((s) => hydrateCapsule(s, capsule, id, conversationIdRef.current));
+    } catch {
+      // The capsule is a supervisory nicety; a failed fetch simply shows nothing.
+    }
   }
 
   /** End the session: compress it into the project's memory layers (ADR-0033)
@@ -747,6 +780,9 @@ export function App() {
       void loadCompanion(); // also reloads the charter status and the phases
       void loadDecisions();
       void loadApprovals();
+      // The capsule derives from lane/inbox/approval/task lifecycle, so it moves
+      // with the same project-event burst (ADR-0048 §11).
+      void loadCapsule(conversationIdRef.current);
     }, 120);
   }
 
@@ -1690,6 +1726,9 @@ export function App() {
               onResolve={(id, d) => void resolveApproval(id, d)}
             />
           </div>
+        ) : null}
+        {capsuleState.capsule && capsuleHasContent(capsuleState.capsule) ? (
+          <CapsulePanel capsule={capsuleState.capsule} />
         ) : null}
         {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
         {unauthorized ? (

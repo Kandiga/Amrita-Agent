@@ -9,6 +9,7 @@
 
 import {
   type AccountRowWire,
+  type CapsuleItem,
   type ChannelStatusEntryWire,
   type CharterStatusWire,
   type ChatFocus,
@@ -16,6 +17,7 @@ import {
   type CinemaMandateRowWire,
   type CodingRuntimeStatusWire,
   type CompanionStateWire,
+  type ConclusionCapsule,
   type ConnectorStatusReport,
   type DecisionRight,
   type DecisionRowWire,
@@ -101,6 +103,8 @@ export type LaneRowLite = LaneRowWire;
 export type LaneStartResultLite = LaneStartResultWire;
 export type LaneCancelResultLite = LaneCancelResultWire;
 export type SessionSnapshotLite = SessionSnapshotWire;
+export type ConclusionCapsuleLite = ConclusionCapsule;
+export type { CapsuleItem };
 export type TaskRowLite = {
   id: string;
   title: string;
@@ -308,6 +312,11 @@ export class RpcClient {
 
   sessionSnapshot(projectId: string, laneId: string): Promise<SessionSnapshotLite> {
     return this.call('lanes.session.snapshot', { projectId, laneId });
+  }
+
+  /** The derived Conclusion Capsule for a conversation (ADR-0048 §11) — read-only. */
+  conclusionCapsule(conversationId: string): Promise<ConclusionCapsuleLite> {
+    return this.call('orchestration.capsule', { conversationId });
   }
 
   // ── project knowledge (typed wrappers; auth header is applied by call()) ───

@@ -14,10 +14,12 @@ import {
   derivationSchema,
   eventChannelSchema,
   eventOriginSchema,
+  idSchema,
   inboxConfidenceSchema,
   inboxKindSchema,
   inboxOriginSchema,
   inboxStatusSchema,
+  laneRoleSchema,
   laneRowStatusSchema,
   memoryScopeSchema,
   milestoneStatusSchema,
@@ -655,6 +657,8 @@ export const METHODS: Record<string, RpcMethod> = {
       projectId: z.string().optional(),
       conversationId: z.string().optional(),
       status: laneRowStatusSchema.optional(),
+      groupId: z.string().optional(),
+      verifiesLaneId: z.string().optional(),
     }),
     (k, p) => k.listLanes(clean(p)),
   ),
@@ -666,6 +670,14 @@ export const METHODS: Record<string, RpcMethod> = {
       dryRun: z.boolean().optional(),
       real: z.boolean().optional(),
       detach: z.boolean().optional(),
+      idempotencyKey: z.string().min(1).max(200).optional(),
+      // ADR-0049 correlation: parallel/compare groups and QA→build verification.
+      // These are lane IDs (ULIDs) — match the `lane.spawned` constitution exactly
+      // so a malformed value is rejected here, at the edge, not deep inside the
+      // append transaction after a workspace dir was already created.
+      groupId: idSchema.optional(),
+      role: laneRoleSchema.optional(),
+      verifiesLaneId: idSchema.optional(),
       scope: z
         .object({
           paths: z.array(z.string()).optional(),

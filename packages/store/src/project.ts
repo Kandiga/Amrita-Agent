@@ -652,10 +652,23 @@ export function applyEventProjection(db: DB, ev: AmritaEvent): void {
     case 'lane.spawned': {
       const p = ev.payload;
       db.prepare(
-        `INSERT INTO lanes (id, project_id, conversation_id, kind, status, mandate_json, budget_json, merge_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'spawned', '{}', NULL, NULL, ?, ?)
+        `INSERT INTO lanes (
+           id, project_id, conversation_id, kind, status, mandate_json, budget_json,
+           merge_json, idempotency_key, group_id, role, verifies_lane_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'spawned', '{}', NULL, NULL, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO NOTHING`,
-      ).run(p.laneId, ev.projectId, ev.conversationId, p.kind, ev.ts, ev.ts);
+      ).run(
+        p.laneId,
+        ev.projectId,
+        ev.conversationId,
+        p.kind,
+        p.idempotencyKey ?? null,
+        p.groupId ?? null,
+        p.role ?? null,
+        p.verifiesLaneId ?? null,
+        ev.ts,
+        ev.ts,
+      );
       return;
     }
     case 'lane.mandate': {

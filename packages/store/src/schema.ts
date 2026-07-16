@@ -28,6 +28,7 @@ import {
   sqliteTable,
   text,
   unique,
+  uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
 /** zod `.options` is a plain array; Drizzle wants a non-empty tuple — one cast, here only. */
@@ -267,10 +268,21 @@ export const lanes = sqliteTable(
     mandateJson: text('mandate_json').notNull(),
     budgetJson: text('budget_json'),
     mergeJson: text('merge_json'),
+    idempotencyKey: text('idempotency_key'),
+    groupId: text('group_id'),
+    role: text('role', { enum: ['build', 'qa', 'compare'] }),
+    verifiesLaneId: text('verifies_lane_id'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (t) => ({ byConversation: index('idx_lanes_conversation').on(t.conversationId) }),
+  (t) => ({
+    byConversation: index('idx_lanes_conversation').on(t.conversationId),
+    byIdempotency: uniqueIndex('idx_lanes_idempotency')
+      .on(t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
+    byGroup: index('idx_lanes_group').on(t.groupId),
+    byVerifiesLane: index('idx_lanes_verifies_lane').on(t.verifiesLaneId),
+  }),
 );
 
 /**

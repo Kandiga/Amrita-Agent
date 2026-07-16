@@ -241,6 +241,9 @@ const SECRET_KEY_RE = /secret|api[_-]?key|apikey|token|password/i;
  * The canonical map: event type -> payload schema. The keys are the closed set
  * of legal event types. This object IS the protocol surface.
  */
+export const laneRoleSchema = z.enum(['build', 'qa', 'compare']);
+export type LaneRole = z.infer<typeof laneRoleSchema>;
+
 export const eventPayloads = {
   // conversation lifecycle
   'conversation.created': z.object({ title: z.string().optional() }).strict(),
@@ -297,7 +300,20 @@ export const eventPayloads = {
   'tool.failed': z.object({ toolCallId: z.string(), error: z.string() }).strict(),
 
   // lanes
-  'lane.spawned': z.object({ laneId: idSchema, kind: z.string() }).strict(),
+  'lane.spawned': z
+    .object({
+      laneId: idSchema,
+      kind: z.string(),
+      // ADR-0053: optional for replay compatibility; bounded so caller-controlled
+      // dedupe keys cannot become an unbounded persistence/wire field.
+      idempotencyKey: z.string().min(1).max(200).optional(),
+      // ADR-0049: orchestration correlation lives on the lane row/event, not in
+      // the strict execution mandate. All fields are additive for old replay.
+      groupId: idSchema.optional(),
+      role: laneRoleSchema.optional(),
+      verifiesLaneId: idSchema.optional(),
+    })
+    .strict(),
   'lane.mandate': laneMandateSchema,
   'lane.progress': z
     .object({ note: z.string(), pct: z.number().min(0).max(100).optional() })

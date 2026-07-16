@@ -1,4 +1,5 @@
 import { FakeLaneRunner, ResearchLaneRunner } from '@amrita/lanes';
+import { newId } from '@amrita/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AmritaKernel } from '../src/kernel.ts';
 import { dispatch, isErrorResponse } from '../src/rpc.ts';
@@ -30,6 +31,157 @@ describe('kernel lane orchestration', () => {
       expect(lane?.status).toBe('spawned');
       expect(JSON.parse(lane?.mandateJson ?? '{}').goal).toBe('tidy the repo');
     });
+  });
+
+  it('creates one lane for concurrent retries carrying the same idempotency key', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const { projectId, conversationId } = seedConversation(kernel);
+    const request = {
+      conversationId,
+      goal: 'build once',
+      dryRun: true,
+      idempotencyKey: 'rpc:build-once',
+    } as const;
+
+    const [first, retry] = await Promise.all([
+      kernel.startLane(request),
+      kernel.startLane(request),
+    ]);
+
+    expect(retry.laneId).toBe(first.laneId);
+    expect(kernel.listLanes({ projectId })).toHaveLength(1);
+    expect(kernel.getLane(first.laneId)?.idempotencyKey).toBe(request.idempotencyKey);
+    expect(eventTypes(kernel, conversationId)).toEqual(['lane.spawned', 'lane.mandate']);
+  });
+
+  it('fails closed when an idempotency key is reused for a different operation', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const first = seedConversation(kernel);
+    const second = kernel.createConversation({ projectId: first.projectId });
+    await kernel.startLane({
+      conversationId: first.conversationId,
+      goal: 'first operation',
+      dryRun: true,
+      idempotencyKey: 'rpc:owned-key',
+    });
+
+    await expect(
+      kernel.startLane({
+        conversationId: first.conversationId,
+        goal: 'different operation',
+        dryRun: true,
+        idempotencyKey: 'rpc:owned-key',
+      }),
+    ).rejects.toThrow(/idempotency key.*different operation/i);
+    await expect(
+      kernel.startLane({
+        conversationId: second.id,
+        goal: 'first operation',
+        dryRun: true,
+        idempotencyKey: 'rpc:owned-key',
+      }),
+    ).rejects.toThrow(/idempotency key.*different operation/i);
+  });
+
+  it('treats the caller-requested jail as part of the idempotent identity', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const { conversationId } = seedConversation(kernel);
+    await kernel.startLane({
+      conversationId,
+      goal: 'scoped build',
+      dryRun: true,
+      idempotencyKey: 'rpc:scoped',
+      scope: { paths: ['/tmp/a'] },
+    });
+    // Same key + same goal but a DIFFERENT explicit jail → a caller bug, not a reuse.
+    await expect(
+      kernel.startLane({
+        conversationId,
+        goal: 'scoped build',
+        dryRun: true,
+        idempotencyKey: 'rpc:scoped',
+        scope: { paths: ['/tmp/b'] },
+      }),
+    ).rejects.toThrow(/idempotency key.*different operation/i);
+    // The same jail (order-insensitive) still reuses.
+    const reuse = await kernel.startLane({
+      conversationId,
+      goal: 'scoped build',
+      dryRun: true,
+      idempotencyKey: 'rpc:scoped',
+      scope: { paths: ['/tmp/a'] },
+    });
+    expect(reuse.laneId).toBeTruthy();
+  });
+
+  it('reuses a no-scope idempotent lane on retry (the delegateTask path)', async () => {
+    // delegateTask passes no explicit scope, so the stored jail is synthesized;
+    // a retry must NOT be treated as a scope conflict against that synthesized jail.
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const { conversationId } = seedConversation(kernel);
+    const first = await kernel.startLane({
+      conversationId,
+      goal: 'delegate build',
+      dryRun: true,
+      idempotencyKey: 'delegate:TASK-9',
+    });
+    const retry = await kernel.startLane({
+      conversationId,
+      goal: 'delegate build',
+      dryRun: true,
+      idempotencyKey: 'delegate:TASK-9',
+    });
+    expect(retry.laneId).toBe(first.laneId);
+  });
+
+  it('correlates a QA lane with its build and refuses a foreign verification target', async () => {
+    kernel = AmritaKernel.open({ dbPath: ':memory:' });
+    const first = seedConversation(kernel);
+    const groupId = newId();
+    const build = await kernel.startLane({
+      conversationId: first.conversationId,
+      goal: 'build checkout',
+      kind: 'claude-code',
+      dryRun: true,
+      groupId,
+      role: 'build',
+    });
+    const qa = await kernel.startLane({
+      conversationId: first.conversationId,
+      goal: 'verify checkout',
+      kind: 'codex',
+      dryRun: true,
+      groupId,
+      role: 'qa',
+      verifiesLaneId: build.laneId,
+    });
+
+    expect(kernel.getLane(build.laneId)).toMatchObject({ groupId, role: 'build' });
+    expect(kernel.getLane(qa.laneId)).toMatchObject({
+      groupId,
+      role: 'qa',
+      verifiesLaneId: build.laneId,
+    });
+    const qaSpawn = kernel
+      .listEvents(first.conversationId)
+      .find((event) => event.type === 'lane.spawned' && event.laneId === qa.laneId);
+    expect(qaSpawn?.type === 'lane.spawned' && qaSpawn.payload).toMatchObject({
+      groupId,
+      role: 'qa',
+      verifiesLaneId: build.laneId,
+    });
+
+    const otherProject = kernel.ensureProject({ slug: 'other', name: 'Other' });
+    const otherConversation = kernel.createConversation({ projectId: otherProject.id });
+    await expect(
+      kernel.startLane({
+        conversationId: otherConversation.id,
+        goal: 'peek at foreign build',
+        dryRun: true,
+        role: 'qa',
+        verifiesLaneId: build.laneId,
+      }),
+    ).rejects.toThrow(/verification target.*same project/i);
   });
 
   it('runs an injected fake runner end-to-end, emitting the full lifecycle', async () => {
@@ -141,6 +293,53 @@ describe('lane rpc surface', () => {
       params: { conversationId: conv.id, goal: 'x'.repeat(5000) },
     });
     expect(isErrorResponse(r) && r.error.code).toBe('invalid_params');
+  });
+
+  it('accepts and bounds idempotency keys at the RPC boundary', async () => {
+    const project = await call<{ id: string }>('project.ensure', { slug: 'idem', name: 'Idem' });
+    const conv = await call<{ id: string }>('conversation.create', { projectId: project.id });
+    const params = {
+      conversationId: conv.id,
+      goal: 'one rpc lane',
+      dryRun: true,
+      idempotencyKey: 'rpc:one-lane',
+      groupId: newId(),
+      role: 'build' as const,
+    };
+    const first = await call<{ laneId: string }>('lanes.start', params);
+    const retry = await call<{ laneId: string }>('lanes.start', params);
+    expect(retry.laneId).toBe(first.laneId);
+    expect(kernel.getLane(first.laneId)).toMatchObject({
+      groupId: params.groupId,
+      role: 'build',
+    });
+
+    for (const idempotencyKey of ['', 'x'.repeat(201)]) {
+      const response = await dispatch(kernel, {
+        id: 1,
+        method: 'lanes.start',
+        params: { ...params, idempotencyKey },
+      });
+      expect(isErrorResponse(response) && response.error.code).toBe('invalid_params');
+    }
+  });
+
+  it('rejects a malformed correlation id at the edge, before any side effect', async () => {
+    const project = await call<{ id: string }>('project.ensure', { slug: 'corr', name: 'Corr' });
+    const conv = await call<{ id: string }>('conversation.create', { projectId: project.id });
+    // groupId/verifiesLaneId are lane IDs (ULIDs); a human-readable string must be
+    // refused here — not deep inside the append transaction after a workspace dir
+    // was already created (the outer and inner contracts must agree).
+    for (const bad of [{ groupId: 'compare-run-1' }, { verifiesLaneId: 'not-a-ulid' }]) {
+      const response = await dispatch(kernel, {
+        id: 1,
+        method: 'lanes.start',
+        params: { conversationId: conv.id, goal: 'correlated build', dryRun: true, ...bad },
+      });
+      expect(isErrorResponse(response) && response.error.code).toBe('invalid_params');
+    }
+    // …and no lane was ever spawned for this conversation.
+    expect(kernel.listLanes({}).filter((l) => l.conversationId === conv.id)).toHaveLength(0);
   });
 });
 

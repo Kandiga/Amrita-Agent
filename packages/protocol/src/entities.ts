@@ -9,6 +9,7 @@ import {
   inboxKindSchema,
   inboxOriginSchema,
   inboxStatusSchema,
+  laneRoleSchema,
   laneRowStatusSchema,
   memoryScopeSchema,
   milestoneStatusSchema,
@@ -320,6 +321,13 @@ export const laneRowSchema = z.object({
   mandateJson: z.string(),
   budgetJson: z.string().nullable(),
   mergeJson: z.string().nullable(),
+  // ADR-0053 dedupe key + ADR-0049 orchestration correlation. Nullable (the row
+  // columns are nullable) and declared HERE so `lanes.get`/`lanes.list` never
+  // silently strip what the store returns (a non-strict z.object drops unknowns).
+  idempotencyKey: z.string().nullable(),
+  groupId: z.string().nullable(),
+  role: laneRoleSchema.nullable(),
+  verifiesLaneId: z.string().nullable(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });

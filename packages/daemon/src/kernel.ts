@@ -24,6 +24,7 @@ import {
   type HarnessTopology,
   type KnowledgeSource,
   type LaneExit,
+  type LaneRole,
   type MergeReport,
   type ProjectBrain,
   type ProjectContextWire,
@@ -90,6 +91,7 @@ import { connectorStatuses } from './connectors.ts';
 import {
   AMRITA_CAPABILITIES,
   AMRITA_ORCHESTRATOR,
+  AUTO_TASK_TRANSITION_SETTING,
   CONTEXT_PACK_SETTING,
   ORCHESTRATION_SETTING,
   type SessionBrief,
@@ -114,6 +116,7 @@ import { type PublicHub, SLUG_RE, buildPublicHub, contentHash, renderPublicHub }
 import { resolveApprovalPolicy } from './lane-approval.ts';
 import { activeScopeConflicts } from './lane-scope.ts';
 import { buildMandateFromChat } from './mandate-synth.ts';
+import { OrchestrationWatcher } from './orchestration-watcher.ts';
 import {
   type ChatMessage,
   type ChatProvider,
@@ -170,6 +173,7 @@ import {
   suggestedPayload,
 } from './scribe.ts';
 import { loadSkillStatuses } from './skills.ts';
+import { resolveTaskTransition } from './task-transition.ts';
 import { clean } from './util.ts';
 
 /** A chat turn request. */
@@ -248,6 +252,9 @@ export interface KernelOptions {
   cliExec?: CliExec;
   /** How long a pending approval waits before timing out to DENY (ADR-0021). */
   approvalTimeoutMs?: number;
+  /** Run the event-driven orchestration Watcher (ADR-0048 §8.3). Defaults on for a
+   *  file-backed daemon, off for `:memory:` so the 700+ test kernels spawn no timer. */
+  enableWatcher?: boolean;
 }
 
 /** A pending operator approval (kernel-runtime state; the audit trail is events). */
@@ -291,6 +298,14 @@ export interface LaneStartInput {
   real?: boolean;
   /** Return immediately with status `running`; the lane runs in the background. */
   detach?: boolean;
+  /** Durable at-most-once key (ADR-0053). Same key may only describe the same operation. */
+  idempotencyKey?: string;
+  /** Project-wide orchestration group (ADR-0049). */
+  groupId?: string;
+  /** This lane's responsibility inside its group. */
+  role?: LaneRole;
+  /** Build/peer lane whose output this lane validates. */
+  verifiesLaneId?: string;
 }
 
 export interface LaneStartResult {
@@ -389,6 +404,8 @@ export class AmritaKernel {
   >();
   /** Cached durable evidence that an interactive session already received its initial goal. */
   private readonly sessionGoalSentLanes = new Set<string>();
+  /** The event-driven orchestration Watcher (ADR-0048 §8.3); null when disabled. */
+  private watcher: OrchestrationWatcher | null = null;
   /** Listeners for STREAM-ONLY events (model.delta, lane.pane) — never persisted (D8). */
   private readonly streamListeners = new Set<(ev: AmritaEvent) => void>();
   /** tmux boundary shared by interactive runners and control/snapshot RPCs (ADR-0050). */
@@ -520,7 +537,46 @@ export class AmritaKernel {
     );
     // ADR-0048: terminalize lanes orphaned by a previous crash before serving.
     kernel.reconcileLanesOnBoot();
+    // ADR-0048 §8.3: the Watcher subscribes to NEW events only (never a replay of
+    // history), so it starts AFTER reconcile. Off for in-memory test kernels.
+    if (opts.enableWatcher ?? opts.dbPath !== ':memory:') kernel.startWatcher();
     return kernel;
+  }
+
+  /**
+   * Start the orchestration Watcher (ADR-0048 §8.3). Its single side effect is an
+   * Inbox proposal, deferred to a microtask so a proposal never re-enters the
+   * store's post-commit fan-out it is observing (which would reorder live events).
+   * The pure `watch-decide` core ignores `inbox.captured`, so the loop is closed.
+   */
+  startWatcher(sweepIntervalMs?: number): void {
+    if (this.watcher) return;
+    this.watcher = new OrchestrationWatcher({
+      subscribe: (listener) => this.store.subscribe(listener),
+      propose: (action) => {
+        queueMicrotask(() => {
+          if (this.closed) return;
+          try {
+            this.store.captureInboxItem({
+              projectId: action.projectId,
+              conversationId: action.conversationId,
+              origin: 'lane',
+              text: action.text,
+              // A conflict / failure / stall / stuck approval is a delivery RISK;
+              // the operator triages or dismisses it. origin 'lane' feeds the
+              // Conclusion Capsule (ADR-0048 §11).
+              suggestedKind: 'risk',
+              rationale: action.rationale,
+              confidence: 'medium',
+            });
+          } catch {
+            // The Watcher is best-effort supervision; a failed proposal is dropped.
+          }
+        });
+      },
+      ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
+    });
+    this.watcher.start();
   }
 
   /** Resolve the runner for a lane kind (ADR-0023). Unknown kinds get none — the lane aborts honestly. */
@@ -533,6 +589,10 @@ export class AmritaKernel {
 
   close(): void {
     this.closed = true;
+    // Stop the Watcher first: unsubscribe from the store and clear its sweep timer
+    // so nothing fires after close (ADR-0048 §8.3).
+    this.watcher?.stop();
+    this.watcher = null;
     // Abort in-flight (detached) HEADLESS lanes so no child outlives the daemon.
     // DURABLE (tmux) sessions are deliberately left running — they outlive the daemon
     // and are RE-ATTACHED on the next boot (ADR-0049); aborting them here would defeat
@@ -1847,6 +1907,9 @@ export class AmritaKernel {
       conversationId: input.conversationId,
       goal,
       detach: true,
+      // Durable crash-window guard: if lane creation commits but the task link
+      // does not, a retry reuses the same lane instead of spawning another.
+      idempotencyKey: `delegate:${input.taskId}`,
       ...(input.origin ? { origin: input.origin } : {}),
     });
 
@@ -2331,7 +2394,12 @@ export class AmritaKernel {
    * without a triage — that is what keeps a runaway lane from quietly rewriting the
    * plan. Best-effort: a lane must never fail because its bookkeeping did.
    */
-  private captureMergeReport(projectId: string, conversationId: string, report: MergeReport): void {
+  private captureMergeReport(
+    projectId: string,
+    conversationId: string,
+    report: MergeReport,
+    laneId?: string,
+  ): void {
     const propose = (text: string, kind: InboxKind, suggested: Record<string, unknown>): void => {
       try {
         this.store.captureInboxItem({
@@ -2352,6 +2420,68 @@ export class AmritaKernel {
     for (const t of report.tasks ?? []) propose(t, 'task', { title: t });
     for (const d of report.decisions ?? []) propose(d, 'decision', { text: d });
     for (const f of report.followUps ?? []) propose(f, 'task', { title: f });
+
+    // ADR-0048 §8.4: confidence-gated transition of the task this lane was
+    // delegated FROM. Best-effort — a failure never affects the merge.
+    if (laneId) this.applyTaskTransition(projectId, conversationId, laneId, report);
+  }
+
+  /**
+   * When a delegated lane finishes, move (or propose to move) the linked task —
+   * confidence-gated (ADR-0048 §8.4). The link is event-derived (`task.laneId`,
+   * Slice 0). `orchestration.autoTaskTransition` (default off) gates the only
+   * auto action, which is a REVIEW annotation — never a silent `done`.
+   */
+  private applyTaskTransition(
+    projectId: string,
+    conversationId: string,
+    laneId: string,
+    report: MergeReport,
+  ): void {
+    try {
+      const task = this.store.listTasks({ projectId }).find((t) => t.laneId === laneId);
+      if (!task) return;
+      const lane = this.store.getLane(laneId);
+      let hasAcceptanceCriteria = false;
+      if (lane) {
+        try {
+          hasAcceptanceCriteria =
+            (laneMandateSchema.parse(JSON.parse(lane.mandateJson)).deliverables ?? []).length > 0;
+        } catch {
+          hasAcceptanceCriteria = false;
+        }
+      }
+      const decision = resolveTaskTransition({
+        taskStatus: task.status,
+        exit: report.exit,
+        hasAcceptanceCriteria,
+        autoEnabled: this.getSetting(AUTO_TASK_TRANSITION_SETTING) === true,
+        goal: task.title,
+      });
+      if (!decision) return;
+      if (decision.mode === 'auto') {
+        this.store.updateTask({
+          projectId,
+          conversationId,
+          taskId: task.id,
+          blockedReason: decision.blockedReason,
+          reason: decision.reason,
+        });
+      } else {
+        this.store.captureInboxItem({
+          projectId,
+          conversationId,
+          origin: 'lane',
+          text: decision.text,
+          suggestedKind: 'task',
+          suggested: { taskId: task.id, status: decision.suggestedStatus },
+          rationale: decision.reason,
+          confidence: 'medium',
+        });
+      }
+    } catch {
+      // supervision is best-effort; never let it fail a merge
+    }
   }
 
   // ── the Scribe — the agent→domain bridge (ADR-0044) ────────────────────────
@@ -3681,6 +3811,69 @@ export class AmritaKernel {
   }
 
   /**
+   * Resolve a previously claimed start key without creating, projecting or running
+   * another lane. The key is intentionally global in SQLite, so never reveal/reuse
+   * a row owned by another conversation or operation — and the COMPLETE operation
+   * identity must match: conversation, kind, goal, the normalized correlation
+   * (group/role/verification target), AND the caller-requested jail. A retry with
+   * the same key but different orchestration semantics is a caller bug, answered
+   * honestly, never absorbed.
+   */
+  private reuseIdempotentLane(
+    input: LaneStartInput,
+    kind: string,
+    normalized: { groupId?: string; role?: LaneRole; verifiesLaneId?: string },
+    existing: LaneRow,
+  ): LaneStartResult {
+    let storedGoal: string | undefined;
+    let storedPaths: readonly string[] = [];
+    try {
+      const m = JSON.parse(existing.mandateJson) as {
+        goal?: string;
+        scope?: { paths?: string[] };
+      };
+      storedGoal = m.goal;
+      storedPaths = m.scope?.paths ?? [];
+    } catch {
+      storedGoal = undefined;
+    }
+    const same = <T>(stored: T | null, incoming: T | undefined): boolean =>
+      (stored ?? undefined) === incoming;
+    // The jail is part of a lane's identity. Only compare when the caller EXPLICITLY
+    // named paths: then the stored mandate carries exactly those (scope synthesis —
+    // QA inheritance / the default per-lane jail — fires only on an empty scope, and
+    // runs after this check). With no explicit paths there is nothing the caller
+    // asked for to contradict, so the synthesized jail is not treated as a conflict.
+    const requestedPaths = ((input.scope ?? {}) as { paths?: string[] }).paths ?? [];
+    const normPaths = (paths: readonly string[]): string => [...paths].sort().join(' ');
+    const scopeConflict =
+      requestedPaths.length > 0 && normPaths(requestedPaths) !== normPaths(storedPaths);
+    if (
+      existing.conversationId !== input.conversationId ||
+      existing.kind !== kind ||
+      !storedGoal ||
+      storedGoal !== input.goal ||
+      !same(existing.groupId, normalized.groupId) ||
+      !same(existing.role, normalized.role) ||
+      !same(existing.verifiesLaneId, normalized.verifiesLaneId) ||
+      scopeConflict
+    ) {
+      throw new Error('conflict: idempotency key belongs to a different operation');
+    }
+
+    const report = existing.mergeJson
+      ? mergeReportSchema.parse(JSON.parse(existing.mergeJson) as unknown)
+      : null;
+    return {
+      laneId: existing.id,
+      status: existing.status,
+      dryRun: Boolean(input.dryRun),
+      detached: existing.status === 'running' || this.activeLanes.has(existing.id),
+      report,
+    };
+  }
+
+  /**
    * Start a lane: emit `lane.spawned` + `lane.mandate`, then (unless `dryRun`)
    * run it through the lane runner, streaming `lane.progress` and finishing with
    * `lane.merge_report` + `lane.completed`/`lane.aborted`. With `detach` the call
@@ -3696,13 +3889,58 @@ export class AmritaKernel {
     if (!conv) throw new Error(`no such conversation: ${input.conversationId}`);
     const projectId = conv.projectId;
     const conversationId = input.conversationId;
-    const laneId = newId();
     const kind = input.kind ?? 'claude-code';
+    const verificationTarget = input.verifiesLaneId
+      ? this.store.getLane(input.verifiesLaneId)
+      : undefined;
+    if (
+      input.verifiesLaneId &&
+      (!verificationTarget || verificationTarget.projectId !== projectId)
+    ) {
+      throw new Error('conflict: verification target must exist in the same project');
+    }
+    const role: LaneRole | undefined = input.role ?? (input.verifiesLaneId ? 'qa' : undefined);
+    if (input.verifiesLaneId && role === 'build') {
+      throw new Error('conflict: a build lane cannot verify another lane');
+    }
+    if (
+      input.groupId &&
+      verificationTarget?.groupId &&
+      input.groupId !== verificationTarget.groupId
+    ) {
+      throw new Error('conflict: verification target belongs to a different lane group');
+    }
+    const groupId =
+      input.groupId ??
+      verificationTarget?.groupId ??
+      (input.verifiesLaneId ? input.verifiesLaneId : undefined);
+    const normalized = {
+      ...(groupId ? { groupId } : {}),
+      ...(role ? { role } : {}),
+      ...(input.verifiesLaneId ? { verifiesLaneId: input.verifiesLaneId } : {}),
+    };
+    if (input.idempotencyKey) {
+      const existing = this.store.getLaneByIdempotencyKey(input.idempotencyKey);
+      if (existing) return this.reuseIdempotentLane(input, kind, normalized, existing);
+    }
+    const laneId = newId();
 
     // ADR-0039: a real run always gets a workspace. When the caller names no
     // paths, confine the lane to <allowed-root>/<laneId> — the UI never needs
     // to know filesystem paths, and the canvas can serve the output.
     let scope = (input.scope ?? {}) as { paths?: string[] } & Record<string, unknown>;
+    // ADR-0049 §9: a QA lane VERIFIES a build lane — by default its cwd IS the
+    // build's output dir, so it inspects real files, not an empty jail. Only when
+    // the caller gave no explicit paths; the target's own scope is already jailed.
+    if ((scope.paths ?? []).length === 0 && verificationTarget) {
+      try {
+        const targetPaths =
+          laneMandateSchema.parse(JSON.parse(verificationTarget.mandateJson)).scope.paths ?? [];
+        if (targetPaths.length > 0) scope = { ...scope, paths: [...targetPaths] };
+      } catch {
+        // fall through to the per-lane jail below
+      }
+    }
     if (
       this.realLaneExecution &&
       !input.dryRun &&
@@ -3724,7 +3962,25 @@ export class AmritaKernel {
       deliverables: input.deliverables ?? [],
     });
 
-    this.emitLaneEvent(projectId, conversationId, laneId, 'lane.spawned', { laneId, kind });
+    try {
+      this.emitLaneEvent(projectId, conversationId, laneId, 'lane.spawned', {
+        laneId,
+        kind,
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+        ...(groupId ? { groupId } : {}),
+        ...(role ? { role } : {}),
+        ...(input.verifiesLaneId ? { verifiesLaneId: input.verifiesLaneId } : {}),
+      });
+    } catch (error) {
+      // A second daemon/process can lose the partial-unique-index race after its
+      // optimistic lookup. The failed append is transactional, so return the
+      // winner only when it proves to be the exact same operation.
+      if (input.idempotencyKey) {
+        const winner = this.store.getLaneByIdempotencyKey(input.idempotencyKey);
+        if (winner) return this.reuseIdempotentLane(input, kind, normalized, winner);
+      }
+      throw error;
+    }
     this.emitLaneEvent(projectId, conversationId, laneId, 'lane.mandate', mandate);
 
     if (input.dryRun) {
@@ -3880,7 +4136,7 @@ export class AmritaKernel {
       // projected `merge_json` and nothing else, so a lane could report that it
       // created three tasks and zero rows would appear. They are proposals now,
       // and they land in the same Inbox as everything else an agent produces.
-      this.captureMergeReport(projectId, conversationId, sealed);
+      this.captureMergeReport(projectId, conversationId, sealed, laneId);
       // `cancelled` and `aborted` are terminal-aborted in the row state machine;
       // the precise disposition lives in the merge report's `exit`.
       if (sealed.exit === 'aborted' || sealed.exit === 'cancelled') {
