@@ -3,7 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { amritaHome, parseEnvFile, secretsEnvPath, writeSecretsEnv } from '@amrita/daemon';
+import {
+  amritaHome,
+  generateDevToken,
+  parseEnvFile,
+  secretsEnvPath,
+  writeSecretsEnv,
+} from '@amrita/daemon';
 import {
   DEFAULT_DAEMON_PORT,
   DEFAULT_WEB_PORT,
@@ -49,9 +55,9 @@ function resolveStableToken(io: IO): string {
     const existing = parseEnvFile(readFileSync(path, 'utf8')).AMRITA_AUTH_TOKEN;
     if (existing && existing.length > 0) return existing;
   }
-  const token = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join(
-    '',
-  );
+  // Credential material: CSPRNG only (the daemon's 192-bit token authority),
+  // never a seeded PRNG — this bearer gates the whole control surface.
+  const token = generateDevToken();
   writeSecretsEnv({ AMRITA_AUTH_TOKEN: token }, env);
   process.env.AMRITA_AUTH_TOKEN = token;
   io.out(`  generated a stable control token → ${path} (0600)`);

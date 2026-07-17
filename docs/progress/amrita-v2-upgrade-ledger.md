@@ -1715,3 +1715,12 @@ Gates: root **823** tests, web **186**, typecheck/lint clean, `pnpm audit --prod
 clean. Deferred (honest): full hosted-API-key live validation (no test creds), macOS CI evidence,
 version-pinned release channel, kernel fail-closed on missing roots (3 tests + the live daemon rely
 on the cwd default; the installer now writes explicit roots instead).
+
+**Post-ship security hotfix (same day).** Automated security review flagged the P5 stable-token
+generator: `resolveStableToken` derived the persistent `AMRITA_AUTH_TOKEN` (the control-surface
+bearer) from `Math.random()` — a seeded PRNG, not credential-grade. Fixed at the SSOT: the launcher
+now reuses the daemon's CSPRNG authority `generateDevToken()` (192-bit `randomBytes` base64url), the
+only token generator in the repo. Regression guard: a source-level fitness test in
+`packages/cli/test/lifecycle.test.ts` fails if a seeded PRNG ever reappears in the launcher. Anyone
+who already generated a token with the weak version should delete the `AMRITA_AUTH_TOKEN` line from
+`~/.amrita/secrets.env` and re-run `amrita open` to mint a strong one.

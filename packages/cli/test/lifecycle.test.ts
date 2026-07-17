@@ -37,3 +37,15 @@ describe('open lifecycle (pure)', () => {
     expect(platformOpenCommand('android')).toBeNull();
   });
 });
+
+describe('credential-strength fitness (security review 2026-07-17)', () => {
+  it('the launcher never derives credential material from Math.random', async () => {
+    // Regression guard: the stable AMRITA_AUTH_TOKEN gates the whole control
+    // surface and MUST come from the daemon's CSPRNG helper (generateDevToken),
+    // never a seeded PRNG. Source-level check keeps this un-reintroducible.
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../src/launcher.ts', import.meta.url), 'utf8');
+    expect(src).not.toContain('Math.random');
+    expect(src).toContain('generateDevToken');
+  });
+});
