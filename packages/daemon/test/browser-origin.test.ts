@@ -114,4 +114,55 @@ describe('validateWebSecurityConfig — fail closed on TLS/origin mismatch (SEC5
       ),
     ).toThrow(/https/);
   });
+
+  it('SEC5b: TLS=1 REQUIRES AMRITA_WEB_ORIGINS to be set explicitly', () => {
+    // A TLS deployment must not fall back to the loopback default (an https browser
+    // Origin would never match http://127.0.0.1:7461, so cookie auth would break).
+    expect(() => validateWebSecurityConfig(env({ AMRITA_WEB_TLS: '1' }))).toThrow(
+      /AMRITA_WEB_ORIGINS/,
+    );
+    expect(() =>
+      validateWebSecurityConfig(env({ AMRITA_WEB_TLS: 'true', AMRITA_WEB_ORIGINS: '  ' })),
+    ).toThrow(/AMRITA_WEB_ORIGINS/);
+  });
+
+  it('SEC5b: TLS=1 rejects a MIXED http+https origin list (all must be https)', () => {
+    expect(() =>
+      validateWebSecurityConfig(
+        env({
+          AMRITA_WEB_TLS: '1',
+          AMRITA_WEB_ORIGINS: 'https://amrita.example, http://127.0.0.1:7461',
+        }),
+      ),
+    ).toThrow(/https/);
+  });
+
+  it('SEC5b: rejects an entry that is not an EXACT scheme://host[:port] origin', () => {
+    const bad = [
+      'https://amrita.example/app', // path
+      'https://amrita.example/', // trailing slash
+      'https://amrita.example?x=1', // query
+      'https://amrita.example#f', // fragment
+      'https://user:pass@amrita.example', // credentials
+      'https://amrita.example:443', // default port (never matches an Origin header)
+      'not-a-url',
+    ];
+    for (const o of bad) {
+      expect(
+        () => validateWebSecurityConfig(env({ AMRITA_WEB_TLS: '1', AMRITA_WEB_ORIGINS: o })),
+        `expected "${o}" to be rejected`,
+      ).toThrow(WebSecurityConfigError);
+    }
+  });
+
+  it('SEC5b: accepts exact https origins (with a non-default port) under TLS', () => {
+    expect(() =>
+      validateWebSecurityConfig(
+        env({
+          AMRITA_WEB_TLS: '1',
+          AMRITA_WEB_ORIGINS: 'https://amrita.example, https://dash.example:8443',
+        }),
+      ),
+    ).not.toThrow();
+  });
 });

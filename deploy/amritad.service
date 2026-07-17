@@ -22,17 +22,22 @@ Environment=PATH=__PATH__
 WorkingDirectory=__WORKROOTS__
 Environment=AMRITA_LANES_ALLOWED_ROOTS=__WORKROOTS__
 # ADR-0057 finding 1: the trusted dashboard origin(s). The cookie session is
-# honored ONLY for browser requests from these exact origins (a same-site page on
-# another port is a different origin and rejected). The default (unset) trusts the
-# standard local dashboard port http://localhost:7461 / http://127.0.0.1:7461. If
-# you serve the UI on another host/port/domain (e.g. AMRITA_WEB_HOST=0.0.0.0 behind
-# a reverse proxy at https://amrita.example), you MUST declare it here or the
-# browser cannot authenticate:
+# honored ONLY for browser requests from these EXACT origins (a same-site page on
+# another port is a different origin and rejected). Each entry must be a bare
+# scheme://host[:port] — no path, query, trailing slash, credentials, or default
+# port (:443/:80) — so it byte-matches the browser Origin header. The default
+# (unset) trusts the standard local dashboard port http://localhost:7461 /
+# http://127.0.0.1:7461. If you serve the UI on another host/port/domain (e.g.
+# AMRITA_WEB_HOST=0.0.0.0 behind a reverse proxy at https://amrita.example), you
+# MUST declare it here or the browser cannot authenticate:
 #   Environment=AMRITA_WEB_ORIGINS=https://amrita.example
-# ADR-0057 finding 2: when the dashboard is served over HTTPS (TLS terminates in
-# front of the daemon), set this so the session cookie is issued Secure + with the
-# __Host- prefix. It is SERVER-owned on purpose — the daemon never trusts a
-# client X-Forwarded-Proto to decide cookie security. Leave unset for local HTTP.
+# ADR-0057 finding 2 / SEC5b: when the dashboard is served over HTTPS (TLS
+# terminates in front of the daemon), set this so the session cookie is issued
+# Secure + with the __Host- prefix. It is SERVER-owned on purpose — the daemon
+# never trusts a client X-Forwarded-Proto to decide cookie security. Leave unset
+# for local HTTP. With AMRITA_WEB_TLS=1 the daemon FAILS CLOSED at startup unless
+# AMRITA_WEB_ORIGINS is set explicitly to https:// origin(s) only (never a mix
+# with http://) — a Secure cookie is unusable on http, so it will not guess.
 #   Environment=AMRITA_WEB_TLS=1
 Restart=on-failure
 RestartSec=3

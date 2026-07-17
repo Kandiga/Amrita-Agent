@@ -77,26 +77,69 @@ export class WebSecurityConfigError extends Error {
 }
 
 /**
- * SEC5-3: fail closed on an incoherent TLS/origin configuration at STARTUP, so
- * the daemon never runs a mode where the Secure cookie can never be delivered.
- * TLS is decided by the SERVER (`AMRITA_WEB_TLS`), NEVER inferred from a
+ * A DECLARED trusted origin must be a canonical, EXACT URL-origin
+ * (`scheme://host[:port]`) — no path, query, fragment, credentials, trailing
+ * slash, or default-port noise. `url.origin === o` enforces all of that: the
+ * WHATWG URL parser strips userinfo/path/query/fragment into the origin, drops a
+ * default port, and lowercases the host, so equality with the raw input holds
+ * only for a value that already byte-matches the browser's `Origin` header.
+ */
+function isExactWebOrigin(o: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(o);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  return url.origin === o;
+}
+
+/**
+ * SEC5-3 / SEC5b: fail closed on an incoherent web-security configuration at
+ * STARTUP, so the daemon never runs a mode where the Secure cookie can never be
+ * delivered or a trusted origin can never match a browser `Origin`. TLS is
+ * decided by the SERVER (`AMRITA_WEB_TLS`), NEVER inferred from a
  * client-forgeable `X-Forwarded-Proto`. Throws `WebSecurityConfigError` with the
  * exact remediation; returns void on a valid config.
+ *
+ * Rules:
+ *  - Every declared `AMRITA_WEB_ORIGINS` entry must be an EXACT origin (above).
+ *  - TLS on → `AMRITA_WEB_ORIGINS` is MANDATORY and EVERY entry must be
+ *    `https://` (a Secure cookie is only usable by an https origin; the loopback
+ *    default would never match the real https dashboard).
+ *  - TLS off → NO `https://` origin is allowed (it needs TLS to be Secure).
  */
 export function validateWebSecurityConfig(env: NodeJS.ProcessEnv = process.env): void {
   const web = splitOrigins(env.AMRITA_WEB_ORIGINS);
   const tls = /^(1|true|yes|on)$/i.test((env.AMRITA_WEB_TLS ?? '').trim());
-  const httpsOrigins = web.filter((o) => o.toLowerCase().startsWith('https://'));
-  const httpOrigins = web.filter((o) => o.toLowerCase().startsWith('http://'));
 
-  if (httpsOrigins.length > 0 && !tls) {
+  const malformed = web.filter((o) => !isExactWebOrigin(o));
+  if (malformed.length > 0) {
     throw new WebSecurityConfigError(
-      `AMRITA_WEB_ORIGINS declares an HTTPS dashboard (${httpsOrigins.join(', ')}) but AMRITA_WEB_TLS is not enabled — the session cookie would not be issued Secure over TLS. Fix: set AMRITA_WEB_TLS=1 (TLS terminates in front of the daemon), or use an http:// origin for a local HTTP dashboard.`,
+      `AMRITA_WEB_ORIGINS has entries that are not exact scheme://host[:port] origins (${malformed.join(', ')}) — remove any path, query, fragment, credentials, trailing slash, or default port. A trusted origin must byte-match the browser's Origin header.`,
     );
   }
-  if (tls && web.length > 0 && httpsOrigins.length === 0) {
+
+  if (tls) {
+    if (web.length === 0) {
+      throw new WebSecurityConfigError(
+        'AMRITA_WEB_TLS=1 requires AMRITA_WEB_ORIGINS to be set explicitly to the https:// dashboard origin(s) — a Secure cookie is only usable by an https origin, so the daemon will not fall back to a loopback default. Fix: AMRITA_WEB_ORIGINS=https://your-dashboard.example.',
+      );
+    }
+    const notHttps = web.filter((o) => !o.toLowerCase().startsWith('https://'));
+    if (notHttps.length > 0) {
+      throw new WebSecurityConfigError(
+        `AMRITA_WEB_TLS=1 but AMRITA_WEB_ORIGINS contains non-https origins (${notHttps.join(', ')}) — under TLS the Secure cookie is only sent to https origins, so every dashboard origin must be https://. Fix: use https:// for all of them, or unset AMRITA_WEB_TLS for a local HTTP dashboard.`,
+      );
+    }
+    return;
+  }
+
+  const httpsOrigins = web.filter((o) => o.toLowerCase().startsWith('https://'));
+  if (httpsOrigins.length > 0) {
     throw new WebSecurityConfigError(
-      `AMRITA_WEB_TLS is set but AMRITA_WEB_ORIGINS has only http:// origins (${httpOrigins.join(', ')}) — a Secure cookie is never sent over http, so the browser could never authenticate. Fix: declare the https:// dashboard origin in AMRITA_WEB_ORIGINS, or unset AMRITA_WEB_TLS for a local HTTP dashboard.`,
+      `AMRITA_WEB_ORIGINS declares an HTTPS dashboard (${httpsOrigins.join(', ')}) but AMRITA_WEB_TLS is not enabled — the session cookie would not be issued Secure over TLS. Fix: set AMRITA_WEB_TLS=1 (TLS terminates in front of the daemon), or use an http:// origin for a local HTTP dashboard.`,
     );
   }
 }

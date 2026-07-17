@@ -66,11 +66,15 @@ posture unauthenticated), 11 (no CSP / XCTO / Referrer-Policy / frame / COOP hea
    `X-Forwarded-Proto`. TLS mode issues `__Host-amrita_session` with `Secure`
    (Path=/, no Domain), pinning it to the exact host. **Deployment:** a TLS
    dashboard MUST set `AMRITA_WEB_TLS=1` (documented in `deploy/amritad.service`);
-   local HTTP is the fail-closed default. SEC5-3: the daemon **refuses to start**
-   on an incoherent config (`validateWebSecurityConfig`) — an HTTPS
-   `AMRITA_WEB_ORIGINS` without `AMRITA_WEB_TLS`, or TLS enabled with only
-   `http://` dashboard origins — with the exact remediation, so a Secure cookie
-   is never issued where the browser can never receive it.
+   local HTTP is the fail-closed default. SEC5-3/SEC5b: the daemon **refuses to
+   start** on an incoherent config (`validateWebSecurityConfig`) — with the exact
+   remediation, so a Secure cookie is never issued where the browser can never
+   receive it, and a trusted origin can never fail to match a browser `Origin`.
+   The rules: every `AMRITA_WEB_ORIGINS` entry must be an EXACT
+   `scheme://host[:port]` origin (no path/query/fragment/credentials/trailing
+   slash/default port); with `AMRITA_WEB_TLS=1`, `AMRITA_WEB_ORIGINS` is
+   MANDATORY and every entry must be `https://` (no http/mixed, no loopback
+   fallback); without TLS, no `https://` origin is allowed.
 3. **Strict app CSP + artifact previews isolated from app authority.** Earlier
    this ADR claimed `connect-src 'self'` "closes the exfiltration channel" while
    the app kept `script-src 'unsafe-inline'`. That was **wrong**: `connect-src

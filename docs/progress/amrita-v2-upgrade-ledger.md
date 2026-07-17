@@ -1838,3 +1838,17 @@ pairing works, the artifact preview renders but its `fetch('/rpc')` stays **BLOC
 (JSON + trusted Origin) → 204 then `/session` → 401. `document.cookie` stays empty (HttpOnly).
 
 Gates: root **874** tests, web **192**, typecheck/lint/build/secret-scan/diff-check clean.
+
+### SEC5b — stricter TLS/origin config validation (2026-07-17)
+
+`validateWebSecurityConfig` was tightened (RED-first): with `AMRITA_WEB_TLS=1`, `AMRITA_WEB_ORIGINS`
+is now MANDATORY and every entry must be a valid `https://` origin (a mixed http+https list is
+rejected — no silent loopback fallback that an https browser Origin could never match); without TLS
+any `https://` origin is rejected; and in BOTH modes every declared entry must be an EXACT
+`scheme://host[:port]` origin (`new URL(o).origin === o` — rejecting path, query, fragment,
+credentials, trailing slash, default `:443`, and non-URLs) so it byte-matches the browser `Origin`
+header. Proven at real startup (TLS-no-origins / TLS-mixed / non-exact all print "refusing to
+start — …" and exit 1; a valid explicit config boots and pairs). Regression E3 (isolated
+daemon+web, valid explicit `AMRITA_WEB_ORIGINS`): pair 204, session 204, cookie HttpOnly, strict
+app CSP intact. Gates: root **878** tests, web **192**, typecheck/lint/build/secret-scan/diff-check
+clean. `deploy/amritad.service` docs updated.
