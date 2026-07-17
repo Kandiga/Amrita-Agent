@@ -39,3 +39,33 @@ export function clearToken(store: TokenStore | null = defaultStore()): void {
 export function maskToken(token: string): string {
   return token ? '•'.repeat(8) : '';
 }
+
+/**
+ * Community onboarding (finding 4): `amrita open` hands the bearer to the browser
+ * via a ONE-TIME `#token=<t>` fragment so the user never hand-copies it. Read it,
+ * persist it, and return it; the caller strips the hash so the token never lingers
+ * in the address bar, history, or a shared/bookmarked URL. Pure + injectable.
+ */
+export function readTokenFromHash(hash: string): string | undefined {
+  const m = /(?:^#|&)token=([^&]+)/.exec(hash);
+  if (!m?.[1]) return undefined;
+  try {
+    const t = decodeURIComponent(m[1]).trim();
+    return t.length > 0 ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Adopt a `#token=` bootstrap from the live location, then clear the hash. */
+export function bootstrapTokenFromLocation(
+  loc: { hash: string; replaceHash: (h: string) => void } | null,
+  store: TokenStore | null = defaultStore(),
+): string | undefined {
+  if (!loc) return undefined;
+  const token = readTokenFromHash(loc.hash);
+  if (!token) return undefined;
+  saveToken(token, store);
+  loc.replaceHash(''); // never leave the token in the URL
+  return token;
+}

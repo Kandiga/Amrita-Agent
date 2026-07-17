@@ -222,6 +222,15 @@ async function configureSubscription(
   return true;
 }
 
+/** Plain-language billing owner for the honest connection summary (P2). */
+function billingOwner(providerId: string): string {
+  if (providerId === 'anthropic') return 'Anthropic API';
+  if (providerId === 'openai') return 'OpenAI API';
+  if (providerId === 'openrouter') return 'OpenRouter';
+  if (providerId === 'gemini') return 'Google Gemini API';
+  return `${providerId} API`;
+}
+
 async function configureApiKey(
   client: InProcessClient,
   deps: SetupDeps,
@@ -254,7 +263,13 @@ async function configureApiKey(
   const providers = await client.call<ProviderInfoLite[]>('providers.list');
   const live = providers.find((p) => p.id === entry.id);
   if (live?.available) {
-    out(`  ✓ ${entry.id} connected and bound as your main brain — env ready`);
+    // P2 (finding 8): env-presence is NOT proof the key works. Do not claim
+    // "connected" — say it is saved+bound and validated on the first turn, where
+    // an invalid key surfaces a clear provider error (never a fake green here).
+    out(`  ✓ ${envName} saved (0600) and ${entry.id} bound as your main brain.`);
+    out(`    This bills YOUR ${billingOwner(entry.id)} account.`);
+    out('    Amrita validates the key on your first chat turn — an invalid/expired');
+    out('    key shows a clear error there, not a false success now.');
   } else {
     out(`  ! ${entry.id} bound as main, but ${envName} is still missing —`);
     out('    chat falls back honestly until the key is present');

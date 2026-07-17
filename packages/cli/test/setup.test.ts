@@ -168,7 +168,7 @@ describe('amrita setup wizard (ADR-0024)', () => {
     expect(roles.roles.find((r) => r.role === 'main')?.resolvesTo).toBe('anthropic');
 
     const text = output();
-    expect(text).toContain('env ready');
+    expect(text).toMatch(/saved.*bound|validates on your first chat turn/);
     expect(text).toContain('@amrita_test_bot');
     expect(text).not.toContain('sk-test-abc'); // wizard output is value-free
     expect(text).not.toContain('tok-tg');

@@ -18,7 +18,7 @@ import {
   type RoleResolutionLite,
   RpcError,
 } from './api.ts';
-import { clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import { bootstrapTokenFromLocation, clearToken, loadToken, maskToken, saveToken } from './auth.ts';
 import {
   type CapsuleState,
   capsuleHasContent,
@@ -221,7 +221,23 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [authToken, setAuthToken] = useState<string | undefined>(() => loadToken());
+  const [authToken, setAuthToken] = useState<string | undefined>(() => {
+    // `amrita open` may hand us a one-time #token= — adopt it, then fall back to
+    // the stored token. The helper clears the hash so it never lingers in the URL.
+    const fromHash =
+      typeof window !== 'undefined'
+        ? bootstrapTokenFromLocation({
+            hash: window.location.hash,
+            replaceHash: (h) =>
+              window.history.replaceState(
+                null,
+                '',
+                `${window.location.pathname}${window.location.search}${h}`,
+              ),
+          })
+        : undefined;
+    return fromHash ?? loadToken();
+  });
   const [tokenDraft, setTokenDraft] = useState('');
   const [unauthorized, setUnauthorized] = useState(false);
   const [lanes, setLanes] = useState<LanesState>(emptyLanes());

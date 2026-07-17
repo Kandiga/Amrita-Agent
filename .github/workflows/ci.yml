@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Frozen install proves the lockfile is honored (community-onboarding gate).
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      # Production Web build must succeed — a fresh clone has no dist otherwise.
+      - run: pnpm --filter @amrita/web build
+      # No high/critical production dependency advisory (finding 14 guard).
+      - run: pnpm audit --prod --audit-level=high
+      # Current-tree secret scan (kept from the existing gate).
+      - run: node scripts/scan-secrets.mjs
+
+  clean-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Prove the community path: install → build → the daemon serves /health and
+      # the web serves GET / with a 200, and unauthenticated RPC is rejected.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @amrita/web build
+      - name: start + smoke
+        run: |
+          set -euo pipefail
+          export AMRITA_HOME="$RUNNER_TEMP/.amrita"
+          export AMRITA_AUTH_TOKEN="ci-smoke-token"
+          node packages/daemon/src/bin/amritad.ts --http --port 7460 &
+          DAEMON=$!
+          node deploy/serve-web.mjs --port 7461 --daemon 127.0.0.1:7460 &
+          WEB=$!
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:7460/health >/dev/null && break; sleep 0.5; done
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:7461/health >/dev/null && break; sleep 0.5; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7461/)" = "200"
+          # unauthenticated RPC must be rejected
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:7460/rpc -H 'content-type: application/json' -d '{"id":1,"method":"health"}')
+          test "$code" = "401"
+          # authenticated RPC works
+          curl -sf -X POST http://127.0.0.1:7460/rpc -H "authorization: Bearer $AMRITA_AUTH_TOKEN" -H 'content-type: application/json' -d '{"id":1,"method":"health"}' >/dev/null
+          kill $DAEMON $WEB 2>/dev/null || true
+          echo "clean-install smoke OK"

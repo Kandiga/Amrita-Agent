@@ -229,9 +229,16 @@ export const doctorCheckSchema = z.object({
 });
 export type DoctorCheck = z.infer<typeof doctorCheckSchema>;
 
+export const doctorProfileSchema = z.enum(['core', 'optional', 'private']);
+export type DoctorProfile = z.infer<typeof doctorProfileSchema>;
+
 export const doctorSectionSchema = z.object({
   title: z.string(),
   checks: z.array(doctorCheckSchema),
+  // Community onboarding: `core` drives the top-line ok/status (the basic chat
+  // loop); `optional` integrations and `private` bespoke modules never gate it.
+  // Additive-optional: pre-profile reports still parse (absent = treated core).
+  profile: doctorProfileSchema.optional(),
 });
 export type DoctorSection = z.infer<typeof doctorSectionSchema>;
 
@@ -301,6 +308,10 @@ export const codingRuntimeStatusSchema = z.object({
   realExecution: z.boolean(),
   detail: z.string(),
   nextCommand: z.string().optional(),
+  /** Observed billing/auth mode parsed from the CLI's OWN status (never inferred
+   *  from exit code): 'subscription' = the user's login; 'api-key' = a key is
+   *  driving the CLI (community onboarding finding 5). Absent when not applicable. */
+  authMode: z.enum(['subscription', 'api-key']).optional(),
   /** Tool NAMES a real lane may use for this runtime (ADR-0043). Never secret-shaped —
    *  presence/absence of a tool is operational config, not a credential. claude-code
    *  only: codex sandboxes by directory, not by tool allowlist. */

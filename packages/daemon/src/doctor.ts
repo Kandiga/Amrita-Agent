@@ -1,6 +1,11 @@
 import { existsSync } from 'node:fs';
 import type { DoctorCheck, DoctorReport, DoctorSection, DoctorStatus } from '@amrita/protocol';
-import { CINEMA_BRIDGE_TOKEN_ENV, cinemaProviders } from './cinema.ts';
+import {
+  CINEMA_BRIDGE_TOKEN_ENV,
+  CINEMA_BRIDGE_URL_ENV,
+  cinemaBridgeTokenPresent,
+  cinemaProviders,
+} from './cinema.ts';
 import { CONNECTOR_MANIFESTS } from './connectors.ts';
 import {
   amritaHome,
@@ -11,7 +16,7 @@ import {
 } from './home.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { PROVIDER_ROLES, envPresent } from './provider.ts';
-import type { CodingRuntimeStatus } from './runtimes.ts';
+import { CODING_RUNTIMES, type CodingRuntimeStatus } from './runtimes.ts';
 
 /**
  * Doctor — grouped setup/health checks over the kernel (PLAN §5.4).
@@ -91,12 +96,16 @@ function homeSection(kernel: AmritaKernel): DoctorSection {
  */
 function runtimesSectionFrom(runtimes: CodingRuntimeStatus[]): DoctorSection {
   const checks: DoctorCheck[] = runtimes.map((rt) => {
-    // claude-code is the primary runtime: not-ready is a warn worth acting on.
-    // codex/opencode are optional & detection-only: never installed is not a
-    // problem, so they report `ok` with an informational detail (no warn spam).
-    const primary = rt.id === 'claude-code';
+    // An EXECUTABLE runtime (claude-code, codex — both real lane runners + chat
+    // providers) that is installed-but-unauthenticated is a warn worth acting on;
+    // masking codex as `ok` when logged out hid a runtime Amrita can actually
+    // drive (community-onboarding finding 13). Genuinely detection-only runtimes
+    // (opencode, executable:false) and never-installed stay informational `ok`.
+    const executable = CODING_RUNTIMES.find((r) => r.id === rt.id)?.executable === true;
     const ready = rt.state === 'ready';
-    const status: DoctorStatus = ready ? 'ok' : primary ? 'warn' : 'ok';
+    const actionableUnauth =
+      rt.state === 'installed_unauthenticated' || rt.state === 'installed_auth_unknown';
+    const status: DoctorStatus = ready ? 'ok' : executable && actionableUnauth ? 'warn' : 'ok';
     return {
       id: `runtime.${rt.id}`,
       label: rt.title,
@@ -431,22 +440,41 @@ function skillsSection(kernel: AmritaKernel): DoctorSection {
   return { title: 'skills', checks };
 }
 
+/**
+ * Community onboarding: doctor now separates readiness profiles.
+ * - `core`   — the basic chat loop (home/store/brain/roles/runtimes/lanes/web/
+ *   auth token). Its `worst()` is the top-line ok/status a fresh user judges by.
+ * - `optional` — integrations neutral until enabled (telegram/github/mcp/skills).
+ * - `private`  — bespoke maintainer modules (Cinema/brain-bridge) hidden unless
+ *   explicitly enabled, so a stranger never sees an aba-brain-bridge fix hint.
+ */
+function cinemaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Opt-in only: an explicit bridge URL or the bridge bearer being present.
+  return Boolean((env[CINEMA_BRIDGE_URL_ENV] ?? '').trim()) || cinemaBridgeTokenPresent(env);
+}
+
 export async function runDoctor(kernel: AmritaKernel): Promise<DoctorReport> {
   const runtimes = await kernel.getCodingRuntimes();
-  const sections = [
-    homeSection(kernel),
-    storeSection(kernel),
-    providerSection(kernel),
-    runtimesSectionFrom(runtimes),
-    laneSection(kernel),
-    channelSection(),
-    connectorSection(),
-    await cinemaSection(),
-    skillsSection(kernel),
-    authSection(),
+  const tagged: { section: DoctorSection; profile: 'core' | 'optional' | 'private' }[] = [
+    { section: homeSection(kernel), profile: 'core' },
+    { section: storeSection(kernel), profile: 'core' },
+    { section: providerSection(kernel), profile: 'core' },
+    { section: runtimesSectionFrom(runtimes), profile: 'core' },
+    { section: laneSection(kernel), profile: 'core' },
+    { section: channelSection(), profile: 'optional' },
+    { section: connectorSection(), profile: 'optional' },
+    { section: skillsSection(kernel), profile: 'optional' },
+    { section: authSection(), profile: 'core' },
   ];
+  if (cinemaEnabled()) {
+    tagged.push({ section: await cinemaSection(), profile: 'private' });
+  }
+  const sections: DoctorSection[] = tagged.map((t) => ({ ...t.section, profile: t.profile }));
   const all = sections.flatMap((s) => s.checks);
+  const core = tagged.filter((t) => t.profile === 'core').flatMap((t) => t.section.checks);
   const fixes = [...new Set(all.filter((c) => c.status !== 'ok' && c.fix).map((c) => c.fix ?? ''))];
-  const status = worst(all);
+  // The top-line status reflects CORE readiness only; an unconfigured optional
+  // integration or a disabled private module can never make the product look broken.
+  const status = worst(core);
   return { ok: status !== 'fail', status, sections, fixes };
 }

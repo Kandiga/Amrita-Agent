@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 /**
  * The chat-provider boundary. A `ChatProvider` turns a transcript into one
  * assistant reply, **asynchronously**. The deterministic `mock` provider needs
@@ -10,8 +12,7 @@
  * injectable `fetchImpl` (and the CLI adapter an injectable `execImpl`), so
  * tests never hit the network and never spawn processes.
  */
-import { spawn } from 'node:child_process';
-import { StringDecoder } from 'node:string_decoder';
+import { scrubEnv } from '@amrita/lanes';
 import { PROVIDER_ROLES } from '@amrita/protocol';
 import type {
   AuthMode as ProviderAuthMode,
@@ -409,7 +410,16 @@ export const defaultCliExec: CliExec = (cmd, args, input, timeoutMs, onLine) =>
     try {
       // detached:true makes the child its own process-group leader so a timeout
       // or shutdown can kill the WHOLE tree, not just the direct child.
-      child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: true });
+      // SECURITY (community onboarding): the subscription CLI (`claude -p`/`codex exec`)
+      // must bill the user's OWN login, never a stray ANTHROPIC_API_KEY/OPENAI_API_KEY
+      // in the daemon env. Deny-by-default scrub (same allowlist lanes use) drops every
+      // secret-shaped var while keeping HOME/PATH so the CLI finds its own login.
+      child = spawn(cmd, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        detached: true,
+        env: scrubEnv(process.env),
+      });
     } catch {
       resolve({ status: null, stdout: '', stderr: '', failure: 'spawn_error' });
       return;
