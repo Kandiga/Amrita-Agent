@@ -232,6 +232,9 @@ export function App() {
   /** The Inbox — pending proposals awaiting triage (ADR-0044). */
   const [inbox, setInbox] = useState<InboxItemRowWire[]>([]);
   const [capture, setCapture] = useState('');
+  /** Mobile: quick-capture is collapsed behind a “＋” toggle so the bottom of the
+   *  screen is just the composer — capture opens on demand (mobile UX pass). */
+  const [captureOpen, setCaptureOpen] = useState(false);
   /** The computed charter critique (ADR-0045). */
   const [charter, setCharter] = useState<CharterStatusWire | null>(null);
   /** The project's own phases — the board's columns (ADR-0045). */
@@ -1749,29 +1752,46 @@ export function App() {
             {error}
           </div>
         ) : null}
-        {/* Quick capture (ADR-0044). It lives in the chat column, next to the
-            composer, because capture belongs where you are already typing — and
-            it goes to the Inbox, never straight into project truth. */}
-        <form
-          className="quick-capture"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void captureToInbox();
-          }}
-        >
-          <input
-            value={capture}
-            onChange={(e) => setCapture(e.target.value)}
-            dir={textDir(capture)}
-            placeholder="Quick capture → Inbox"
-            aria-label="Quick capture to the Inbox"
-            disabled={!writeCtx}
-          />
-          <button type="submit" disabled={!writeCtx || !capture.trim()}>
-            Capture
-          </button>
-        </form>
-        <div className="eco-launcher-row">
+        {/* One tidy toolbar above the composer (mobile): a compact quick-capture
+            toggle + the live-session chip, so the bottom of the screen is calm and
+            the composer is the clear place to type. On desktop the capture field
+            stays inline. Quick capture goes to the Inbox, never project truth. */}
+        <div className="chat-toolbar">
+          <form
+            className={`quick-capture${captureOpen ? ' open' : ''}`}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void captureToInbox();
+              setCaptureOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              className="capture-toggle"
+              onClick={() => setCaptureOpen((v) => !v)}
+              aria-expanded={captureOpen}
+              aria-label="Quick capture to the Inbox"
+              title="Quick capture → Inbox"
+            >
+              <span aria-hidden="true">＋</span>
+              <span className="capture-toggle-label">Capture</span>
+            </button>
+            <input
+              value={capture}
+              onChange={(e) => setCapture(e.target.value)}
+              dir={textDir(capture)}
+              placeholder="Quick capture → Inbox"
+              aria-label="Quick capture to the Inbox"
+              disabled={!writeCtx}
+            />
+            <button
+              type="submit"
+              className="capture-submit"
+              disabled={!writeCtx || !capture.trim()}
+            >
+              Capture
+            </button>
+          </form>
           <button
             type="button"
             className={`eco-launcher${ecoOpen ? ' active' : ''}`}
@@ -1782,8 +1802,10 @@ export function App() {
             <span
               className={`eco-launcher-dot ${laneViews.some((l) => !l.exit) ? 'live' : 'idle'}`}
             />
-            Claude session
-            {laneViews.some((l) => !l.exit) ? <em>· running</em> : null}
+            <span className="eco-launcher-text">
+              Claude session
+              {laneViews.some((l) => !l.exit) ? <em>· running</em> : null}
+            </span>
           </button>
         </div>
         <ClaudeEcosystemPanel
@@ -1850,6 +1872,9 @@ export function App() {
             ['canvas', 'Canvas'],
             ['project', 'Project'],
             ['brain', 'Brain'],
+            // Mobile parity: the live coding sessions are reachable on the phone too.
+            ['claude', 'Claude'],
+            ['codex', 'Codex'],
           ] as const
         ).map(([view, label]) => (
           <button

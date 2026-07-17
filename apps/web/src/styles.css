@@ -1537,9 +1537,9 @@ code {
 
   .mobile-tabs {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 2px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
     background: var(--ivory);
     border-top: 1px solid var(--border);
     position: sticky;
@@ -1550,11 +1550,14 @@ code {
     background: none;
     border: none;
     border-radius: var(--r-sm);
-    padding: 9px 4px;
-    font-size: 12px;
+    padding: 9px 2px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--slate);
     min-height: 44px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .mobile-tabs button.active {
     background: var(--cloud);
@@ -2497,6 +2500,21 @@ code {
 }
 
 /* Quick capture, in the chat column beside the composer. */
+/* Mobile UX pass: on MOBILE the capture toggle + live-session chip share one tidy
+   toolbar; on DESKTOP the wrapper is transparent (display:contents) so the capture
+   field and the right-aligned session chip flow exactly as before — the merge
+   never crowds the narrow desktop chat column. */
+.chat-toolbar {
+  display: contents;
+}
+.chat-toolbar > .eco-launcher {
+  align-self: flex-end;
+  margin: 0 20px 6px;
+}
+.capture-toggle {
+  display: none;
+}
+
 .quick-capture {
   display: flex;
   gap: 6px;
@@ -3297,6 +3315,116 @@ code {
   }
   .free-canvas {
     overflow-y: auto;
+  }
+
+  /* ── mobile UX pass ─────────────────────────────────────────────────────── */
+
+  /* 1 · De-clutter: quick-capture collapses to a compact ＋ toggle; the input
+     only appears on tap, so the bottom is just the composer by default. */
+  .chat-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 12px 6px;
+  }
+  .chat-toolbar > .eco-launcher {
+    align-self: auto;
+    margin: 0;
+  }
+  .capture-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--surface);
+    color: var(--slate);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .quick-capture {
+    flex: 0 0 auto;
+    padding: 0;
+  }
+  .quick-capture:not(.open) input,
+  .quick-capture:not(.open) .capture-submit {
+    display: none;
+  }
+  .quick-capture.open {
+    flex: 1 1 100%;
+    order: 3; /* opened → its own full-width row under the toolbar chips */
+  }
+  .quick-capture.open .capture-toggle {
+    flex: 0 0 auto;
+  }
+  .quick-capture.open input {
+    min-height: 44px;
+  }
+  .quick-capture.open .capture-submit {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* 2 · Status stays compact and out of the writing flow. */
+  .eco-launcher {
+    min-height: 40px;
+    padding-block: 6px;
+  }
+  .activity-bar summary {
+    min-height: 40px;
+  }
+
+  /* 3 · Tap targets ≥ 44px — no cramped mis-taps. */
+  .composer button[type="submit"],
+  .composer .composer-send,
+  .capture-submit,
+  .eco-launcher,
+  .stage-tabs button,
+  .hamburger {
+    min-height: 44px;
+  }
+  .focus-chip button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* 4 · Whitespace: the empty hero is generous on desktop but must not eat the
+     mobile viewport — shrink the logo/heading so chat starts higher. */
+  .empty {
+    margin-top: 6vh;
+  }
+  .empty span {
+    width: 44px;
+    height: 44px;
+    font-size: 24px;
+  }
+  .empty h1 {
+    font-size: 1.35rem;
+  }
+  .empty p {
+    font-size: 0.9rem;
+  }
+
+  /* 5 · Every stage tab (incl. Claude + Codex) reachable — the pill row scrolls
+     horizontally instead of squashing tabs off-screen. */
+  .stage-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .stage-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .stage-tabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 }
 

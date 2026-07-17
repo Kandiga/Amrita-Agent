@@ -1664,3 +1664,16 @@ untouched. Both agents (one SessionTerminal component). Proven: 5 pure unit test
 bundle loads clean in a real browser (Playwright: no bidi/module error; only the expected no-token
 401). Honest limit: full-screen TUI redraws stay LTR (reordering breaks cursor math). Gates: root 807,
 web 188, typecheck/lint/build/secret-scan clean.
+
+### Mobile UX pass — calmer bottom, reachable Claude/Codex tabs (2026-07-17)
+
+Operator feedback on the phone layout. Five fixes, verified at a real 390px viewport (Playwright):
+(1) De-clutter — quick-capture collapses to a compact ＋ toggle so the bottom is just the composer;
+the input opens on tap. (2) Status — the live-session chip shares ONE tidy toolbar row with the
+capture toggle instead of floating full-width in the writing area. (3) Tap targets — Capture, send,
+session chip, tabs, hamburger all ≥44px. (4) Whitespace — the empty hero logo/heading shrink on
+mobile so chat starts higher. (5) The bottom mobile-tabs nav was MISSING Claude + Codex (only
+chat/canvas/project/brain) — added both (6-column grid), so the live coding sessions are reachable on
+the phone. The toolbar merge is MOBILE-ONLY (`display: contents` on desktop) so the desktop
+two-row layout is unchanged — verified the session chip no longer overflows the narrow chat column.
+Gates: root 807, web 188, typecheck/lint/build/secret-scan clean.
