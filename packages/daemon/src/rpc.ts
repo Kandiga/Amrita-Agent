@@ -752,6 +752,10 @@ export const METHODS: Record<string, RpcMethod> = {
   'lanes.workspace.ticket': def(z.object({ laneId: z.string() }), (k, p) =>
     k.issueWorkspaceTicket(p.laneId),
   ),
+  // ADR-0057: mint a single-use browser pairing code. Reaching this method at
+  // all requires the bearer (or an already-paired session), so only the local
+  // operator can open the door for a new browser.
+  'auth.pair.mint': def(z.object({}).optional(), (k) => k.mintPairingCode()),
 
   'chat.turn': def(
     z.object({

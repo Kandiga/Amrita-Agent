@@ -1,8 +1,12 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { bootstrapTokenFromLocation, loadToken, readTokenFromHash } from '../src/auth.ts';
+import { purgeLegacyToken, readTokenFromHash } from '../src/auth.ts';
 
-/** Community onboarding (finding 4): `amrita open` hands the token via #token=,
- *  so the user never hand-copies it — and it never lingers in the URL. */
+/**
+ * ADR-0057 boundary: legacy browser credential channels are DEAD. A bearer must
+ * never arrive via URL fragment nor persist in localStorage — auth is a typed
+ * pairing code exchanged server-side for an HttpOnly cookie.
+ */
 
 function memStore() {
   const m = new Map<string, string>();
@@ -10,38 +14,32 @@ function memStore() {
     getItem: (k: string) => m.get(k) ?? null,
     setItem: (k: string, v: string) => void m.set(k, v),
     removeItem: (k: string) => void m.delete(k),
+    size: () => m.size,
   };
 }
 
-describe('token bootstrap from #token=', () => {
-  it('reads a token from the hash, URL-decoded', () => {
-    expect(readTokenFromHash('#token=abc123')).toBe('abc123');
-    expect(readTokenFromHash('#foo=1&token=a%2Bb')).toBe('a+b');
-    expect(readTokenFromHash('#')).toBeUndefined();
-    expect(readTokenFromHash('#token=')).toBeUndefined();
+describe('legacy credential channels are rejected', () => {
+  it('a #token= fragment is never adopted', () => {
+    expect(readTokenFromHash('#token=abc123')).toBeUndefined();
+    expect(readTokenFromHash('#foo=1&token=a%2Bb')).toBeUndefined();
     expect(readTokenFromHash('')).toBeUndefined();
   });
 
-  it('adopts the token, persists it, and CLEARS the hash (never lingers in the URL)', () => {
+  it('a legacy localStorage bearer is actively purged on boot', () => {
     const store = memStore();
-    let hash = '#token=secret-bearer';
-    const setHash = (h: string): void => {
-      hash = h;
-    };
-    const adopted = bootstrapTokenFromLocation({ hash, replaceHash: setHash }, store);
-    expect(adopted).toBe('secret-bearer');
-    expect(loadToken(store)).toBe('secret-bearer'); // persisted
-    expect(hash).toBe(''); // hash cleared — no token in history/bookmark
+    store.setItem('amrita.auth-token', 'old-bearer');
+    expect(purgeLegacyToken(store)).toBe(true); // found → the UI can hint "re-pair"
+    expect(store.getItem('amrita.auth-token')).toBeNull();
+    expect(purgeLegacyToken(store)).toBe(false); // second boot: nothing left
   });
 
-  it('no #token= → no change, falls back to the stored token', () => {
-    const store = memStore();
-    store.setItem('amrita.auth-token', 'existing');
-    const adopted = bootstrapTokenFromLocation(
-      { hash: '#/some/route', replaceHash: () => {} },
-      store,
-    );
-    expect(adopted).toBeUndefined();
-    expect(loadToken(store)).toBe('existing');
+  it('no web source stores, saves, or URL-embeds a bearer anymore', async () => {
+    // Source-level fitness: the credential-handling surface must stay dead.
+    const auth = await readFile(new URL('../src/auth.ts', import.meta.url), 'utf8');
+    expect(auth).not.toContain('setItem(LEGACY_STORAGE_KEY');
+    const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    for (const banned of ['bootstrapTokenFromLocation', 'saveToken', 'loadToken(', '#token=']) {
+      expect(app, `App.tsx must not use ${banned}`).not.toContain(banned);
+    }
   });
 });

@@ -46,12 +46,11 @@ type LinkState = 'connecting' | 'connected' | 'closed';
 interface SessionTerminalProps {
   projectId: string;
   laneId: string;
-  authToken?: string | undefined;
   /** Bumps when the operator hits "Reconnect". */
   epoch: number;
 }
 
-export function SessionTerminal({ projectId, laneId, authToken, epoch }: SessionTerminalProps) {
+export function SessionTerminal({ projectId, laneId, epoch }: SessionTerminalProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [link, setLink] = useState<LinkState>('connecting');
   const [exitReason, setExitReason] = useState('');
@@ -80,9 +79,10 @@ export function SessionTerminal({ projectId, laneId, authToken, epoch }: Session
     term.open(host);
     fit.fit();
 
+    // ADR-0057: no ?token= — the HttpOnly session cookie authenticates the
+    // upgrade automatically, so no credential ever appears in a URL.
     const base = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
     const params = new URLSearchParams({ projectId });
-    if (authToken) params.set('token', authToken);
     const ws = new WebSocket(`${base}/lanes/${laneId}/terminal?${params.toString()}`);
     let alive = true;
     setLink('connecting');
@@ -137,7 +137,7 @@ export function SessionTerminal({ projectId, laneId, authToken, epoch }: Session
       }
       term.dispose();
     };
-  }, [projectId, laneId, authToken, epoch]);
+  }, [projectId, laneId, epoch]);
 
   return (
     <div className="session-terminal-wrap" data-link={link}>

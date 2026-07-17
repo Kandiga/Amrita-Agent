@@ -4092,3 +4092,71 @@ code {
   background: var(--surface);
   cursor: pointer;
 }
+
+/* ── ADR-0057: the pairing gate (browser holds no credential) ─────────────── */
+.pairing-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+.pairing-card {
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px;
+}
+.pairing-card h1 {
+  margin: 0;
+  font-size: 22px;
+  color: var(--clay);
+}
+.pairing-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.pairing-form {
+  display: flex;
+  gap: 8px;
+}
+.pairing-form input {
+  flex: 1;
+  min-height: 44px;
+  padding: 8px 12px;
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  border: 1px solid var(--border-mid);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pairing-form button {
+  min-height: 44px;
+  min-width: 88px;
+  border: none;
+  border-radius: 10px;
+  background: var(--clay);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pairing-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pairing-error {
+  color: #b3402a;
+  font-size: 13px;
+  margin: 0;
+}
+.pairing-note {
+  font-size: 13px;
+  opacity: 0.8;
+  margin: 0;
+}

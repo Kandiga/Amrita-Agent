@@ -18,7 +18,7 @@ import {
   type RoleResolutionLite,
   RpcError,
 } from './api.ts';
-import { bootstrapTokenFromLocation, clearToken, loadToken, maskToken, saveToken } from './auth.ts';
+import { checkSession, logoutSession, purgeLegacyToken } from './auth.ts';
 import {
   type CapsuleState,
   capsuleHasContent,
@@ -47,6 +47,7 @@ import { MemoryPanel } from './components/MemoryPanel.tsx';
 import { MilestonesPanel } from './components/MilestonesPanel.tsx';
 import { MissionControlPanel } from './components/MissionControlPanel.tsx';
 import { NextActionsPanel } from './components/NextActionsPanel.tsx';
+import { PairingGate } from './components/PairingGate.tsx';
 import { PhasesPanel } from './components/PhasesPanel.tsx';
 import { RetroPanel } from './components/RetroPanel.tsx';
 import { ReviewPanel } from './components/ReviewPanel.tsx';
@@ -221,24 +222,10 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [authToken, setAuthToken] = useState<string | undefined>(() => {
-    // `amrita open` may hand us a one-time #token= — adopt it, then fall back to
-    // the stored token. The helper clears the hash so it never lingers in the URL.
-    const fromHash =
-      typeof window !== 'undefined'
-        ? bootstrapTokenFromLocation({
-            hash: window.location.hash,
-            replaceHash: (h) =>
-              window.history.replaceState(
-                null,
-                '',
-                `${window.location.pathname}${window.location.search}${h}`,
-              ),
-          })
-        : undefined;
-    return fromHash ?? loadToken();
-  });
-  const [tokenDraft, setTokenDraft] = useState('');
+  // ADR-0057: the browser holds NO credential. Auth is an HttpOnly cookie
+  // session; `sessionOk` mirrors the server's answer (null = still probing).
+  const [sessionOk, setSessionOk] = useState<boolean | null>(null);
+  const [hadLegacyToken] = useState<boolean>(() => purgeLegacyToken());
   const [unauthorized, setUnauthorized] = useState(false);
   const [lanes, setLanes] = useState<LanesState>(emptyLanes());
   const [sessions, setSessions] = useState<SessionPanes>(emptySessions());
@@ -336,10 +323,16 @@ export function App() {
     }
   }
 
-  // Keep the shared client's bearer token in sync with UI state (never logged).
+  // ADR-0057: probe the cookie session once on boot. 401 → the pairing gate.
   useEffect(() => {
-    client.setAuthToken(authToken);
-  }, [authToken]);
+    let cancelled = false;
+    void checkSession().then((ok) => {
+      if (!cancelled) setSessionOk(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.slug === projectSlug),
@@ -456,11 +449,12 @@ export function App() {
       {
         sinceSeq: 0,
         ...(streamProjectId ? { projectId: streamProjectId } : {}),
-        ...(authToken ? { token: authToken } : {}),
+        // ADR-0057: no ?token= — the HttpOnly session cookie rides the WS
+        // upgrade automatically, so the page never holds a credential.
       },
     );
     return () => handle?.close();
-  }, [conversationId, authToken, streamProjectId]);
+  }, [conversationId, streamProjectId]);
 
   // The stage is live: when Amrita produces a NEW openable artifact mid-session,
   // the canvas opens on it by itself — the Screenshot-Brief "she builds, you watch"
@@ -964,18 +958,10 @@ export function App() {
     }
   }
 
-  function applyToken(): void {
-    const next = tokenDraft.trim() || undefined;
-    saveToken(next ?? '');
-    setAuthToken(next);
-    setTokenDraft('');
-    setUnauthorized(false);
-  }
-
-  function forgetToken(): void {
-    clearToken();
-    setAuthToken(undefined);
-    setTokenDraft('');
+  /** ADR-0057: sign this browser out — the server clears the HttpOnly cookie. */
+  async function signOut(): Promise<void> {
+    await logoutSession();
+    window.location.reload(); // clean slate → the pairing gate
   }
 
   async function send() {
@@ -1021,45 +1007,39 @@ export function App() {
     }
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: boot + reload when the token changes; project switching is handled by explicit UI actions.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: boot once — auth is a cookie session (ADR-0057); project switching is handled by explicit UI actions.
   useEffect(() => {
     refreshBase()
       .then(() => ensureProjectAndLoad(projectSlug))
       .catch((e) => reportError(e));
-  }, [authToken]);
+  }, []);
 
-  /** The Access section (Settings): the ONLY place the token is managed. */
+  /** The Access section (Settings): session status only — no credential ever
+   *  lives in this page (ADR-0057). */
   const accessSection = (
     <section className={`card auth-card${unauthorized ? ' needs-auth' : ''}`}>
-      <h2>Access token</h2>
-      <p className={authToken ? 'token-set' : ''}>
-        {authToken
-          ? `token set · ${maskToken(authToken)}`
-          : 'No token set — the runtime may require one.'}
+      <h2>Access</h2>
+      <p className={sessionOk ? 'token-set' : ''}>
+        {sessionOk
+          ? 'This browser is paired — the session lives in a secure cookie this page cannot read.'
+          : 'Not paired. Run `amrita open` in a terminal and type the pairing code it prints.'}
       </p>
-      <div className="search">
-        <input
-          type="password"
-          value={tokenDraft}
-          onChange={(e) => setTokenDraft(e.target.value)}
-          placeholder="Paste bearer token"
-          autoComplete="off"
-        />
-        <button type="button" onClick={applyToken} disabled={!tokenDraft.trim()}>
-          Save
-        </button>
-      </div>
-      {authToken ? (
-        <button type="button" onClick={forgetToken}>
-          Clear token
+      {sessionOk ? (
+        <button type="button" onClick={() => void signOut()}>
+          Sign out this browser
         </button>
       ) : null}
       <p className="access-note">
-        Stored only in this browser and sent as a bearer header — never written to the store or
-        logs.
+        No token is stored in the browser — pairing codes are single-use and expire in 2 minutes.
       </p>
     </section>
   );
+
+  // ADR-0057: the server said this browser has no session → the pairing gate.
+  // All hooks above have already run, so the early return is render-safe.
+  if (sessionOk === false) {
+    return <PairingGate hadLegacyToken={hadLegacyToken} />;
+  }
 
   return (
     <main className={`app-shell mobile-${mobileView}`}>
@@ -1263,8 +1243,8 @@ export function App() {
             <span className="gear">⚙</span>
             Settings
             <span
-              className={`token-dot ${authToken ? 'ok' : 'warn'}`}
-              title={authToken ? 'access token set' : 'no access token'}
+              className={`token-dot ${sessionOk ? 'ok' : 'warn'}`}
+              title={sessionOk ? 'browser paired' : 'not paired'}
             />
           </button>
         </div>
@@ -1314,7 +1294,7 @@ export function App() {
             <div className="settings-page">
               <h1 className="settings-title">Settings</h1>
               <SettingsRuntimeHub
-                key={authToken ?? 'no-token'}
+                key={sessionOk ? 'paired' : 'unpaired'}
                 projectId={selectedProject?.id}
                 projectName={selectedProject?.name}
                 writeCtx={writeCtx}
@@ -1334,7 +1314,6 @@ export function App() {
                 sessions={sessions}
                 approvals={pendingApprovals}
                 realExecAvailable={realExecAvailable}
-                authToken={authToken}
                 onChanged={async () => {
                   await Promise.all([loadProjectSessions(), loadApprovals()]);
                 }}
@@ -1756,11 +1735,10 @@ export function App() {
         {lastTurn ? <div className="turn-meta">{lastTurn}</div> : null}
         {unauthorized ? (
           <div className="error" role="alert">
-            Unauthorized — set a valid access token in{' '}
-            <button type="button" className="error-link" onClick={() => switchStage('settings')}>
-              Settings → Access
-            </button>{' '}
-            to reach the runtime.
+            Not paired — run `amrita open` in a terminal and enter the pairing code it prints.{' '}
+            <button type="button" className="error-link" onClick={() => window.location.reload()}>
+              I paired — reload
+            </button>
           </div>
         ) : null}
         {error ? (

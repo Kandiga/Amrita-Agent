@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 /**
  * Local control-surface auth for the HTTP/WS server. A single bearer token
@@ -51,6 +51,131 @@ export function requestToken(
   queryToken: string | null | undefined,
 ): string | undefined {
   return bearerFromHeader(headerValue) ?? queryToken ?? undefined;
+}
+
+// ── ADR-0057: browser pairing + HttpOnly cookie sessions ────────────────────
+//
+// The daemon bearer never reaches a browser. Instead the CLI mints a pairing
+// code (CSPRNG, single-use, short TTL) the user types into the UI; consuming
+// it births an in-memory session delivered as an HttpOnly SameSite cookie.
+// Nothing here is persisted — a restart just means one re-pair (ADR-0024).
+
+/** Human-typeable alphabet: no 0/O, 1/I/L ambiguity. */
+const PAIRING_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+export const PAIRING_TTL_MS = 120_000;
+export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_COOKIE = 'amrita_session';
+
+/** Canonical form for lookup: uppercase, alphanumerics only ("ab2-c" → "AB2C"). */
+function normalizePairingCode(input: string): string {
+  return input.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/**
+ * Single-use, expiring pairing codes (ADR-0057). ~39 bits from a CSPRNG — with
+ * a 120s TTL, one-shot consumption, and the HTTP rate limit, brute force is not
+ * a realistic path. Display form is XXXX-XXXX; consume() accepts sloppy input.
+ */
+export class PairingRegistry {
+  private readonly codes = new Map<string, number>();
+  // No TS parameter properties here: amritad runs .ts under node's type-strip,
+  // which only erases types — parameter properties are real codegen.
+  private readonly ttlMs: number;
+  constructor(ttlMs: number = PAIRING_TTL_MS) {
+    this.ttlMs = ttlMs;
+  }
+
+  mint(now: number): { code: string; expiresAt: number } {
+    let raw = '';
+    for (let i = 0; i < 8; i++) raw += PAIRING_ALPHABET[randomInt(PAIRING_ALPHABET.length)];
+    const expiresAt = now + this.ttlMs;
+    this.codes.set(raw, expiresAt);
+    return { code: `${raw.slice(0, 4)}-${raw.slice(4)}`, expiresAt };
+  }
+
+  /** Atomic single-use: a hit is deleted before returning true. */
+  consume(input: string, now: number): boolean {
+    this.prune(now);
+    const key = normalizePairingCode(input);
+    const expiresAt = this.codes.get(key);
+    if (expiresAt === undefined) return false;
+    this.codes.delete(key);
+    return expiresAt > now;
+  }
+
+  pendingCount(now: number): number {
+    this.prune(now);
+    return this.codes.size;
+  }
+
+  private prune(now: number): void {
+    for (const [code, expiresAt] of this.codes) if (expiresAt <= now) this.codes.delete(code);
+  }
+}
+
+/**
+ * In-memory browser sessions (ADR-0057): 192-bit CSPRNG ids, sliding expiry.
+ * Deliberately not persisted — no secret-shaped rows ever enter the store.
+ */
+export class SessionRegistry {
+  private readonly lastSeen = new Map<string, number>();
+  private readonly ttlMs: number;
+  constructor(ttlMs: number = SESSION_TTL_MS) {
+    this.ttlMs = ttlMs;
+  }
+
+  create(now: number): string {
+    const id = randomBytes(24).toString('base64url');
+    this.lastSeen.set(id, now);
+    return id;
+  }
+
+  /** Valid → touch (sliding) and return true; expired/unknown → false. */
+  validate(id: string | undefined, now: number): boolean {
+    if (!id) return false;
+    const seen = this.lastSeen.get(id);
+    if (seen === undefined) return false;
+    if (now - seen > this.ttlMs) {
+      this.lastSeen.delete(id);
+      return false;
+    }
+    this.lastSeen.set(id, now);
+    return true;
+  }
+
+  revoke(id: string | undefined): void {
+    if (id) this.lastSeen.delete(id);
+  }
+
+  count(now: number): number {
+    for (const [id, seen] of this.lastSeen) if (now - seen > this.ttlMs) this.lastSeen.delete(id);
+    return this.lastSeen.size;
+  }
+}
+
+/** Set-Cookie value for a freshly paired session. HttpOnly: JS can never read it. */
+export function sessionSetCookie(id: string, maxAgeMs: number = SESSION_TTL_MS): string {
+  const maxAge = Math.max(1, Math.floor(maxAgeMs / 1000));
+  return `${SESSION_COOKIE}=${id}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict`;
+}
+
+/** Set-Cookie value that clears the session cookie (logout). */
+export function clearSessionCookie(): string {
+  return `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict`;
+}
+
+/** Extract the session id from a request's Cookie header, if present. */
+export function sessionFromCookie(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
+      const value = part.slice(eq + 1).trim();
+      return value.length > 0 ? value : undefined;
+    }
+  }
+  return undefined;
 }
 
 export interface ResolvedAuth {

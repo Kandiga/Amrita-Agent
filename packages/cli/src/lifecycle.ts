@@ -1,11 +1,12 @@
 /**
  * Community onboarding (P5) — the ONE-command open lifecycle, pure core.
  *
- * Owns the decisions (URL, readiness polling, port choice, token handoff) so the
+ * Owns the decisions (URL, readiness polling, port choice) so the
  * process-spawning shell in `commands.ts` stays thin and the logic is testable
  * without spawning anything. The daemon + web are two local processes; this makes
- * `amrita open` start whatever is down, wait for readiness, and hand the browser
- * a one-time #token= so no bearer is ever hand-copied (finding 4).
+ * `amrita open` start whatever is down, wait for readiness, and open ONE plain
+ * URL. Auth is a typed pairing code → HttpOnly cookie session (ADR-0057): no
+ * secret ever enters a URL, argv, or browser storage.
  */
 
 export const DEFAULT_DAEMON_PORT = 7460;
@@ -29,10 +30,10 @@ export function planOpen(opts: { daemonPort?: number; webPort?: number } = {}): 
   };
 }
 
-/** The URL to print/open. A token becomes a one-time #token= the SPA adopts then strips. */
-export function openUrl(webPort: number, token?: string): string {
-  const base = `http://localhost:${webPort}/`;
-  return token ? `${base}#token=${encodeURIComponent(token)}` : base;
+/** The URL to print/open. ADR-0057: structurally incapable of carrying a secret
+ *  — auth arrives by typed pairing code, never by URL. */
+export function openUrl(webPort: number): string {
+  return `http://localhost:${webPort}/`;
 }
 
 /**

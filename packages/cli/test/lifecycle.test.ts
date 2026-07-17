@@ -11,9 +11,9 @@ describe('open lifecycle (pure)', () => {
     expect(planOpen({ webPort: 9000 }).webHealthUrl).toBe('http://127.0.0.1:9000/health');
   });
 
-  it('builds a #token= URL only when a token is given', () => {
+  it('the open URL is plain — structurally no secret can ride it (ADR-0057)', () => {
     expect(openUrl(7461)).toBe('http://localhost:7461/');
-    expect(openUrl(7461, 'a+b')).toBe('http://localhost:7461/#token=a%2Bb');
+    expect(openUrl(9000)).toBe('http://localhost:9000/');
   });
 
   it('waitForReady polls until ready, deterministically', async () => {
@@ -47,5 +47,15 @@ describe('credential-strength fitness (security review 2026-07-17)', () => {
     const src = await readFile(new URL('../src/launcher.ts', import.meta.url), 'utf8');
     expect(src).not.toContain('Math.random');
     expect(src).toContain('generateDevToken');
+  });
+
+  it('no CLI source ever builds a #token= URL again (ADR-0057)', async () => {
+    // The bearer must never ride a URL fragment into a browser: history, shared
+    // links, and shoulder-surfing all defeat it. Auth is pairing-code → cookie.
+    const { readFile } = await import('node:fs/promises');
+    for (const file of ['../src/launcher.ts', '../src/lifecycle.ts', '../src/commands.ts']) {
+      const src = await readFile(new URL(file, import.meta.url), 'utf8');
+      expect(src, `${file} must not embed tokens in URLs`).not.toContain('#token=');
+    }
   });
 });

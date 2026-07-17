@@ -23,10 +23,11 @@ import type { IO } from './run.ts';
 /**
  * `amrita open` (P5) — the ONE lifecycle command. Runs BEFORE any in-process
  * kernel opens (a launcher, not an RPC op): it starts whatever local component
- * is down (daemon + web), waits for readiness, and prints/opens one URL with a
- * one-time #token= so the bearer is never hand-copied. Honest by construction:
- * it never claims the UI opened on a headless host, and refuses clearly when the
- * web build is missing rather than serving a 404.
+ * is down (daemon + web), waits for readiness, and prints/opens one PLAIN URL.
+ * Auth is a typed single-use pairing code → HttpOnly cookie session (ADR-0057);
+ * the bearer never leaves the server side. Honest by construction: it never
+ * claims the UI opened on a headless host, and refuses clearly when the web
+ * build is missing rather than serving a 404.
  */
 
 function healthOk(url: string, timeoutMs = 1500): Promise<boolean> {
@@ -62,6 +63,23 @@ function resolveStableToken(io: IO): string {
   process.env.AMRITA_AUTH_TOKEN = token;
   io.out(`  generated a stable control token → ${path} (0600)`);
   return token;
+}
+
+/** ADR-0057: ask the daemon for a single-use browser pairing code (bearer RPC). */
+async function mintPairingCode(daemonPort: number, bearer: string): Promise<string | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${daemonPort}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ id: 1, method: 'auth.pair.mint' }),
+    });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { result?: { code?: unknown } };
+    const code = body.result?.code;
+    return typeof code === 'string' && code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
 }
 
 function serveWebScript(): string | null {
@@ -136,10 +154,18 @@ export async function runLauncher(
   }
   io.out('  ✓ web UI ready');
 
-  // 3) one URL with a one-time #token= — the SPA adopts it then clears the hash.
-  const url = openUrl(webPort, token);
+  // 3) ADR-0057: mint a single-use pairing code (bearer-gated RPC) and print it
+  // for the user to TYPE into the UI. The bearer itself never reaches the
+  // browser — no URL fragment, no localStorage, no URL secret.
+  const pairing = await mintPairingCode(daemonPort, token);
+  const url = openUrl(webPort);
   io.out('');
   io.out(`  Amrita is open at:  ${url}`);
+  if (pairing) {
+    io.out(`  Pairing code (if the dashboard asks): ${pairing} — single use, 2 minutes`);
+  } else {
+    io.err('  ! could not mint a pairing code — run `amrita open` again if the UI asks for one');
+  }
   const opener = platformOpenCommand(process.platform);
   if (opener) {
     try {

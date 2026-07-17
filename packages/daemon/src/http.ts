@@ -10,7 +10,13 @@ import {
   terminalServerFrameSchema,
 } from '@amrita/protocol';
 import { type WebSocket, WebSocketServer } from 'ws';
-import { requestToken, tokensMatch } from './auth.ts';
+import {
+  clearSessionCookie,
+  requestToken,
+  sessionFromCookie,
+  sessionSetCookie,
+  tokensMatch,
+} from './auth.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
 import { type TerminalBridge, attachTerminalBridge } from './terminal-bridge.ts';
@@ -150,6 +156,30 @@ export function allowPublicHit(ip: string, now = Date.now()): boolean {
 }
 
 /**
+ * ADR-0057: a tight per-source budget for `POST /pair` — 5 attempts/minute.
+ * With single-use 120s codes (~39 bits) this makes online guessing hopeless
+ * while a fumbled retype still has room. Same bounded-map posture as the hub.
+ */
+const PAIR_WINDOW_MS = 60_000;
+const PAIR_MAX_ATTEMPTS = 5;
+const pairHits = new Map<string, { count: number; resetAt: number }>();
+
+export function allowPairAttempt(ip: string, now = Date.now()): boolean {
+  const hit = pairHits.get(ip);
+  if (!hit || now > hit.resetAt) {
+    if (pairHits.size >= PUBLIC_MAX_KEYS) {
+      for (const [k, v] of pairHits) if (now > v.resetAt) pairHits.delete(k);
+      if (pairHits.size >= PUBLIC_MAX_KEYS) return false;
+    }
+    pairHits.set(ip, { count: 1, resetAt: now + PAIR_WINDOW_MS });
+    return true;
+  }
+  if (hit.count >= PAIR_MAX_ATTEMPTS) return false;
+  hit.count++;
+  return true;
+}
+
+/**
  * Browser CORS (integration Phase 7): the Cinema SPA is a different origin, so
  * without these headers no browser page can reach the daemon at all — curl/CLI
  * are unaffected either way. Deny-by-default posture:
@@ -183,6 +213,28 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(json);
+}
+
+/**
+ * ADR-0057 hardening headers, applied to every daemon response. CSP note:
+ * `script-src 'unsafe-inline'` is a deliberate tradeoff — ADR-0020 artifact
+ * previews are srcdoc iframes whose inline scripts INHERIT this document
+ * policy; the credential is HttpOnly (unreadable to XSS) and
+ * `connect-src 'self'` closes the exfiltration channel instead.
+ */
+export const SECURITY_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'cross-origin-opener-policy': 'same-origin',
+  'content-security-policy':
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+    "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; " +
+    "frame-ancestors 'self'",
+};
+
+function applySecurityHeaders(res: ServerResponse): void {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -219,6 +271,7 @@ async function handleHttp(
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
+  applySecurityHeaders(res);
 
   // CORS: reflect the origin when allowed (see corsAllowedOrigin), and answer
   // preflights before auth — a preflight never carries the bearer.
@@ -232,9 +285,67 @@ async function handleHttp(
     return;
   }
 
-  // `/health` is always public (liveness probes, dashboards).
+  // Does this request carry a live browser session cookie (ADR-0057)?
+  const sessionId = sessionFromCookie(
+    typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined,
+  );
+  const hasSession = sessionId !== undefined && kernel.checkBrowserSession(sessionId);
+
+  // `/health` stays public for liveness probes, but the payload is minimal
+  // unless the caller is authenticated — an unauthenticated stranger learns
+  // nothing about the DB path, row counts, or lane posture (ADR-0057).
   if (method === 'GET' && url.pathname === '/health') {
-    sendJson(res, 200, kernel.health());
+    // tokensMatch('' , …) is true — with auth disabled the whole API is open,
+    // so hiding health alone would be theater; the minimal shape is for the
+    // normal case of a configured token and an unauthenticated stranger.
+    const bearer = requestToken(req.headers.authorization, url.searchParams.get('token'));
+    const authed = hasSession || tokensMatch(authToken, bearer);
+    sendJson(res, 200, authed ? kernel.health() : { ok: true, name: 'amritad' });
+    return;
+  }
+
+  // ADR-0057: pairing + session lifecycle. Public by necessity (they exist to
+  // BOOTSTRAP auth), rate-limited, and worth nothing without a live code.
+  if (method === 'POST' && url.pathname === '/pair') {
+    if (!allowPairAttempt(publicRateKey(req))) {
+      sendJson(res, 429, { error: { code: 'rate_limited', message: 'too many pairing attempts' } });
+      return;
+    }
+    let code = '';
+    try {
+      const body: unknown = JSON.parse(await readBody(req));
+      if (typeof body === 'object' && body !== null && 'code' in body) {
+        const c = (body as { code: unknown }).code;
+        if (typeof c === 'string') code = c;
+      }
+    } catch {
+      sendJson(res, 400, { error: { code: 'invalid_request', message: 'invalid JSON body' } });
+      return;
+    }
+    const newSession = code ? kernel.pairBrowserSession(code) : null;
+    if (!newSession) {
+      sendJson(res, 401, {
+        error: { code: 'unauthorized', message: 'invalid or expired pairing code' },
+      });
+      return;
+    }
+    res.setHeader('set-cookie', sessionSetCookie(newSession));
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  if (method === 'GET' && url.pathname === '/session') {
+    // "May this browser use the app?" — with auth disabled the answer is
+    // always yes (the whole API is open), so the SPA never shows a gate.
+    res.writeHead(hasSession || !authToken ? 204 : 401);
+    res.end();
+    return;
+  }
+  if (method === 'POST' && url.pathname === '/session/logout') {
+    kernel.revokeBrowserSession(sessionId);
+    res.setHeader('set-cookie', clearSessionCookie());
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -302,9 +413,17 @@ async function handleHttp(
 
   // Everything else is gated when a token is configured. Gate before route
   // matching so an unauthenticated caller cannot probe which routes exist.
+  // ADR-0057: a live browser session cookie is as good as the bearer — and a
+  // cookie-authenticated MUTATION must be JSON (SameSite=Strict already blocks
+  // cross-site sends; the content-type floor is belt-and-braces CSRF, since a
+  // cross-origin form cannot produce application/json without a preflight).
   if (authToken) {
     const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
-    if (!tokensMatch(authToken, provided)) {
+    const bearerOk = tokensMatch(authToken, provided);
+    const csrfSafe =
+      method === 'GET' ||
+      (req.headers['content-type'] ?? '').toString().toLowerCase().includes('application/json');
+    if (!bearerOk && !(hasSession && csrfSafe)) {
       sendJson(res, 401, {
         error: { code: 'unauthorized', message: 'missing or invalid bearer token' },
       });
@@ -542,10 +661,16 @@ export function startHttpServer(
       return;
     }
     // Auth the handshake before upgrading. A browser WebSocket cannot set an
-    // Authorization header, so a `?token=` query parameter is accepted too.
+    // Authorization header, so a `?token=` query parameter is accepted too —
+    // and per ADR-0057 the session cookie rides the upgrade automatically,
+    // which is how the SPA authenticates without ever holding the bearer.
     if (authToken) {
       const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
-      if (!tokensMatch(authToken, provided)) {
+      const cookieSession = sessionFromCookie(
+        typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined,
+      );
+      const sessionOk = kernel.checkBrowserSession(cookieSession);
+      if (!tokensMatch(authToken, provided) && !sessionOk) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;

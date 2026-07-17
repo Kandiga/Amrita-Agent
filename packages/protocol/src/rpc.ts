@@ -796,6 +796,10 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   'conversation.compress': compressResultSchema,
   'conversation.archive': okTrueSchema,
   'lanes.workspace.ticket': z.object({ ticket: z.string(), expiresAt: z.string() }),
+  // ADR-0057: bearer-gated mint of a single-use browser pairing code. The code
+  // is displayed on the operator's terminal, typed into the UI, and exchanged
+  // by `POST /pair` for an HttpOnly cookie session — the bearer never travels.
+  'auth.pair.mint': z.object({ code: z.string(), expiresAt: z.string() }),
   'lanes.session.send': z.object({ laneId: idSchema, sent: z.boolean() }),
   'lanes.session.finish': z.object({ laneId: idSchema, finished: z.boolean() }),
   'lanes.session.cancel': laneCancelResultSchema,

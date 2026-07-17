@@ -94,6 +94,7 @@ import {
   openStore,
 } from '@amrita/store';
 import { resolveAgent } from './agent-select.ts';
+import { PairingRegistry, SessionRegistry } from './auth.ts';
 import { type CharterFinding, auditCharter, readyToActivate } from './charter-audit.ts';
 import {
   completeCinemaMandate,
@@ -419,6 +420,10 @@ export class AmritaKernel {
   /** Lane-scoped, expiring, read-only workspace view tickets (ADR-0039 amendment).
    *  Worthless outside `GET /lanes/<id>/workspace` — never accepted by RPC/events. */
   private readonly workspaceTickets = new Map<string, { ticket: string; expiresAt: number }>();
+  /** ADR-0057: single-use browser pairing codes + HttpOnly cookie sessions.
+   *  In-memory only — a restart costs one re-pair; nothing enters the store. */
+  private readonly browserPairing = new PairingRegistry();
+  private readonly browserSessions = new SessionRegistry();
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
@@ -3687,6 +3692,33 @@ export class AmritaKernel {
     const a = Buffer.from(entry.ticket);
     const b = Buffer.from(provided);
     return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  // ── ADR-0057: browser pairing + cookie sessions ────────────────────────────
+  // The bearer stays server-side; a browser earns an HttpOnly session by typing
+  // a single-use pairing code minted here (bearer-gated via RPC). In-memory by
+  // design — nothing secret-shaped ever enters the store (ADR-0024 posture).
+
+  /** Mint a single-use browser pairing code (120s TTL). Bearer-gated caller. */
+  mintPairingCode(): { code: string; expiresAt: string } {
+    const { code, expiresAt } = this.browserPairing.mint(Date.now());
+    return { code, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  /** Consume a pairing code; a hit births a browser session id, a miss is null. */
+  pairBrowserSession(code: string): string | null {
+    if (!this.browserPairing.consume(code, Date.now())) return null;
+    return this.browserSessions.create(Date.now());
+  }
+
+  /** Is this cookie-presented session live? (Sliding 7-day expiry.) */
+  checkBrowserSession(sessionId: string | undefined): boolean {
+    return this.browserSessions.validate(sessionId, Date.now());
+  }
+
+  /** Logout: kill one browser session immediately. */
+  revokeBrowserSession(sessionId: string | undefined): void {
+    this.browserSessions.revoke(sessionId);
   }
 
   getLane(laneId: string): LaneRow | undefined {

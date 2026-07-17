@@ -16,8 +16,6 @@ interface SessionsPanelProps {
   sessions: SessionPanes;
   approvals: OperatorApprovalLite[];
   realExecAvailable: boolean;
-  /** Bearer for the terminal socket (ADR-0052); the daemon re-validates it. */
-  authToken?: string | undefined;
   /** Refetch durable lane rows, approval state, and on-demand tmux snapshots. */
   onChanged: () => void | Promise<void>;
   onError: (e: unknown) => void;
@@ -70,7 +68,6 @@ export function SessionsPanel({
   sessions,
   approvals,
   realExecAvailable,
-  authToken,
   onChanged,
   onError,
 }: SessionsPanelProps) {
@@ -272,7 +269,6 @@ export function SessionsPanel({
                     <SessionTerminal
                       projectId={projectId}
                       laneId={lane.id}
-                      authToken={authToken}
                       epoch={termEpochs[lane.id] ?? 0}
                     />
                   </>

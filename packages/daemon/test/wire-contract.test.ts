@@ -315,6 +315,9 @@ describe('wire-contract round-trip (ADR-0032)', () => {
     })) as { laneId: string };
     await run('lanes.workspace.ticket', { laneId: ticketLane.laneId });
 
+    // ADR-0057: browser pairing code mint (bearer-gated; single-use, expiring)
+    await run('auth.pair.mint');
+
     // ADR-0038: archive a session, delete a throwaway project
     await run('conversation.archive', { conversationId: c2.id });
     const doomed = (await call('project.ensure', { slug: 'doomed', name: 'Doomed' })) as {

@@ -8,7 +8,11 @@
  * bearer token still gates every proxied route except /health — this server
  * adds no authentication bypass and holds no secret.
  *
- *   node deploy/serve-web.mjs [--port 7461] [--daemon 127.0.0.1:7460] [--dist <dir>]
+ *   node deploy/serve-web.mjs [--port 7461] [--host 127.0.0.1] [--daemon 127.0.0.1:7460] [--dist <dir>]
+ *
+ * ADR-0057: binds LOOPBACK by default — exposing the dashboard beyond this
+ * machine is an explicit operator decision (`--host 0.0.0.0` or
+ * AMRITA_WEB_HOST), never a surprise default.
  */
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
@@ -22,6 +26,7 @@ function arg(name, fallback) {
 }
 
 const PORT = Number(arg('port', '7461'));
+const HOST = arg('host', process.env.AMRITA_WEB_HOST || '127.0.0.1');
 const DAEMON = arg('daemon', '127.0.0.1:7460');
 const [DAEMON_HOST, DAEMON_PORT_RAW] = DAEMON.split(':');
 const DAEMON_PORT = Number(DAEMON_PORT_RAW ?? '7460');
@@ -84,6 +89,23 @@ function proxyHttp(req, res) {
   req.pipe(upstream);
 }
 
+/**
+ * ADR-0057 hardening headers on static responses. AUTHORITY:
+ * `SECURITY_HEADERS` in packages/daemon/src/http.ts — proxied responses carry
+ * the daemon's copy; these literals mirror it for static files and a fitness
+ * test (daemon/test/http-auth.test.ts) fails if the two drift apart.
+ */
+const STATIC_SECURITY_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'cross-origin-opener-policy': 'same-origin',
+  'content-security-policy':
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+    "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; " +
+    "frame-ancestors 'self'",
+};
+
 function serveStatic(req, res) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   // Path-jail: normalize inside dist; anything escaping resolves to index.html.
@@ -95,6 +117,7 @@ function serveStatic(req, res) {
   res.writeHead(200, {
     'content-type': MIME[extname(file)] ?? 'application/octet-stream',
     'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=3600',
+    ...STATIC_SECURITY_HEADERS,
   });
   // pipe() does NOT forward the source's 'error' event, so a read that fails
   // mid-stream (an unlink race during a redeploy, an I/O error) would otherwise
@@ -157,8 +180,8 @@ server.on('error', (e) => {
   process.exit(1);
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   process.stdout.write(
-    `amrita-web serving ${DIST}\n  http://0.0.0.0:${PORT}  →  daemon ${DAEMON_HOST}:${DAEMON_PORT} (bearer auth unchanged)\n`,
+    `amrita-web serving ${DIST}\n  http://${HOST}:${PORT}  →  daemon ${DAEMON_HOST}:${DAEMON_PORT} (auth enforced by the daemon)\n`,
   );
 });
