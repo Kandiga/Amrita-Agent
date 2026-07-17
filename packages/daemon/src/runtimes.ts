@@ -70,7 +70,16 @@ export const defaultProber: CommandProber = (cmd, args, timeoutMs) =>
     });
   });
 
-const PROBE_TIMEOUT_MS = 1500;
+/**
+ * QA finding 7: ONE 1.5s budget starved the auth probe — `claude auth status`
+ * alone takes ~4s on a VPS/WSL, so a genuinely logged-in CLI was reported
+ * "authentication could not be verified within the probe timeout". Split the
+ * budgets: a version probe is local and fast; an auth probe may touch disk,
+ * keychain, or network and deserves patience. A slow honest answer beats a
+ * fast wrong one.
+ */
+const VERSION_PROBE_TIMEOUT_MS = 2_000;
+const AUTH_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Probe Claude Code's local install/auth state. Two bounded probes:
@@ -85,7 +94,8 @@ const PROBE_TIMEOUT_MS = 1500;
  */
 async function probeInstallAndAuth(opts: {
   probe: CommandProber;
-  timeoutMs: number;
+  versionTimeoutMs: number;
+  authTimeoutMs: number;
   base: { id: string; title: string; realExecution: boolean };
   cmd: string;
   authArgs: string[];
@@ -97,7 +107,8 @@ async function probeInstallAndAuth(opts: {
 }): Promise<CodingRuntimeStatus> {
   const {
     probe,
-    timeoutMs,
+    versionTimeoutMs,
+    authTimeoutMs,
     base,
     cmd,
     authArgs,
@@ -106,7 +117,7 @@ async function probeInstallAndAuth(opts: {
     readyDetail,
     parseAuthMode,
   } = opts;
-  const version = await probe(cmd, ['--version'], timeoutMs);
+  const version = await probe(cmd, ['--version'], versionTimeoutMs);
   if (version.kind === 'spawn_error') {
     return {
       ...base,
@@ -125,7 +136,7 @@ async function probeInstallAndAuth(opts: {
   }
   const versionString = version.stdout.trim().slice(0, 60);
 
-  const auth = await probe(cmd, authArgs, timeoutMs);
+  const auth = await probe(cmd, authArgs, authTimeoutMs);
   if (auth.kind === 'ok') {
     const authMode = parseAuthMode?.(auth.stdout);
     return {
@@ -164,7 +175,8 @@ export async function getClaudeCodeStatus(opts: {
 }): Promise<CodingRuntimeStatus> {
   return probeInstallAndAuth({
     probe: opts.prober ?? defaultProber,
-    timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+    versionTimeoutMs: opts.timeoutMs ?? VERSION_PROBE_TIMEOUT_MS,
+    authTimeoutMs: opts.timeoutMs ?? AUTH_PROBE_TIMEOUT_MS,
     base: { id: 'claude-code', title: 'Claude Code', realExecution: opts.realExecution },
     cmd: 'claude',
     authArgs: ['auth', 'status'],
@@ -201,7 +213,8 @@ export async function getCodexStatus(opts: {
 }): Promise<CodingRuntimeStatus> {
   return probeInstallAndAuth({
     probe: opts.prober ?? defaultProber,
-    timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+    versionTimeoutMs: opts.timeoutMs ?? VERSION_PROBE_TIMEOUT_MS,
+    authTimeoutMs: opts.timeoutMs ?? AUTH_PROBE_TIMEOUT_MS,
     base: { id: 'codex', title: 'Codex', realExecution: opts.realExecution },
     cmd: 'codex',
     authArgs: ['login', 'status'],
@@ -269,7 +282,7 @@ export async function getRuntimesStatus(opts: {
   claudeAllowedTools?: string[];
 }): Promise<CodingRuntimeStatus[]> {
   const probe = opts.prober ?? defaultProber;
-  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? VERSION_PROBE_TIMEOUT_MS;
   const out: CodingRuntimeStatus[] = [];
   for (const rt of CODING_RUNTIMES) {
     if (rt.id === 'claude-code') {
