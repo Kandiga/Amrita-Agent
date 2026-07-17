@@ -10,6 +10,7 @@ import {
   terminalServerFrameSchema,
 } from '@amrita/protocol';
 import { type WebSocket, WebSocketServer } from 'ws';
+import { ARTIFACT_PREVIEW_CSP } from './artifact-preview.ts';
 import {
   type CookieMode,
   clearSessionCookie,
@@ -223,18 +224,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * ADR-0057 hardening headers, applied to every daemon response. CSP note:
- * `script-src 'unsafe-inline'` is a deliberate tradeoff — ADR-0020 artifact
- * previews are srcdoc iframes whose inline scripts INHERIT this document
- * policy; the credential is HttpOnly (unreadable to XSS) and
- * `connect-src 'self'` closes the exfiltration channel instead.
+ * ADR-0057 hardening headers, applied to every daemon app/static response.
+ *
+ * The app CSP is STRICT (finding 3): NO `script-src 'unsafe-inline'`. Vite emits
+ * external module scripts (`script-src 'self'`), so nothing inline is needed —
+ * and dropping it means an injected inline script cannot run with the app's
+ * same-origin authority (call `/rpc`, open a privileged WS). Generated HTML
+ * previews no longer inherit this policy: they are served from the dedicated
+ * `/artifact` route with their OWN CSP (ARTIFACT_PREVIEW_CSP, connect-src 'none')
+ * inside an opaque-origin sandbox, so they keep working without weakening the app.
+ * `style-src 'unsafe-inline'` stays (React inline styles; a style cannot call an API).
  */
 export const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
   'cross-origin-opener-policy': 'same-origin',
   'content-security-policy':
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
     "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; " +
     "frame-ancestors 'self'",
@@ -372,6 +378,31 @@ async function handleHttp(
       return;
     }
     serveLaneWorkspace(kernel, res, laneId, decodeURIComponent(ticketMatch[3] ?? ''));
+    return;
+  }
+
+  // ADR-0057 finding 3: the sandboxed artifact preview. The ticket IN THE PATH
+  // is the only auth (worthless elsewhere), so this is reachable WITHOUT the
+  // bearer/cookie — exactly like the workspace ticket. It serves untrusted
+  // generated HTML with its OWN CSP (ARTIFACT_PREVIEW_CSP: default-src 'none',
+  // connect-src 'none'), so the app document can keep a STRICT CSP and the
+  // preview still cannot reach the network, call /rpc, or open a WebSocket.
+  const artifactMatch = /^\/artifact\/([A-Za-z0-9]+)\/t\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
+  if (method === 'GET' && artifactMatch) {
+    const html = kernel.readArtifactPreview(artifactMatch[1] ?? '', artifactMatch[2] ?? '');
+    if (html === null) {
+      sendJson(res, 404, { error: { code: 'not_found', message: 'no such artifact preview' } });
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': ARTIFACT_PREVIEW_CSP,
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      // No caching: a preview is ephemeral and ticket-scoped.
+      'cache-control': 'no-store',
+    });
+    res.end(html);
     return;
   }
 

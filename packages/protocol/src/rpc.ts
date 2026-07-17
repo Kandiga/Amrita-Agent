@@ -800,6 +800,9 @@ export const rpcResultSchemas: Readonly<Record<string, z.ZodType>> = {
   // is displayed on the operator's terminal, typed into the UI, and exchanged
   // by `POST /pair` for an HttpOnly cookie session — the bearer never travels.
   'auth.pair.mint': z.object({ code: z.string(), expiresAt: z.string() }),
+  // ADR-0057 finding 3: store a generated-HTML preview and get a ticket URL the
+  // SPA loads in a sandboxed iframe from the self-CSP'd `/artifact` route.
+  'artifact.preview.put': z.object({ id: z.string(), ticket: z.string(), expiresAt: z.string() }),
   'lanes.session.send': z.object({ laneId: idSchema, sent: z.boolean() }),
   'lanes.session.finish': z.object({ laneId: idSchema, finished: z.boolean() }),
   'lanes.session.cancel': laneCancelResultSchema,

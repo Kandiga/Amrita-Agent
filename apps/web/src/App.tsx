@@ -77,7 +77,6 @@ import {
   transcriptMessages,
 } from './live-transcript.ts';
 import { buildMissionRows } from './mission-control.ts';
-import { buildSandboxedPreview } from './sandbox.ts';
 import {
   type SessionPanes,
   emptySessions,

@@ -1,6 +1,6 @@
 import { textDir } from '../lib.ts';
-import { buildSandboxedPreview } from '../sandbox.ts';
 import type { ArtifactSpec } from '../surface.ts';
+import { SandboxedArtifact } from './SandboxedArtifact.tsx';
 
 interface SurfacePanelProps {
   artifacts: ArtifactSpec[];
@@ -52,13 +52,6 @@ export function SurfacePanel({ artifacts, onApprovePreview, onOpenCanvas }: Surf
             );
           }
           if (a.kind === 'html-preview' || a.kind === 'design-page') {
-            const sandboxed = buildSandboxedPreview({
-              kind: a.kind,
-              id: a.id,
-              projectId: a.projectId,
-              title: a.title,
-              html: a.html,
-            });
             return (
               <article key={a.id} className="artifact artifact-preview">
                 <div className="preview-head">
@@ -76,12 +69,7 @@ export function SurfacePanel({ artifacts, onApprovePreview, onOpenCanvas }: Surf
                     </button>
                   ) : null}
                 </div>
-                <iframe
-                  className="preview-frame"
-                  title={a.title}
-                  sandbox={sandboxed.sandbox}
-                  srcDoc={sandboxed.srcDoc}
-                />
+                <SandboxedArtifact html={a.html} title={a.title} className="preview-frame" />
                 {a.status === 'proposed' ? (
                   <div className="preview-actions">
                     <p className="artifact-sub">

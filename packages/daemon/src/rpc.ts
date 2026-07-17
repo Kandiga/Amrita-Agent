@@ -756,6 +756,11 @@ export const METHODS: Record<string, RpcMethod> = {
   // all requires the bearer (or an already-paired session), so only the local
   // operator can open the door for a new browser.
   'auth.pair.mint': def(z.object({}).optional(), (k) => k.mintPairingCode()),
+  // ADR-0057 finding 3: store a generated-HTML preview; the SPA loads the
+  // returned ticket URL in a sandboxed, self-CSP'd iframe (never srcdoc).
+  'artifact.preview.put': def(z.object({ html: z.string().min(1).max(262_144) }), (k, p) =>
+    k.putArtifactPreview(p.html),
+  ),
 
   'chat.turn': def(
     z.object({

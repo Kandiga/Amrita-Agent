@@ -317,6 +317,8 @@ describe('wire-contract round-trip (ADR-0032)', () => {
 
     // ADR-0057: browser pairing code mint (bearer-gated; single-use, expiring)
     await run('auth.pair.mint');
+    // ADR-0057 finding 3: store a sandboxed artifact preview → ticket URL
+    await run('artifact.preview.put', { html: '<h1>hi</h1>' });
 
     // ADR-0038: archive a session, delete a throwaway project
     await run('conversation.archive', { conversationId: c2.id });

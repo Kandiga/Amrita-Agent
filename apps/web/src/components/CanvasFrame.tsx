@@ -1,37 +1,12 @@
-import { buildSandboxedPreview } from '../sandbox.ts';
+import { SandboxedArtifact } from './SandboxedArtifact.tsx';
 
 /**
- * The Stage-B sandboxed preview frame (ADR-0020): confined HTML with an opaque
- * origin and a zero-network CSP. Resilient to oversize input — buildSandboxedPreview
- * throws over 256 KB, so a big build shows an honest note instead of throwing into
- * the error boundary and blanking the app.
+ * The Stage-B sandboxed preview frame (ADR-0020, hardened by ADR-0057
+ * finding 3): confined generated HTML with an opaque origin and a zero-network
+ * CSP, served from the dedicated `/artifact` route (never srcdoc), so the app
+ * document keeps a STRICT CSP. Oversize/failed input degrades to an honest note
+ * inside SandboxedArtifact instead of blanking the app.
  */
 export function CanvasFrame({ html, title }: { html: string; title: string }) {
-  let sandboxed: ReturnType<typeof buildSandboxedPreview> | null = null;
-  try {
-    sandboxed = buildSandboxedPreview({
-      kind: 'html-preview',
-      id: 'canvas',
-      projectId: 'canvas',
-      title,
-      html,
-    });
-  } catch {
-    sandboxed = null;
-  }
-  if (!sandboxed) {
-    return (
-      <div className="canvas-toolarge">
-        This build is too large to preview inline (over 256&nbsp;KB). Ask Amrita to trim it.
-      </div>
-    );
-  }
-  return (
-    <iframe
-      className="canvas-frame"
-      title={title}
-      sandbox={sandboxed.sandbox}
-      srcDoc={sandboxed.srcDoc}
-    />
-  );
+  return <SandboxedArtifact html={html} title={title} className="canvas-frame" />;
 }

@@ -94,6 +94,7 @@ import {
   openStore,
 } from '@amrita/store';
 import { resolveAgent } from './agent-select.ts';
+import { ArtifactPreviewStore, type StoredArtifactRef } from './artifact-preview.ts';
 import { PairingRegistry, SessionRegistry } from './auth.ts';
 import { type CharterFinding, auditCharter, readyToActivate } from './charter-audit.ts';
 import {
@@ -425,6 +426,9 @@ export class AmritaKernel {
    *  In-memory only — a restart costs one re-pair; nothing enters the store. */
   private readonly browserPairing = new PairingRegistry();
   private readonly browserSessions = new SessionRegistry();
+  /** ADR-0057 finding 3: ephemeral generated-HTML previews served from the
+   *  dedicated, self-CSP'd `/artifact` route (isolated from the app's origin). */
+  private readonly artifactPreviews = new ArtifactPreviewStore();
   /** Additional runners dispatched by lane kind (ADR-0023), e.g. `research`. */
   private readonly extraLaneRunners: Map<string, LaneRunner>;
   private readonly codingRuntimeProber: CommandProber | undefined;
@@ -3760,6 +3764,21 @@ export class AmritaKernel {
   /** Logout: kill one browser session immediately. */
   revokeBrowserSession(sessionId: string | undefined): void {
     this.browserSessions.revoke(sessionId);
+  }
+
+  // ── ADR-0057 finding 3: artifact preview isolation ─────────────────────────
+  // The app POSTs generated HTML here (authenticated) and gets a ticket URL it
+  // loads in a sandboxed iframe. The served document carries its OWN CSP, so the
+  // app policy can be strict and the preview still cannot reach the network.
+
+  /** Store a generated-HTML preview; returns its id + ticket. Throws on oversize. */
+  putArtifactPreview(html: string): StoredArtifactRef {
+    return this.artifactPreviews.put(html, Date.now());
+  }
+
+  /** Read a preview by id + ticket for the `/artifact` route; null on mismatch. */
+  readArtifactPreview(id: string, ticket: string): string | null {
+    return this.artifactPreviews.read(id, ticket, Date.now());
   }
 
   getLane(laneId: string): LaneRow | undefined {

@@ -56,7 +56,16 @@ const MIME = {
  *  ADR-0057: /pair and /session are the browser's auth bootstrap — they MUST
  *  reach the daemon (the E3 smoke failed exactly here when they fell through
  *  to the SPA fallback and pairing silently never happened). */
-const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes', '/p', '/pair', '/session'];
+const PROXY_PREFIXES = [
+  '/rpc',
+  '/events',
+  '/health',
+  '/lanes',
+  '/p',
+  '/pair',
+  '/session',
+  '/artifact', // ADR-0057 finding 3: the sandboxed preview route lives on the daemon
+];
 
 function proxyHttp(req, res) {
   // This process is the internet-facing edge; the daemon behind it is loopback.
@@ -103,7 +112,7 @@ const STATIC_SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
   'cross-origin-opener-policy': 'same-origin',
   'content-security-policy':
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
     "frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; " +
     "frame-ancestors 'self'",

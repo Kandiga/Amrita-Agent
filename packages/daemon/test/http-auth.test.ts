@@ -122,12 +122,16 @@ describe('public /health is minimal; authenticated /health is full (ADR-0057)', 
     expect(j.counts).toBeDefined();
   });
 
-  it('security headers ride every response', async () => {
+  it('security headers ride every response; the APP CSP is strict (no script unsafe-inline)', async () => {
     const r = await fetch(`${base}/health`);
     expect(r.headers.get('x-content-type-options')).toBe('nosniff');
     expect(r.headers.get('referrer-policy')).toBe('no-referrer');
     expect(r.headers.get('cross-origin-opener-policy')).toBe('same-origin');
-    expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'self'");
+    const csp = r.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("frame-ancestors 'self'");
+    // Finding 3: the app must NOT permit inline scripts.
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
   });
 
   it('serve-web mirrors the daemon SECURITY_HEADERS authority (no drift)', async () => {
@@ -146,6 +150,38 @@ describe('public /health is minimal; authenticated /health is full (ADR-0057)', 
     // SPA fallback: the browser's auth bootstrap MUST be proxied to the daemon.
     expect(mjs).toContain("'/pair'");
     expect(mjs).toContain("'/session'");
+    // Finding 3: the sandboxed artifact route lives on the daemon too.
+    expect(mjs).toContain("'/artifact'");
+  });
+});
+
+describe('the sandboxed artifact route isolates previews from the app (finding 3)', () => {
+  it('serves stored HTML with its OWN connect-src none CSP, only with a valid ticket', async () => {
+    // The app stores a preview (authenticated); a browser loads the ticket URL.
+    const put = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        id: 1,
+        method: 'artifact.preview.put',
+        params: { html: '<h1>build</h1><script>parent.postMessage(1,"*")</script>' },
+      }),
+    });
+    const ref = ((await put.json()) as { result: { id: string; ticket: string } }).result;
+
+    // The preview route needs NO bearer — the ticket is the auth (like workspace).
+    const good = await fetch(`${base}/artifact/${ref.id}/t/${ref.ticket}`);
+    expect(good.status).toBe(200);
+    expect(good.headers.get('content-type')).toContain('text/html');
+    const csp = good.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("connect-src 'none'"); // preview can reach NO network
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'unsafe-inline'"); // its own scripts still run
+    expect(await good.text()).toContain('<h1>build</h1>');
+
+    // A wrong/absent ticket is a plain 404 (no oracle):
+    expect((await fetch(`${base}/artifact/${ref.id}/t/WRONGTICKET`)).status).toBe(404);
+    expect((await fetch(`${base}/artifact/nope/t/${ref.ticket}`)).status).toBe(404);
   });
 });
 

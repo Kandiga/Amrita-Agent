@@ -1,49 +1,28 @@
 /**
- * Surface Stage-B security harness (docs/strategy/native-interactive-surface.md
- * §2.3, ADR-0019). This module ships BEFORE any generated-HTML preview UI does:
- * it fixes the sandbox contract so rich previews can only ever land inside it.
+ * Surface Stage-B security harness (ADR-0019/0020, hardened by ADR-0057
+ * finding 3). Generated HTML previews are UNTRUSTED. They are confined, never
+ * trusted, and — since ADR-0057 finding 3 — served from the daemon's dedicated
+ * `/artifact/<id>/t/<ticket>` route with their OWN CSP, loaded here in a
+ * `sandbox="allow-scripts"` iframe.
  *
  * Boundaries, non-negotiable:
  * - `sandbox` NEVER includes `allow-same-origin` — the preview document gets a
- *   unique opaque origin and can never read the parent's localStorage, cookies,
- *   or the daemon bearer token.
- * - A strict CSP is injected into the document itself: no network fetches, no
- *   external scripts, no frames, no forms.
- * - Previews are size-bounded; oversized HTML must go through the artifact
- *   spill path (D9), never inline.
- * - The sandbox boundary is the security model — the harness does NOT claim to
- *   sanitize the HTML (no false confidence), it confines it.
- *
- * No UI renders these yet; that lands with the Stage-B slice once an approval
- * flow exists. Shipping the harness first means the unsafe shortcut never has
- * a reason to exist.
+ *   unique opaque origin and can never read the parent's DOM, cookies, or the
+ *   session; nor can it be scripted by the parent.
+ * - The preview is a REAL fetched document (not `srcdoc`), so it does NOT
+ *   inherit the app's CSP. The app CSP is strict (`script-src 'self'`); the
+ *   preview's own served CSP (`connect-src 'none'`) lets its inline scripts
+ *   render but blocks ALL network — it cannot call `/rpc` or open a WebSocket.
+ * - Previews are size-bounded; oversized HTML must spill to a lane file.
+ * - The sandbox boundary is the security model — this does NOT sanitize the
+ *   HTML (no false confidence), it confines it.
  */
 
 /** iframe sandbox attribute for previews. `allow-same-origin` is forbidden. */
 export const PREVIEW_SANDBOX = 'allow-scripts';
 
-/** CSP injected into every preview document: inline-only, zero network reach. */
-export const PREVIEW_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'; frame-src 'none'; form-action 'none'; base-uri 'none'";
-
 /** Inline preview budget — bigger payloads must spill to artifact files (D9). */
 export const MAX_PREVIEW_BYTES = 256 * 1024;
-
-export interface HtmlPreviewSpec {
-  kind: 'html-preview' | 'design-page';
-  id: string;
-  projectId: string;
-  title: string;
-  /** Untrusted generated HTML. Confined by the sandbox, not trusted. */
-  html: string;
-}
-
-export interface SandboxedPreview {
-  /** Value for the iframe `sandbox` attribute. */
-  sandbox: typeof PREVIEW_SANDBOX;
-  /** Full srcdoc document with the CSP baked into <head>. */
-  srcDoc: string;
-}
 
 /** Reject any sandbox attribute that would give the preview a real origin. */
 export function assertSafeSandbox(attrs: string): void {
@@ -56,27 +35,17 @@ export function assertSafeSandbox(attrs: string): void {
   }
 }
 
+/** Byte length of the HTML (the same limit the daemon enforces). */
+export function previewByteLength(html: string): number {
+  return new TextEncoder().encode(html).length;
+}
+
 /**
- * Wrap untrusted HTML into a confined srcdoc document. Throws on oversize
- * input (spill instead) — never truncates silently.
+ * The same-origin path the sandboxed iframe loads. The ticket is the only
+ * credential and is worthless on any other route; the app never puts a bearer
+ * or the session in a URL. Ids/tickets come from the daemon (CSPRNG) — encode
+ * defensively even so.
  */
-export function buildSandboxedPreview(spec: HtmlPreviewSpec): SandboxedPreview {
-  const bytes = new TextEncoder().encode(spec.html).length;
-  if (bytes > MAX_PREVIEW_BYTES) {
-    throw new Error(
-      `preview html is ${bytes} bytes (limit ${MAX_PREVIEW_BYTES}); spill it to an artifact file instead`,
-    );
-  }
-  assertSafeSandbox(PREVIEW_SANDBOX);
-  const srcDoc = [
-    '<!doctype html>',
-    '<html>',
-    '<head>',
-    `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`,
-    '<meta charset="utf-8">',
-    '</head>',
-    `<body>${spec.html}</body>`,
-    '</html>',
-  ].join('');
-  return { sandbox: PREVIEW_SANDBOX, srcDoc };
+export function artifactPreviewPath(id: string, ticket: string): string {
+  return `/artifact/${encodeURIComponent(id)}/t/${encodeURIComponent(ticket)}`;
 }
