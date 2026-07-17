@@ -21,6 +21,14 @@ Environment=PATH=__PATH__
 # jail. WorkingDirectory pins cwd off the checkout too.
 WorkingDirectory=__WORKROOTS__
 Environment=AMRITA_LANES_ALLOWED_ROOTS=__WORKROOTS__
+# ADR-0057 finding 1: the trusted dashboard origin(s). The cookie session is
+# honored ONLY for browser requests from these exact origins (a same-site page on
+# another port is a different origin and rejected). The default (unset) trusts the
+# standard local dashboard port http://localhost:7461 / http://127.0.0.1:7461. If
+# you serve the UI on another host/port/domain (e.g. AMRITA_WEB_HOST=0.0.0.0 behind
+# a reverse proxy at https://amrita.example), you MUST declare it here or the
+# browser cannot authenticate:
+#   Environment=AMRITA_WEB_ORIGINS=https://amrita.example
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

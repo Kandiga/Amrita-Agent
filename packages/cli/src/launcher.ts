@@ -101,6 +101,10 @@ export async function runLauncher(
   const webPort = Number(flags['web-port'] ?? DEFAULT_WEB_PORT);
   const plan = planOpen({ daemonPort, webPort });
   const token = resolveStableToken(io);
+  // ADR-0057 finding 1: declare the dashboard origin(s) so the daemon honors the
+  // cookie ONLY for requests from THIS web port. Preserve any operator-set value.
+  const webOrigins =
+    process.env.AMRITA_WEB_ORIGINS ?? `http://localhost:${webPort},http://127.0.0.1:${webPort}`;
   const spawned: ChildProcess[] = [];
 
   // 1) daemon
@@ -109,7 +113,7 @@ export async function runLauncher(
     const child = spawn('amritad', ['--http', '--port', String(daemonPort)], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, AMRITA_AUTH_TOKEN: token },
+      env: { ...process.env, AMRITA_AUTH_TOKEN: token, AMRITA_WEB_ORIGINS: webOrigins },
     });
     child.on('error', () =>
       io.err('  ! could not launch `amritad` — is Amrita installed and on PATH?'),

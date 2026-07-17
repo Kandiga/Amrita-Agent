@@ -113,10 +113,11 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
   it('the cookie authenticates RPC and /session; logout kills it', async () => {
     const cookie = (await pair(await mintCode(), '10.9.0.4')) as string;
 
-    // RPC with cookie only (no bearer):
+    // RPC with cookie only (no bearer), from the trusted (self) origin — the
+    // faithful browser simulation: a real browser sends Origin on a POST.
     const r = await fetch(`${base}/rpc`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
+      headers: { 'content-type': 'application/json', cookie, origin: base },
       body: JSON.stringify({ id: 1, method: 'health' }),
     });
     expect(r.status).toBe(200);
@@ -138,7 +139,7 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
     const cookie = (await pair(await mintCode(), '10.9.0.5')) as string;
     const r = await fetch(`${base}/rpc`, {
       method: 'POST',
-      headers: { 'content-type': 'text/plain', cookie },
+      headers: { 'content-type': 'text/plain', cookie, origin: base },
       body: JSON.stringify({ id: 1, method: 'health' }),
     });
     expect(r.status).toBe(401); // a cross-site form could produce this shape
@@ -151,6 +152,33 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
     expect(withBearer.status).not.toBe(401); // header auth cannot be forged by a form
   });
 
+  it('RED (finding 1): a cookie mutation from a HOSTILE same-site port is rejected', async () => {
+    const cookie = (await pair(await mintCode(), '10.9.0.51')) as string;
+    // A page on http://localhost:9999 is same-SITE (shared eTLD+1 "localhost")
+    // so the cookie rides — but it is a different ORIGIN. A real browser stamps
+    // that origin onto the request; the daemon must refuse to honor the cookie.
+    const hostile = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: 'http://localhost:9999' },
+      body: JSON.stringify({ id: 1, method: 'project.ensure', params: { slug: 'x', name: 'X' } }),
+    });
+    expect(hostile.status).toBe(401);
+    // and a cookie mutation with NO Origin at all (anomalous for a browser POST):
+    const noOrigin = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ id: 1, method: 'project.ensure', params: { slug: 'y', name: 'Y' } }),
+    });
+    expect(noOrigin.status).toBe(401);
+    // the bearer is unaffected — no Origin, still fine (CLI client):
+    const bearer = await fetch(`${base}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ id: 1, method: 'health' }),
+    });
+    expect(bearer.status).toBe(200);
+  });
+
   it('no auth at all → RPC 401 (unchanged posture)', async () => {
     const r = await fetch(`${base}/rpc`, {
       method: 'POST',
@@ -160,28 +188,46 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
     expect(r.status).toBe(401);
   });
 
-  it('the session cookie authenticates a WebSocket upgrade', async () => {
-    const cookie = (await pair(await mintCode(), '10.9.0.6')) as string;
-    const convo = await fetch(`${base}/rpc`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({
-        id: 1,
-        method: 'project.ensure',
-        params: { slug: 'ws-pair', name: 'WS Pair' },
-      }),
-    });
-    expect(convo.status).toBe(200);
-
+  /** Open a cookie-authenticated WS with an explicit Origin; resolve open/refused. */
+  async function wsOpens(cookie: string, origin: string | undefined): Promise<boolean> {
+    const headers: Record<string, string> = { cookie };
+    if (origin) headers.origin = origin;
     const ws = new WebSocket(`ws://127.0.0.1:${running.port}/events/ws?conversationId=nope`, {
-      headers: { cookie },
+      headers,
     });
+    const ok = await new Promise<boolean>((resolve) => {
+      ws.on('open', () => resolve(true));
+      ws.on('error', () => resolve(false));
+      ws.on('unexpected-response', () => resolve(false));
+    });
+    if (ok) ws.close();
+    return ok;
+  }
+
+  it('the session cookie authenticates a WebSocket upgrade from the trusted origin', async () => {
+    const cookie = (await pair(await mintCode(), '10.9.0.6')) as string;
+    expect(await wsOpens(cookie, base)).toBe(true); // trusted (self) origin
+  });
+
+  it('RED (finding 1): a cookie WS from a HOSTILE origin is rejected before upgrade', async () => {
+    const cookie = (await pair(await mintCode(), '10.9.0.61')) as string;
+    // The core live hole: WS has no CORS/preflight, so only an explicit Origin
+    // check stops a same-site page on another port from hijacking the socket.
+    expect(await wsOpens(cookie, 'http://localhost:9999')).toBe(false);
+    // and a cookie WS with NO Origin (browsers ALWAYS send Origin on WS) → refuse
+    expect(await wsOpens(cookie, undefined)).toBe(false);
+  });
+
+  it('a bearer WebSocket needs no Origin (CLI client is preserved)', async () => {
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${running.port}/events/ws?conversationId=nope&token=${TOKEN}`,
+    );
     const opened = await new Promise<boolean>((resolve) => {
       ws.on('open', () => resolve(true));
       ws.on('error', () => resolve(false));
       ws.on('unexpected-response', () => resolve(false));
     });
-    expect(opened).toBe(true); // 401 would kill the handshake before open
+    expect(opened).toBe(true);
     ws.close();
   });
 

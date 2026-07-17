@@ -17,6 +17,7 @@ import {
   sessionSetCookie,
   tokensMatch,
 } from './auth.ts';
+import { type BrowserTrust, cookieOriginAllowed, resolveBrowserTrust } from './browser-origin.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
 import { type TerminalBridge, attachTerminalBridge } from './terminal-bridge.ts';
@@ -87,6 +88,8 @@ export interface HttpServerOptions {
   host?: string;
   /** Bearer token required for non-health routes. Empty/undefined → no auth. */
   authToken?: string;
+  /** Explicit trusted browser origins (tests); production resolves from env. */
+  trustedOrigins?: string[];
 }
 export interface RunningHttpServer {
   server: Server;
@@ -268,16 +271,16 @@ async function handleHttp(
   req: IncomingMessage,
   res: ServerResponse,
   authToken: string,
+  trust: BrowserTrust,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
   applySecurityHeaders(res);
 
   // CORS: reflect the origin when allowed (see corsAllowedOrigin), and answer
   // preflights before auth — a preflight never carries the bearer.
-  const allowedOrigin = corsAllowedOrigin(
-    typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
-  );
+  const allowedOrigin = corsAllowedOrigin(origin);
   applyCors(res, allowedOrigin);
   if (method === 'OPTIONS') {
     res.writeHead(allowedOrigin ? 204 : 403);
@@ -413,17 +416,22 @@ async function handleHttp(
 
   // Everything else is gated when a token is configured. Gate before route
   // matching so an unauthenticated caller cannot probe which routes exist.
-  // ADR-0057: a live browser session cookie is as good as the bearer — and a
-  // cookie-authenticated MUTATION must be JSON (SameSite=Strict already blocks
-  // cross-site sends; the content-type floor is belt-and-braces CSRF, since a
-  // cross-origin form cannot produce application/json without a preflight).
+  // ADR-0057: a live browser session cookie is as good as the bearer, BUT a
+  // cookie is a browser credential — it is honored only when
+  //   (a) the request comes from a trusted dashboard ORIGIN (finding 1: the
+  //       browser-set Origin is the unforgeable discriminator; a same-site page
+  //       on another localhost port is a different origin and rejected), AND
+  //   (b) a mutation carries `application/json` (a cross-origin <form> cannot,
+  //       so this is belt-and-braces CSRF under SameSite=Strict).
+  // The bearer path ignores Origin entirely, preserving CLI/programmatic clients.
   if (authToken) {
     const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
     const bearerOk = tokensMatch(authToken, provided);
-    const csrfSafe =
+    const contentTypeOk =
       method === 'GET' ||
       (req.headers['content-type'] ?? '').toString().toLowerCase().includes('application/json');
-    if (!bearerOk && !(hasSession && csrfSafe)) {
+    const cookieOk = hasSession && cookieOriginAllowed(origin, method, trust) && contentTypeOk;
+    if (!bearerOk && !cookieOk) {
       sendJson(res, 401, {
         error: { code: 'unauthorized', message: 'missing or invalid bearer token' },
       });
@@ -613,8 +621,14 @@ export function startHttpServer(
 ): Promise<RunningHttpServer> {
   const host = opts.host ?? '127.0.0.1';
   const authToken = opts.authToken ?? '';
+  // The trusted-origin authority (finding 1). Resolved from env, plus the
+  // daemon's own bound origin (assigned in the listen callback below so direct
+  // dev access to a random test port is trusted). Explicit override for tests.
+  let trust: BrowserTrust = opts.trustedOrigins
+    ? { origins: new Set(opts.trustedOrigins) }
+    : resolveBrowserTrust({});
   const server = createServer((req, res) => {
-    handleHttp(kernel, req, res, authToken).catch(() => {
+    handleHttp(kernel, req, res, authToken, trust).catch(() => {
       if (!res.headersSent) {
         sendJson(res, 500, { error: { code: 'internal', message: 'internal error' } });
       } else if (!res.writableEnded && !res.destroyed) {
@@ -664,13 +678,22 @@ export function startHttpServer(
     // Authorization header, so a `?token=` query parameter is accepted too —
     // and per ADR-0057 the session cookie rides the upgrade automatically,
     // which is how the SPA authenticates without ever holding the bearer.
+    //
+    // Finding 1 — the live hole: a WS upgrade has NO CORS/preflight, so a cookie
+    // alone would let a same-site page on another port hijack the socket. When
+    // authenticating by COOKIE we therefore also require a trusted, present
+    // Origin (browsers always send it on a WS handshake). Bearer auth ignores
+    // Origin, preserving CLI clients.
     if (authToken) {
       const provided = requestToken(req.headers.authorization, url.searchParams.get('token'));
+      const bearerOk = tokensMatch(authToken, provided);
       const cookieSession = sessionFromCookie(
         typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined,
       );
-      const sessionOk = kernel.checkBrowserSession(cookieSession);
-      if (!tokensMatch(authToken, provided) && !sessionOk) {
+      const wsOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+      const cookieOk =
+        kernel.checkBrowserSession(cookieSession) && cookieOriginAllowed(wsOrigin, 'WS', trust);
+      if (!bearerOk && !cookieOk) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
@@ -837,6 +860,10 @@ export function startHttpServer(
       server.removeListener('error', onListenError);
       const addr = server.address();
       const port = typeof addr === 'object' && addr ? addr.port : (opts.port ?? 0);
+      // Now that the bound port is known, trust the daemon's OWN origin too (so a
+      // browser opening the daemon directly in dev is trusted). An explicit
+      // trustedOrigins override (tests) is authoritative and not widened here.
+      if (!opts.trustedOrigins) trust = resolveBrowserTrust({ selfPort: port });
       resolve({
         server,
         port,
