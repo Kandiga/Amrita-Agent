@@ -89,6 +89,10 @@ describe('chat turn — mock (kernel)', () => {
       'model.usage',
       'message.agent',
       'turn.completed',
+      // "fix the PDF export bug" is build intent, and this kernel has real
+      // execution OFF — so the planner parks it as an Inbox card instead of
+      // dying silently (QA finding 1). The park is part of the turn's truth.
+      'inbox.captured',
     ]);
     expect(kernel.store.listMessages(conversationId).map((m) => m.role)).toEqual(['user', 'agent']);
     expect(kernel.store.searchMessages('deterministic').some((h) => h.role === 'agent')).toBe(true);

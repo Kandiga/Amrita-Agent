@@ -112,6 +112,7 @@ import {
   SESSION_EYES_LINES_SETTING,
   SINGLE_SESSION_SETTING,
   type SessionBrief,
+  blockedOrchestratorPreamble,
   buildProjectContextPack,
 } from './context-pack.ts';
 import { probeGitContext, rootExists, summarizeFiles } from './context.ts';
@@ -1640,10 +1641,25 @@ export class AmritaKernel {
     } catch (err) {
       // The turn is already persisted; the Planner is best-effort. But NEVER
       // silently: a swallowed throw here once hid a broken delegation chain for
-      // days ("she says she delegates, nothing opens"). Value-free breadcrumb.
+      // days ("she says she delegates, nothing opens"). Value-free breadcrumb —
+      // and an Inbox card so the OPERATOR sees it too, not just the journal
+      // (QA finding 1: the dead end must be visible where the user lives).
       console.error(
         `amritad: planner failed (turn persisted, no session opened): ${err instanceof Error ? err.message : 'unknown error'}`,
       );
+      try {
+        this.store.captureInboxItem({
+          projectId,
+          conversationId: input.conversationId,
+          origin: 'agent',
+          text: `Delegation failed after the reply — no session was opened for: ${input.text.slice(0, 140)}`,
+          suggestedKind: 'task',
+          rationale: 'the planner hit an error (details in the daemon log); run `amrita doctor`',
+          confidence: 'high',
+        });
+      } catch {
+        /* inbox capture is best-effort on the error path */
+      }
     }
 
     return {
@@ -2963,7 +2979,24 @@ export class AmritaKernel {
     const { intent } = classifyIntent(input.userText);
     const runtimes = await this.getCodingRuntimes();
     const agent = resolveAgent({ intent, runtimes, realExecution: this.realLaneExecution });
-    if (agent.kind === 'human') return; // no ready runtime → Amrita's reply says so honestly
+    if (agent.kind === 'human') {
+      // QA finding 1: a build request that CANNOT be delegated must never die
+      // silently — park it in the Inbox with the exact missing piece and fix,
+      // so the operator has one actionable card instead of a dead end. (The
+      // reply-side honesty lives in the blocked orchestrator preamble.)
+      if (agent.missing) {
+        this.store.captureInboxItem({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          origin: 'agent',
+          text: `Build request parked — ${agent.missing.what} is missing: ${input.userText.slice(0, 140)}`,
+          suggestedKind: 'task',
+          rationale: `${agent.missing.why}. Fix: ${agent.missing.fix}${agent.missing.nextCommand ? ` — ${agent.missing.nextCommand}` : ''}`,
+          confidence: 'high',
+        });
+      }
+      return;
+    }
 
     // Open an INTERACTIVE, streamed tmux session (ADR-0049) so the operator WATCHES the
     // agent build live in the Claude/Codex tab — not a silent headless lane. It is
@@ -3104,8 +3137,16 @@ export class AmritaKernel {
     // The preamble is a property of Amrita, not the project, so it goes on EVERY
     // turn. When orchestration is on (default), she delegates builds to a session
     // (AMRITA_ORCHESTRATOR); the kill-switch reverts to the legacy inline canvas.
+    // QA finding 1: the promise must track REALITY — when real execution is off,
+    // no session can ever open, so the blocked variant forbids promising one and
+    // names the exact enable step instead (the reply is written BEFORE the
+    // planner runs, so honesty has to live here, not in the planner).
     const preamble =
-      this.getSetting(ORCHESTRATION_SETTING) === false ? AMRITA_CAPABILITIES : AMRITA_ORCHESTRATOR;
+      this.getSetting(ORCHESTRATION_SETTING) === false
+        ? AMRITA_CAPABILITIES
+        : this.realLaneExecution
+          ? AMRITA_ORCHESTRATOR
+          : blockedOrchestratorPreamble();
     return pack ? `${preamble}\n\n${pack}` : preamble;
   }
 

@@ -121,7 +121,8 @@ export const SINGLE_SESSION_SETTING = 'orchestration.singleSessionPerProject';
  * are the execution arms. Owner decision (2026-07-15): EVERYTHING to a session — she
  * does not print code in chat; the Canvas shows the live session instead.
  */
-export const AMRITA_ORCHESTRATOR = [
+/** Shared orchestrator identity — the head of both readiness variants. */
+const ORCHESTRATOR_HEAD = [
   '# Amrita — the project orchestrator',
   '',
   'You are the managerial brain of this project. Claude Code and Codex are your',
@@ -134,6 +135,10 @@ export const AMRITA_ORCHESTRATOR = [
   '- paste raw stdout/stderr, long logs, or a large patch,',
   '- copy an execution agent’s internal step-by-step reasoning.',
   '',
+];
+
+export const AMRITA_ORCHESTRATOR = [
+  ...ORCHESTRATOR_HEAD,
   'Instead, in a few sentences: say what you understood, what you will delegate,',
   'which agent fits (Claude Code for building/refactoring/deep code work; Codex for',
   'research/QA/verification/isolated fixes), the scope and rough budget, and the',
@@ -168,6 +173,42 @@ export const AMRITA_ORCHESTRATOR = [
   'Always reply in the operator’s language: if they wrote in Hebrew, answer in',
   'Hebrew (mixed Hebrew/English for code terms is fine).',
 ].join('\n');
+
+/**
+ * QA finding 1 (false-ready): the exact one-step fix for the dominant fresh-
+ * install blocker. Lives next to the preamble text that speaks it.
+ */
+export const REAL_EXECUTION_FIX =
+  'real execution is disabled (the safe install default) — enable it with ' +
+  'AMRITA_LANES_ALLOW_REAL_EXECUTION=1 and AMRITA_LANES_ALLOWED_ROOTS=<your projects folder>, ' +
+  'then restart the daemon (amritad / amrita open)';
+
+/**
+ * The orchestrator preamble when sessions CANNOT open (QA finding 1). The
+ * promise engine of the false-ready bug was the unconditional "session is
+ * waiting for approval / Allow button" instruction — this variant replaces it
+ * with the truth and exactly one next step, so Amrita can never promise a
+ * session that will not materialize.
+ */
+export function blockedOrchestratorPreamble(fix: string = REAL_EXECUTION_FIX): string {
+  return [
+    ...ORCHESTRATOR_HEAD,
+    `RIGHT NOW execution sessions are NOT available on this install: ${fix}.`,
+    '',
+    'Because of that, NEVER tell the operator that a session was opened, is',
+    'running, or is waiting for their approval — no session and no Allow button',
+    'will appear. When they ask you to build/implement/fix something: acknowledge',
+    'the request, say it was parked in the project Inbox, and give them exactly',
+    'that ONE enable step. Planning, answering questions, and reviewing in chat',
+    'continue as normal.',
+    '',
+    'If a request needs a tool you do not have (email, calendar, publishing), say',
+    'exactly what is missing and how to set it up — never pretend it exists.',
+    '',
+    'Always reply in the operator’s language: if they wrote in Hebrew, answer in',
+    'Hebrew (mixed Hebrew/English for code terms is fine).',
+  ].join('\n');
+}
 
 /** Default ceiling for the rendered pack. Roughly 1.5k tokens. */
 const DEFAULT_MAX_CHARS = 6000;
