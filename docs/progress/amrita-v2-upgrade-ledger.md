@@ -1750,10 +1750,8 @@ lands the P0/P1 slices that are fixable at root cause today, on `feat/setup-cent
   planner throws also leave an Inbox card.
 - **Probe honesty (finding 7).** Version probe 2s; auth probe 10s (was one shared 1.5s that
   reported a genuinely logged-in CLI as "could not be verified" on WSL/VPS).
-- **main-branch installer trap (finding 5).** Prepared on `fix/main-installer-redirect`: main's
-  unpinned `git clone` fetched the v2 default branch then ran v0.1 entrypoints
-  (`ERR_MODULE_NOT_FOUND`); the shim now execs the v2-main installer. Push to `main` awaits
-  approval.
+- **main-branch installer trap (finding 5).** A redirect shim was prepared on
+  `fix/main-installer-redirect`, but it is **BLOCKED, not shipped** — see Phase SEC / SEC-4.
 - **E3 browser smoke (scratch daemon+web, Playwright):** pairing gate → typed real code → app
   boots; `/session` 204; `document.cookie` empty (HttpOnly); cookie unlocks full `/health`;
   used code replays → 401; WS opens via cookie through the proxy; srcdoc inline script executes
@@ -1766,3 +1764,45 @@ Install/Login/Test cards, typed onboarding job contracts, Electron/NSIS installe
 folder-picker grant flow, Telegram pairing UX, WSL lifecycle service. Breaking change for
 existing browsers: localStorage tokens no longer work — run `amrita open` once and type the
 pairing code.
+
+## Phase SEC — hardening review corrections (Boni findings 1–3, 2026-07-17)
+
+Boni independently reran the gates (849 root / 192 web / typecheck / lint / build / secret-scan /
+diff-check — PASS) and found load-bearing gaps in the cookie-session boundary. Fixed at root cause
+on `feat/setup-center-p0` with RED-first TDD (all unpushed, pending approval):
+
+- **SEC-1 — cross-site cookie authority (finding 1).** A cookie was honored on any same-site
+  request; `SameSite=Strict` shares the eTLD+1 across every `localhost:PORT`, and a WS upgrade has
+  no CORS/preflight, so a page on `http://localhost:9999` could hijack a cookie-authenticated
+  `/events/ws` or terminal socket (live hole); cross-origin cookie HTTP mutations were blocked
+  only accidentally (no `access-control-allow-credentials`). New single authority
+  `browser-origin.ts`, used by BOTH the HTTP cookie-auth gate and the WS upgrade: a cookie is
+  honored only when the browser-set, unforgeable `Origin` is present and trusted (mutations/WS
+  require it; reads tolerate a missing one, reject a hostile one). Trusted set =
+  `AMRITA_WEB_ORIGINS` / `AMRITA_ALLOWED_ORIGINS` / the daemon's own bound origin; default is the
+  standard dashboard port ONLY, never "any localhost port". Bearer clients carry no Origin and are
+  preserved. `amrita open` declares its web port; the systemd unit documents `AMRITA_WEB_ORIGINS`.
+- **SEC-2 — secure-cookie contract (finding 2).** The cookie is now `Secure` + `__Host-`-prefixed
+  under TLS, in a SERVER-owned mode (`AMRITA_WEB_TLS`), NEVER inferred from a client-forgeable
+  `X-Forwarded-Proto`. Fail-closed default is local HTTP so plain `amrita open` keeps working.
+  Documented in `deploy/amritad.service`.
+- **SEC-3 — strict app CSP + isolated previews (finding 3).** The app CSP dropped `script-src
+  'unsafe-inline'` → `script-src 'self'` (the built app is external module scripts only — verified
+  the dist `index.html` has no inline script). The old claim that `connect-src 'self'` "closed the
+  XSS risk" was WRONG — same-origin is still reachable. Generated HTML previews moved OFF `srcdoc`
+  (which inherits the app CSP — verified in a real browser that a strict parent BLOCKS srcdoc
+  inline scripts) onto a dedicated daemon route `GET /artifact/<id>/t/<ticket>` that serves them
+  with their OWN CSP (`default-src 'none'; connect-src 'none'`) in an opaque-origin
+  `sandbox="allow-scripts"` iframe. E3 in a real browser: the preview's inline script RUNS but its
+  `fetch('/rpc')` is BLOCKED, it cannot read the parent (SecurityError) or open a WebSocket, and
+  the app shell renders under the strict CSP. Honest tradeoff: a ~250ms-debounced PUT round-trip
+  replaces instant srcdoc for the live "watch it build" preview.
+- **SEC-4 — main-branch installer (finding 5) is BLOCKED, not shipped.** The
+  `fix/main-installer-redirect` shim runs `exec bash -c "$(curl …/v2-main/…)"` — it executes a
+  MUTABLE branch with no integrity check and is not release-grade. It is NOT pushed. The correct
+  fix is a version-pinned release artifact + checksum, which requires a release channel that does
+  not exist yet; reported as blocked until then. (Public `main` still carries the v0.1 trap — a
+  known, documented gap, not a regression introduced here.)
+
+Gates after the hardening pass: root **868** tests, web **192**, typecheck/lint/build/secret-scan
+clean; browser E3 proved findings 1–3.
