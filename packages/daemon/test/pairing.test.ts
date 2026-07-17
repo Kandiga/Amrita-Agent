@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   PairingRegistry,
   SESSION_COOKIE,
+  SESSION_COOKIE_SECURE,
   SessionRegistry,
   clearSessionCookie,
+  resolveCookieMode,
+  sessionCookieName,
   sessionFromCookie,
   sessionSetCookie,
 } from '../src/auth.ts';
+
+const env = (o: Record<string, string>): NodeJS.ProcessEnv => o as NodeJS.ProcessEnv;
 
 /** ADR-0057: pairing codes + cookie sessions — the browser never sees the bearer. */
 
@@ -73,16 +78,53 @@ describe('SessionRegistry', () => {
   });
 });
 
-describe('session cookie helpers', () => {
-  it('sets an HttpOnly SameSite=Strict cookie and can clear it', () => {
-    const set = sessionSetCookie('abc123', 60_000);
-    expect(set).toBe(`${SESSION_COOKIE}=abc123; Max-Age=60; Path=/; HttpOnly; SameSite=Strict`);
-    expect(clearSessionCookie()).toContain('Max-Age=0');
-    expect(clearSessionCookie()).toContain('HttpOnly');
+describe('cookie mode is server-owned, never client X-Forwarded-Proto (Boni finding 2)', () => {
+  it('resolveCookieMode reads AMRITA_WEB_TLS only; XFP is ignored', () => {
+    expect(resolveCookieMode(env({})).secure).toBe(false); // fail-closed default (local HTTP)
+    expect(resolveCookieMode(env({ AMRITA_WEB_TLS: '1' })).secure).toBe(true);
+    expect(resolveCookieMode(env({ AMRITA_WEB_TLS: 'true' })).secure).toBe(true);
+    // A client-forgeable proxy header must NOT flip the mode to secure or insecure:
+    expect(resolveCookieMode(env({ 'x-forwarded-proto': 'https' })).secure).toBe(false);
+    expect(
+      resolveCookieMode(env({ AMRITA_WEB_TLS: '1', 'x-forwarded-proto': 'http' })).secure,
+    ).toBe(true);
   });
+});
 
-  it('parses the session id out of a Cookie header', () => {
+describe('session cookie helpers — local-HTTP mode', () => {
+  const mode = { secure: false };
+  it('sets an HttpOnly SameSite=Strict cookie WITHOUT Secure and can clear it', () => {
+    const set = sessionSetCookie('abc123', mode, 60_000);
+    expect(set).toBe(`${SESSION_COOKIE}=abc123; Max-Age=60; Path=/; HttpOnly; SameSite=Strict`);
+    expect(set).not.toContain('Secure');
+    expect(sessionCookieName(mode)).toBe(SESSION_COOKIE);
+    const cleared = clearSessionCookie(mode);
+    expect(cleared).toContain('Max-Age=0');
+    expect(cleared).toContain('HttpOnly');
+    expect(cleared).not.toContain('Secure');
+  });
+});
+
+describe('session cookie helpers — TLS mode (Boni finding 2)', () => {
+  const mode = { secure: true };
+  it('emits Secure and the __Host- prefix (Path=/ and no Domain satisfy the prefix rules)', () => {
+    const set = sessionSetCookie('abc123', mode, 60_000);
+    expect(set).toBe(
+      `${SESSION_COOKIE_SECURE}=abc123; Max-Age=60; Path=/; HttpOnly; SameSite=Strict; Secure`,
+    );
+    expect(sessionCookieName(mode)).toBe(SESSION_COOKIE_SECURE);
+    expect(SESSION_COOKIE_SECURE.startsWith('__Host-')).toBe(true);
+    const cleared = clearSessionCookie(mode);
+    expect(cleared).toContain('__Host-');
+    expect(cleared).toContain('Secure');
+    expect(cleared).toContain('Max-Age=0');
+  });
+});
+
+describe('sessionFromCookie reads either mode’s name', () => {
+  it('parses the plain and the __Host- session id out of a Cookie header', () => {
     expect(sessionFromCookie(`x=1; ${SESSION_COOKIE}=tok-9; y=2`)).toBe('tok-9');
+    expect(sessionFromCookie(`${SESSION_COOKIE_SECURE}=host-tok`)).toBe('host-tok');
     expect(sessionFromCookie(`${SESSION_COOKIE}=solo`)).toBe('solo');
     expect(sessionFromCookie(`${SESSION_COOKIE}=`)).toBeUndefined();
     expect(sessionFromCookie('other=1')).toBeUndefined();

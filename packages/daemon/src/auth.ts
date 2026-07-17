@@ -153,26 +153,67 @@ export class SessionRegistry {
   }
 }
 
+/**
+ * ADR-0057 finding 2 (secure-cookie contract). Behind TLS the session cookie
+ * MUST carry `Secure`, and we upgrade to the `__Host-` prefix — a browser only
+ * accepts a `__Host-` cookie that is Secure, Path=/, and has no Domain (all
+ * satisfied here), which pins it to this exact host and blocks a
+ * subdomain/path-scoped cookie-fixation attack.
+ *
+ * The mode is SERVER/SUPERVISOR-owned via `AMRITA_WEB_TLS`, NEVER derived from a
+ * client-controlled `X-Forwarded-Proto`: a stranger must not be able to flip the
+ * cookie's security by forging a header. Fail-closed default is local HTTP
+ * (no Secure) so a plain `amrita open` on http://localhost keeps working; a TLS
+ * deployment declares `AMRITA_WEB_TLS=1`.
+ */
+export const SESSION_COOKIE_SECURE = `__Host-${SESSION_COOKIE}`;
+
+export interface CookieMode {
+  readonly secure: boolean;
+}
+
+/** Resolve the cookie security mode from server env only (never a request header). */
+export function resolveCookieMode(env: NodeJS.ProcessEnv = process.env): CookieMode {
+  const v = (env.AMRITA_WEB_TLS ?? '').trim().toLowerCase();
+  return { secure: v === '1' || v === 'true' || v === 'yes' || v === 'on' };
+}
+
+/** The cookie name for the active mode (`__Host-` prefix under TLS). */
+export function sessionCookieName(mode: CookieMode): string {
+  return mode.secure ? SESSION_COOKIE_SECURE : SESSION_COOKIE;
+}
+
 /** Set-Cookie value for a freshly paired session. HttpOnly: JS can never read it. */
-export function sessionSetCookie(id: string, maxAgeMs: number = SESSION_TTL_MS): string {
+export function sessionSetCookie(
+  id: string,
+  mode: CookieMode,
+  maxAgeMs: number = SESSION_TTL_MS,
+): string {
   const maxAge = Math.max(1, Math.floor(maxAgeMs / 1000));
-  return `${SESSION_COOKIE}=${id}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict`;
+  const base = `${sessionCookieName(mode)}=${id}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict`;
+  return mode.secure ? `${base}; Secure` : base;
 }
 
 /** Set-Cookie value that clears the session cookie (logout). */
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict`;
+export function clearSessionCookie(mode: CookieMode): string {
+  const base = `${sessionCookieName(mode)}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict`;
+  return mode.secure ? `${base}; Secure` : base;
 }
 
-/** Extract the session id from a request's Cookie header, if present. */
+/**
+ * Extract the session id from a request's Cookie header, if present. Reads BOTH
+ * the plain and the `__Host-` name — only one mode is active per server, so at
+ * most one is ever set by us; accepting either keeps the reader mode-agnostic.
+ */
 export function sessionFromCookie(header: string | undefined): string | undefined {
   if (!header) return undefined;
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
-    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
+    const name = part.slice(0, eq).trim();
+    if (name === SESSION_COOKIE || name === SESSION_COOKIE_SECURE) {
       const value = part.slice(eq + 1).trim();
-      return value.length > 0 ? value : undefined;
+      if (value.length > 0) return value;
     }
   }
   return undefined;

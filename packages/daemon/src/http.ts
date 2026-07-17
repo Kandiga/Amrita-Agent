@@ -11,8 +11,10 @@ import {
 } from '@amrita/protocol';
 import { type WebSocket, WebSocketServer } from 'ws';
 import {
+  type CookieMode,
   clearSessionCookie,
   requestToken,
+  resolveCookieMode,
   sessionFromCookie,
   sessionSetCookie,
   tokensMatch,
@@ -90,6 +92,8 @@ export interface HttpServerOptions {
   authToken?: string;
   /** Explicit trusted browser origins (tests); production resolves from env. */
   trustedOrigins?: string[];
+  /** Force the secure-cookie (TLS/__Host-) mode (tests); production reads env. */
+  cookieSecure?: boolean;
 }
 export interface RunningHttpServer {
   server: Server;
@@ -272,6 +276,7 @@ async function handleHttp(
   res: ServerResponse,
   authToken: string,
   trust: BrowserTrust,
+  cookieMode: CookieMode,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const method = req.method ?? 'GET';
@@ -332,7 +337,7 @@ async function handleHttp(
       });
       return;
     }
-    res.setHeader('set-cookie', sessionSetCookie(newSession));
+    res.setHeader('set-cookie', sessionSetCookie(newSession, cookieMode));
     res.writeHead(204);
     res.end();
     return;
@@ -346,7 +351,7 @@ async function handleHttp(
   }
   if (method === 'POST' && url.pathname === '/session/logout') {
     kernel.revokeBrowserSession(sessionId);
-    res.setHeader('set-cookie', clearSessionCookie());
+    res.setHeader('set-cookie', clearSessionCookie(cookieMode));
     res.writeHead(204);
     res.end();
     return;
@@ -627,8 +632,12 @@ export function startHttpServer(
   let trust: BrowserTrust = opts.trustedOrigins
     ? { origins: new Set(opts.trustedOrigins) }
     : resolveBrowserTrust({});
+  // Secure-cookie mode (finding 2): server-owned; an explicit opt (tests) wins,
+  // else AMRITA_WEB_TLS. Never derived from a request header.
+  const cookieMode: CookieMode =
+    opts.cookieSecure === undefined ? resolveCookieMode() : { secure: opts.cookieSecure };
   const server = createServer((req, res) => {
-    handleHttp(kernel, req, res, authToken, trust).catch(() => {
+    handleHttp(kernel, req, res, authToken, trust, cookieMode).catch(() => {
       if (!res.headersSent) {
         sendJson(res, 500, { error: { code: 'internal', message: 'internal error' } });
       } else if (!res.writableEnded && !res.destroyed) {

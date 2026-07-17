@@ -54,6 +54,57 @@ async function pair(code: string, bucket: string): Promise<string | null> {
   return m ? `amrita_session=${m[1]}` : null;
 }
 
+describe('secure-cookie (TLS) mode issues __Host- + Secure and still authenticates (finding 2)', () => {
+  let tlsKernel: AmritaKernel;
+  let tls: RunningHttpServer;
+  let tlsBase: string;
+  beforeEach(async () => {
+    tlsKernel = AmritaKernel.open({ dbPath: ':memory:' });
+    // Server-OWNED secure mode (as a TLS deployment sets AMRITA_WEB_TLS=1) —
+    // never inferred from a request header. Origin trust includes tlsBase.
+    tls = await startHttpServer(tlsKernel, { port: 0, authToken: TOKEN, cookieSecure: true });
+    tlsBase = `http://127.0.0.1:${tls.port}`;
+  });
+  afterEach(async () => {
+    await tls.close();
+    tlsKernel.close();
+  });
+
+  it('a paired cookie carries __Host- + Secure and re-authenticates over the same connection', async () => {
+    const code = await (async () => {
+      const r = await fetch(`${tlsBase}/rpc`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ id: 1, method: 'auth.pair.mint' }),
+      });
+      return ((await r.json()) as { result: { code: string } }).result.code;
+    })();
+    const paired = await fetch(`${tlsBase}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.8.0.1' },
+      body: JSON.stringify({ code }),
+    });
+    const setCookie = paired.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('__Host-amrita_session=');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Strict');
+    // The daemon reads the __Host- name back and authenticates (Origin trusted):
+    const m = /__Host-amrita_session=([^;]+)/.exec(setCookie);
+    const cookie = `__Host-amrita_session=${m?.[1]}`;
+    const rpc = await fetch(`${tlsBase}/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: tlsBase },
+      body: JSON.stringify({ id: 1, method: 'health' }),
+    });
+    expect(rpc.status).toBe(200);
+    // logout clears with the same Secure/__Host- attributes:
+    const out = await fetch(`${tlsBase}/session/logout`, { method: 'POST', headers: { cookie } });
+    expect(out.headers.get('set-cookie')).toContain('__Host-');
+    expect(out.headers.get('set-cookie')).toContain('Secure');
+  });
+});
+
 describe('public /health is minimal; authenticated /health is full (ADR-0057)', () => {
   it('a stranger learns ok:true and nothing else', async () => {
     const r = await fetch(`${base}/health`);

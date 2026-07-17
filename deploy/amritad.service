@@ -29,6 +29,11 @@ Environment=AMRITA_LANES_ALLOWED_ROOTS=__WORKROOTS__
 # a reverse proxy at https://amrita.example), you MUST declare it here or the
 # browser cannot authenticate:
 #   Environment=AMRITA_WEB_ORIGINS=https://amrita.example
+# ADR-0057 finding 2: when the dashboard is served over HTTPS (TLS terminates in
+# front of the daemon), set this so the session cookie is issued Secure + with the
+# __Host- prefix. It is SERVER-owned on purpose — the daemon never trusts a
+# client X-Forwarded-Proto to decide cookie security. Leave unset for local HTTP.
+#   Environment=AMRITA_WEB_TLS=1
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
