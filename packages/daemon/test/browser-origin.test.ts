@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WebSecurityConfigError,
   cookieOriginAllowed,
   isTrustedBrowserOrigin,
   resolveBrowserTrust,
+  validateWebSecurityConfig,
 } from '../src/browser-origin.ts';
 
 /**
@@ -37,13 +39,15 @@ describe('resolveBrowserTrust', () => {
     expect(isTrustedBrowserOrigin('http://localhost:7461', trust)).toBe(false);
   });
 
-  it('AMRITA_ALLOWED_ORIGINS (CORS allowlist) folds into the trusted set', () => {
+  it('SEC5-2: AMRITA_ALLOWED_ORIGINS (CORS/bearer allowlist) does NOT grant cookie trust', () => {
+    // AMRITA_ALLOWED_ORIGINS authorizes CORS for bearer clients (e.g. Cinema);
+    // it must never silently become a cookie-session authority.
     const trust = resolveBrowserTrust({
       env: env({ AMRITA_ALLOWED_ORIGINS: 'https://cinema.example' }),
     });
-    expect(isTrustedBrowserOrigin('https://cinema.example', trust)).toBe(true);
-    // an explicit allowlist replaces the loopback default (matches CORS semantics)
-    expect(isTrustedBrowserOrigin('http://localhost:7461', trust)).toBe(false);
+    expect(isTrustedBrowserOrigin('https://cinema.example', trust)).toBe(false);
+    // with no AMRITA_WEB_ORIGINS, cookie trust is still just the default dashboard port
+    expect(isTrustedBrowserOrigin('http://localhost:7461', trust)).toBe(true);
   });
 
   it("the daemon's own bound origin is trusted for direct dev access", () => {
@@ -75,5 +79,39 @@ describe('cookieOriginAllowed — the gate applied to cookie-authenticated actio
     expect(cookieOriginAllowed(undefined, 'GET', trust)).toBe(true); // same-origin GET may omit
     expect(cookieOriginAllowed('http://127.0.0.1:7474', 'GET', trust)).toBe(true);
     expect(cookieOriginAllowed('http://localhost:9999', 'GET', trust)).toBe(false);
+  });
+});
+
+describe('validateWebSecurityConfig — fail closed on TLS/origin mismatch (SEC5-3)', () => {
+  it('accepts coherent configs (and never infers TLS from X-Forwarded-Proto)', () => {
+    expect(() => validateWebSecurityConfig(env({}))).not.toThrow(); // local HTTP default
+    expect(() =>
+      validateWebSecurityConfig(env({ AMRITA_WEB_ORIGINS: 'http://127.0.0.1:7461' })),
+    ).not.toThrow();
+    expect(() =>
+      validateWebSecurityConfig(
+        env({ AMRITA_WEB_ORIGINS: 'https://amrita.example', AMRITA_WEB_TLS: '1' }),
+      ),
+    ).not.toThrow();
+    // A client-forgeable proxy header must not make an HTTPS-without-TLS config "valid".
+    expect(() =>
+      validateWebSecurityConfig(
+        env({ AMRITA_WEB_ORIGINS: 'https://amrita.example', 'x-forwarded-proto': 'https' }),
+      ),
+    ).toThrow(WebSecurityConfigError);
+  });
+
+  it('rejects an HTTPS dashboard origin without AMRITA_WEB_TLS (cookie would lack Secure)', () => {
+    expect(() =>
+      validateWebSecurityConfig(env({ AMRITA_WEB_ORIGINS: 'https://amrita.example' })),
+    ).toThrow(/AMRITA_WEB_TLS/);
+  });
+
+  it('rejects TLS mode paired with only http:// dashboard origins (Secure cookie undeliverable)', () => {
+    expect(() =>
+      validateWebSecurityConfig(
+        env({ AMRITA_WEB_ORIGINS: 'http://127.0.0.1:7461', AMRITA_WEB_TLS: '1' }),
+      ),
+    ).toThrow(/https/);
   });
 });

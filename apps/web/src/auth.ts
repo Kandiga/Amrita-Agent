@@ -57,7 +57,13 @@ export async function pairWithCode(
 export async function logoutSession(f: FetchLike | null = defaultFetch()): Promise<void> {
   if (!f) return;
   try {
-    await f('/session/logout', { method: 'POST', credentials: 'same-origin' });
+    // SEC5-1: logout is a browser-lifecycle route requiring a JSON content-type
+    // (+ the browser's trusted Origin) so a hostile page cannot force it.
+    await f('/session/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+    });
   } catch {
     /* logging out of a dead server is still logged out */
   }

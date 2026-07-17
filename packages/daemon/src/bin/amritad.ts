@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolveAuthToken } from '../auth.ts';
+import { validateWebSecurityConfig } from '../browser-origin.ts';
 import { defaultDbPath, ensureHome, loadSecretsEnv } from '../home.ts';
 import { startHttpServer } from '../http.ts';
 import { AmritaKernel } from '../kernel.ts';
@@ -135,6 +136,18 @@ async function main(): Promise<void> {
   }\n`;
 
   if (http) {
+    // SEC5-3: fail closed BEFORE listening if the TLS/origin config is incoherent
+    // (e.g. an HTTPS dashboard origin without AMRITA_WEB_TLS) — running would issue
+    // a cookie the browser can never use. Honest one-line remediation, clean exit.
+    try {
+      validateWebSecurityConfig(process.env);
+    } catch (err) {
+      process.stderr.write(
+        `amritad: refusing to start — ${err instanceof Error ? err.message : 'invalid web security config'}\n`,
+      );
+      kernel.close();
+      process.exit(1);
+    }
     const auth = resolveAuthToken(process.env.AMRITA_AUTH_TOKEN);
     let running: Awaited<ReturnType<typeof startHttpServer>>;
     try {

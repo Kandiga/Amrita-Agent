@@ -36,16 +36,18 @@ function loopbackPair(port: number): string[] {
 }
 
 /**
- * Build the trusted-origin set from server-owned inputs only.
+ * Build the COOKIE-session trusted-origin set from server-owned inputs only.
  *
- * Precedence:
- *  - `AMRITA_WEB_ORIGINS` (the dashboard origin(s), set by `amrita open` / the
- *    systemd unit for the real web port) and `AMRITA_ALLOWED_ORIGINS` (the
- *    existing CORS allowlist, e.g. a Cinema SPA) fold into the set.
- *  - If NEITHER is declared, the default is the standard local dashboard port
- *    ONLY (7461 on loopback) — never "any localhost port".
- *  - The daemon's own bound origin is always trusted (direct dev access to the
- *    daemon without the proxy).
+ * SEC5-2: this is DISTINCT from the CORS allowlist. `AMRITA_ALLOWED_ORIGINS`
+ * authorizes CORS for browser BEARER clients (e.g. a Cinema SPA on another
+ * origin, see `corsAllowedOrigin`) and must NEVER silently grant cookie-session
+ * authority — a bearer client holds its own secret and does not need a cookie.
+ * Cookie trust comes only from:
+ *  - `AMRITA_WEB_ORIGINS` — the dashboard origin(s), set by `amrita open` / the
+ *    systemd unit for the real web port;
+ *  - if that is unset, the standard local dashboard port ONLY (7461 on
+ *    loopback) — never "any localhost port";
+ *  - the daemon's own bound origin (direct dev access without the proxy).
  */
 export function resolveBrowserTrust(opts: {
   env?: NodeJS.ProcessEnv;
@@ -55,16 +57,48 @@ export function resolveBrowserTrust(opts: {
   const origins = new Set<string>();
 
   const web = splitOrigins(env.AMRITA_WEB_ORIGINS);
-  const allow = splitOrigins(env.AMRITA_ALLOWED_ORIGINS);
-  for (const o of web) origins.add(o);
-  for (const o of allow) origins.add(o);
-  if (web.length === 0 && allow.length === 0) {
+  if (web.length > 0) {
+    for (const o of web) origins.add(o);
+  } else {
     for (const o of loopbackPair(DEFAULT_WEB_PORT)) origins.add(o);
   }
   if (opts.selfPort && opts.selfPort > 0) {
     for (const o of loopbackPair(opts.selfPort)) origins.add(o);
   }
   return { origins };
+}
+
+/** Thrown at startup when the TLS/origin configuration cannot work (SEC5-3). */
+export class WebSecurityConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WebSecurityConfigError';
+  }
+}
+
+/**
+ * SEC5-3: fail closed on an incoherent TLS/origin configuration at STARTUP, so
+ * the daemon never runs a mode where the Secure cookie can never be delivered.
+ * TLS is decided by the SERVER (`AMRITA_WEB_TLS`), NEVER inferred from a
+ * client-forgeable `X-Forwarded-Proto`. Throws `WebSecurityConfigError` with the
+ * exact remediation; returns void on a valid config.
+ */
+export function validateWebSecurityConfig(env: NodeJS.ProcessEnv = process.env): void {
+  const web = splitOrigins(env.AMRITA_WEB_ORIGINS);
+  const tls = /^(1|true|yes|on)$/i.test((env.AMRITA_WEB_TLS ?? '').trim());
+  const httpsOrigins = web.filter((o) => o.toLowerCase().startsWith('https://'));
+  const httpOrigins = web.filter((o) => o.toLowerCase().startsWith('http://'));
+
+  if (httpsOrigins.length > 0 && !tls) {
+    throw new WebSecurityConfigError(
+      `AMRITA_WEB_ORIGINS declares an HTTPS dashboard (${httpsOrigins.join(', ')}) but AMRITA_WEB_TLS is not enabled — the session cookie would not be issued Secure over TLS. Fix: set AMRITA_WEB_TLS=1 (TLS terminates in front of the daemon), or use an http:// origin for a local HTTP dashboard.`,
+    );
+  }
+  if (tls && web.length > 0 && httpsOrigins.length === 0) {
+    throw new WebSecurityConfigError(
+      `AMRITA_WEB_TLS is set but AMRITA_WEB_ORIGINS has only http:// origins (${httpOrigins.join(', ')}) — a Secure cookie is never sent over http, so the browser could never authenticate. Fix: declare the https:// dashboard origin in AMRITA_WEB_ORIGINS, or unset AMRITA_WEB_TLS for a local HTTP dashboard.`,
+    );
+  }
 }
 
 /** Exact-match: is this browser origin one the daemon trusts? */

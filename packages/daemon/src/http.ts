@@ -20,7 +20,12 @@ import {
   sessionSetCookie,
   tokensMatch,
 } from './auth.ts';
-import { type BrowserTrust, cookieOriginAllowed, resolveBrowserTrust } from './browser-origin.ts';
+import {
+  type BrowserTrust,
+  cookieOriginAllowed,
+  isTrustedBrowserOrigin,
+  resolveBrowserTrust,
+} from './browser-origin.ts';
 import type { AmritaKernel } from './kernel.ts';
 import { dispatch } from './rpc.ts';
 import { type TerminalBridge, attachTerminalBridge } from './terminal-bridge.ts';
@@ -250,6 +255,24 @@ function applySecurityHeaders(res: ServerResponse): void {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 }
 
+/**
+ * SEC5-1: `/pair` and `/session/logout` are browser session-lifecycle routes. A
+ * hostile same-site page (another `localhost:PORT`) must not be able to spend a
+ * pairing code or force a logout, so both require a PRESENT trusted dashboard
+ * `Origin` AND a JSON content-type — a cross-site `<form>`/no-CORS request can
+ * supply neither. Bearer/CLI clients use bearer routes, never these.
+ */
+function browserLifecycleOk(
+  origin: string | undefined,
+  contentType: string | string[] | undefined,
+  trust: BrowserTrust,
+): boolean {
+  const ct = (
+    Array.isArray(contentType) ? contentType.join(',') : (contentType ?? '')
+  ).toLowerCase();
+  return isTrustedBrowserOrigin(origin, trust) && ct.includes('application/json');
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -318,9 +341,16 @@ async function handleHttp(
     return;
   }
 
-  // ADR-0057: pairing + session lifecycle. Public by necessity (they exist to
-  // BOOTSTRAP auth), rate-limited, and worth nothing without a live code.
+  // ADR-0057: pairing + session lifecycle. Public by necessity (they BOOTSTRAP
+  // auth), rate-limited, and worth nothing without a live code — but SEC5-1: a
+  // browser-lifecycle route, so a trusted Origin + JSON is required (when auth
+  // is configured) BEFORE the rate limiter or the code is ever touched, so a
+  // hostile same-site page can neither spend the code nor exhaust the limiter.
   if (method === 'POST' && url.pathname === '/pair') {
+    if (authToken && !browserLifecycleOk(origin, req.headers['content-type'], trust)) {
+      sendJson(res, 403, { error: { code: 'forbidden', message: 'untrusted origin' } });
+      return;
+    }
     if (!allowPairAttempt(publicRateKey(req))) {
       sendJson(res, 429, { error: { code: 'rate_limited', message: 'too many pairing attempts' } });
       return;
@@ -356,6 +386,12 @@ async function handleHttp(
     return;
   }
   if (method === 'POST' && url.pathname === '/session/logout') {
+    // SEC5-1: same-site logout CSRF/DoS — a hostile page must not force a
+    // logout/re-pair. Require a trusted Origin + JSON (when auth is configured).
+    if (authToken && !browserLifecycleOk(origin, req.headers['content-type'], trust)) {
+      sendJson(res, 403, { error: { code: 'forbidden', message: 'untrusted origin' } });
+      return;
+    }
     kernel.revokeBrowserSession(sessionId);
     res.setHeader('set-cookie', clearSessionCookie(cookieMode));
     res.writeHead(204);

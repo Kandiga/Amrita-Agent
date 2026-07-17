@@ -1806,3 +1806,35 @@ on `feat/setup-center-p0` with RED-first TDD (all unpushed, pending approval):
 
 Gates after the hardening pass: root **868** tests, web **192**, typecheck/lint/build/secret-scan
 clean; browser E3 proved findings 1–3.
+
+## Phase SEC5 — session-lifecycle hardening (Boni review round 2, 2026-07-17)
+
+A second review reproduced all gates and found the new origin authority was not yet applied to
+every browser-session lifecycle mutation. Fixed at root cause on `feat/setup-center-p0`, RED-first:
+
+- **SEC5-1 — `/pair` + `/session/logout` gated at the origin authority.** Both ran before the
+  cookie-origin gate; `/session/logout` revoked/cleared with no Origin and no JSON, so a hostile
+  same-site page (another `localhost:PORT`) could force a logout/re-pair (logout CSRF/DoS), and a
+  hostile `/pair` could try to spend the operator's code. Both now require a PRESENT trusted
+  dashboard Origin + a JSON content-type — checked BEFORE the rate limiter, the code, or the
+  session is ever touched, so a rejected hostile request consumes nothing. Bearer clients are
+  untouched (they use bearer routes). The web `logoutSession` now sends `application/json`.
+- **SEC5-2 — cookie trust no longer folds `AMRITA_ALLOWED_ORIGINS`.** That variable authorizes
+  CORS for browser BEARER clients (incl. Cinema); it must never silently become cookie-session
+  authority. `resolveBrowserTrust` now derives cookie trust ONLY from `AMRITA_WEB_ORIGINS` / the
+  default dashboard port / the daemon self-origin. `corsAllowedOrigin` still reads
+  `AMRITA_ALLOWED_ORIGINS` independently for CORS/bearer. Adversarial test proves a CORS-listed
+  origin does NOT gain cookie HTTP/WS authority.
+- **SEC5-3 — fail closed on TLS/origin mismatch at startup.** `validateWebSecurityConfig` (called
+  from `amritad` before it listens) refuses to start when `AMRITA_WEB_ORIGINS` is HTTPS without
+  `AMRITA_WEB_TLS=1`, or when TLS is enabled with only `http://` dashboard origins (the Secure
+  cookie would be undeliverable) — with the exact remediation. TLS is never inferred from
+  `X-Forwarded-Proto`. Proven at real startup (the daemon prints "refusing to start — …" and exits 1).
+
+E3 (isolated daemon 7473 + web 7474 + a real hostile origin on 7499, real browser): a hostile
+cross-origin `/pair` with the operator's code → **403** and the code was **NOT consumed** (the real
+dashboard then paired 204); a hostile cookie WebSocket → **rejected**; from the trusted dashboard,
+pairing works, the artifact preview renders but its `fetch('/rpc')` stays **BLOCKED**, and logout
+(JSON + trusted Origin) → 204 then `/session` → 401. `document.cookie` stays empty (HttpOnly).
+
+Gates: root **874** tests, web **192**, typecheck/lint/build/secret-scan/diff-check clean.

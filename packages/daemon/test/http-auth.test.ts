@@ -42,7 +42,9 @@ async function mintCode(): Promise<string> {
 async function pair(code: string, bucket: string): Promise<string | null> {
   const r = await fetch(`${base}/pair`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': bucket },
+    // A real browser stamps the (trusted, self) Origin on the POST — the
+    // faithful simulation of the pairing gate calling its own daemon.
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': bucket, origin: base },
     body: JSON.stringify({ code }),
   });
   if (r.status !== 204) return null;
@@ -81,7 +83,11 @@ describe('secure-cookie (TLS) mode issues __Host- + Secure and still authenticat
     })();
     const paired = await fetch(`${tlsBase}/pair`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.8.0.1' },
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': '10.8.0.1',
+        origin: tlsBase,
+      },
       body: JSON.stringify({ code }),
     });
     const setCookie = paired.headers.get('set-cookie') ?? '';
@@ -98,8 +104,11 @@ describe('secure-cookie (TLS) mode issues __Host- + Secure and still authenticat
       body: JSON.stringify({ id: 1, method: 'health' }),
     });
     expect(rpc.status).toBe(200);
-    // logout clears with the same Secure/__Host- attributes:
-    const out = await fetch(`${tlsBase}/session/logout`, { method: 'POST', headers: { cookie } });
+    // logout (trusted origin + JSON) clears with the same Secure/__Host- attributes:
+    const out = await fetch(`${tlsBase}/session/logout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: tlsBase },
+    });
     expect(out.headers.get('set-cookie')).toContain('__Host-');
     expect(out.headers.get('set-cookie')).toContain('Secure');
   });
@@ -197,6 +206,62 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
     expect(await pair('AAAA-AAAA', '10.9.0.3')).toBeNull();
   });
 
+  it('RED (SEC5-1): a hostile/no-origin /pair is refused WITHOUT consuming the code', async () => {
+    const code = await mintCode();
+    // A same-site page on another localhost port tries to spend the operator's code:
+    const hostile = await fetch(`${base}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:9999' },
+      body: JSON.stringify({ code }),
+    });
+    expect(hostile.status).toBe(403);
+    // No Origin at all (a bare cross-site request) is refused too:
+    const noOrigin = await fetch(`${base}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    expect(noOrigin.status).toBe(403);
+    // The code was NOT consumed — the real dashboard can still use it:
+    expect(await pair(code, '10.9.0.31')).not.toBeNull();
+  });
+
+  it('RED (SEC5-1): /pair requires a JSON content-type even from a trusted origin', async () => {
+    const code = await mintCode();
+    const r = await fetch(`${base}/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', origin: base },
+      body: JSON.stringify({ code }),
+    });
+    expect(r.status).toBe(403);
+    expect(await pair(code, '10.9.0.32')).not.toBeNull(); // still unconsumed
+  });
+
+  it('RED (SEC5-1): a hostile/no-origin /session/logout is refused; the session stays valid', async () => {
+    const cookie = (await pair(await mintCode(), '10.9.0.33')) as string;
+    // hostile origin:
+    const hostile = await fetch(`${base}/session/logout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: 'http://localhost:9999' },
+    });
+    expect(hostile.status).toBe(403);
+    // no origin:
+    const noOrigin = await fetch(`${base}/session/logout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+    });
+    expect(noOrigin.status).toBe(403);
+    // the session is UNTOUCHED — logout CSRF/DoS did not fire:
+    expect((await fetch(`${base}/session`, { headers: { cookie } })).status).toBe(204);
+    // the real dashboard CAN log out (trusted origin + JSON):
+    const good = await fetch(`${base}/session/logout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: base },
+    });
+    expect(good.status).toBe(204);
+    expect((await fetch(`${base}/session`, { headers: { cookie } })).status).toBe(401);
+  });
+
   it('the cookie authenticates RPC and /session; logout kills it', async () => {
     const cookie = (await pair(await mintCode(), '10.9.0.4')) as string;
 
@@ -215,8 +280,11 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
     expect((await fetch(`${base}/session`, { headers: { cookie } })).status).toBe(204);
     expect((await fetch(`${base}/session`)).status).toBe(401);
 
-    // logout → the same cookie is dead:
-    const out = await fetch(`${base}/session/logout`, { method: 'POST', headers: { cookie } });
+    // logout from the trusted dashboard origin → the same cookie is dead:
+    const out = await fetch(`${base}/session/logout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, origin: base },
+    });
     expect(out.status).toBe(204);
     expect(out.headers.get('set-cookie')).toContain('Max-Age=0');
     expect((await fetch(`${base}/session`, { headers: { cookie } })).status).toBe(401);
@@ -319,18 +387,21 @@ describe('pairing → HttpOnly cookie session (ADR-0057)', () => {
   });
 
   it('brute force hits the rate limit: 6th attempt in a window → 429', async () => {
+    // From the trusted dashboard (so the SEC5-1 origin gate passes and we
+    // exercise the rate limiter, not the origin check).
     const bucket = '10.9.0.77';
+    const headers = { 'content-type': 'application/json', 'x-forwarded-for': bucket, origin: base };
     for (let i = 0; i < 5; i++) {
       const r = await fetch(`${base}/pair`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-forwarded-for': bucket },
+        headers,
         body: JSON.stringify({ code: 'ZZZZ-ZZZZ' }),
       });
       expect(r.status).toBe(401);
     }
     const sixth = await fetch(`${base}/pair`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': bucket },
+      headers,
       body: JSON.stringify({ code: 'ZZZZ-ZZZZ' }),
     });
     expect(sixth.status).toBe(429);

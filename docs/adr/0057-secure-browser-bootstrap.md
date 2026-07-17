@@ -50,17 +50,27 @@ posture unauthenticated), 11 (no CSP / XCTO / Referrer-Policy / frame / COOP hea
    (unforgeable) `Origin` is present and trusted. `SameSite=Strict` shares the
    eTLD+1 across every `localhost:PORT`, and a WS upgrade has no CORS/preflight —
    so without this a page on `http://localhost:9999` could open a
-   cookie-authenticated `/events/ws` or terminal socket. Trusted origins =
-   `AMRITA_WEB_ORIGINS` / `AMRITA_ALLOWED_ORIGINS` / the daemon's own bound
-   origin; default is the standard dashboard port only, never "any localhost
-   port". Bearer clients carry no Origin and are unaffected. The same authority
-   gates cookie-authenticated HTTP mutations.
+   cookie-authenticated `/events/ws` or terminal socket. Cookie trust (SEC5-2) =
+   `AMRITA_WEB_ORIGINS` / the standard dashboard port default / the daemon's own
+   bound origin — **NOT** `AMRITA_ALLOWED_ORIGINS`, which authorizes CORS for
+   BEARER clients (e.g. Cinema) and must never silently grant cookie authority.
+   The default is the standard dashboard port only, never "any localhost port".
+   Bearer clients carry no Origin and are unaffected. The same authority gates
+   cookie-authenticated HTTP mutations AND (SEC5-1) the browser session-lifecycle
+   routes `POST /pair` and `POST /session/logout`: a trusted Origin + a JSON
+   content-type is required (checked before the code is touched or the session
+   revoked), so a hostile same-site page cannot spend a pairing code or force a
+   logout/re-pair.
 2. **`Secure` + `__Host-` under TLS, server-owned.** The cookie's security is
    `AMRITA_WEB_TLS`, resolved from server env — NEVER from a client-forgeable
    `X-Forwarded-Proto`. TLS mode issues `__Host-amrita_session` with `Secure`
    (Path=/, no Domain), pinning it to the exact host. **Deployment:** a TLS
    dashboard MUST set `AMRITA_WEB_TLS=1` (documented in `deploy/amritad.service`);
-   local HTTP is the fail-closed default.
+   local HTTP is the fail-closed default. SEC5-3: the daemon **refuses to start**
+   on an incoherent config (`validateWebSecurityConfig`) — an HTTPS
+   `AMRITA_WEB_ORIGINS` without `AMRITA_WEB_TLS`, or TLS enabled with only
+   `http://` dashboard origins — with the exact remediation, so a Secure cookie
+   is never issued where the browser can never receive it.
 3. **Strict app CSP + artifact previews isolated from app authority.** Earlier
    this ADR claimed `connect-src 'self'` "closes the exfiltration channel" while
    the app kept `script-src 'unsafe-inline'`. That was **wrong**: `connect-src
