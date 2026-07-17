@@ -1449,6 +1449,11 @@ code {
 .mobile-tabs {
   display: none;
 }
+/* Mobile-only sticky approval bar — a time-limited approval must be answerable
+   from any view (desktop shows approvals in the chat column instead). */
+.mobile-approval-bar {
+  display: none;
+}
 
 @media (max-width: 960px) {
   .app-shell {
@@ -1533,6 +1538,64 @@ code {
   }
   .stage-crumb {
     padding-inline-start: 2px;
+  }
+
+  /* the sticky bar replaces the in-column panel on mobile (no duplicate). */
+  .chat-approvals {
+    display: none;
+  }
+  .mobile-approval-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    position: sticky;
+    bottom: calc(56px + env(safe-area-inset-bottom)); /* sits just above the tab bar */
+    z-index: 31;
+    margin: 0 8px;
+    padding: 10px 12px;
+    background: var(--clay);
+    color: #fff;
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-float);
+  }
+  .mobile-approval-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .mobile-approval-text strong {
+    font-size: 12px;
+    opacity: 0.9;
+  }
+  .mobile-approval-text span {
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobile-approval-actions {
+    display: flex;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+  .mobile-approval-actions button {
+    min-height: 44px;
+    min-width: 64px;
+    border: none;
+    border-radius: var(--r-md);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .mobile-approval-actions .allow {
+    background: #fff;
+    color: var(--clay);
+  }
+  .mobile-approval-actions .deny {
+    background: color-mix(in srgb, #000 18%, var(--clay));
+    color: #fff;
   }
 
   .mobile-tabs {

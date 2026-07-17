@@ -1865,6 +1865,38 @@ export function App() {
         </form>
       </section>
 
+      {/* Mobile: a pending approval is time-limited (deny-by-default) and must be
+          answerable from ANY view — a session on the Claude/Codex tab can't be
+          approved from the chat column you can't see. This sticky bar surfaces the
+          oldest pending approval above the bottom nav, everywhere, on mobile. */}
+      {pendingApprovals.length > 0 && pendingApprovals[0] ? (
+        <div className="mobile-approval-bar" role="alertdialog" aria-label="Approval needed">
+          <div className="mobile-approval-text">
+            <strong>Approval needed</strong>
+            <span dir={textDir(pendingApprovals[0].detail ?? pendingApprovals[0].action)}>
+              {pendingApprovals[0].action}
+              {pendingApprovals.length > 1 ? ` · +${pendingApprovals.length - 1} more` : ''}
+            </span>
+          </div>
+          <div className="mobile-approval-actions">
+            <button
+              type="button"
+              className="allow"
+              onClick={() => void resolveApproval(pendingApprovals[0]?.approvalId ?? '', 'allow')}
+            >
+              Allow
+            </button>
+            <button
+              type="button"
+              className="deny"
+              onClick={() => void resolveApproval(pendingApprovals[0]?.approvalId ?? '', 'deny')}
+            >
+              Deny
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <nav className="mobile-tabs" aria-label="Sections">
         {(
           [
