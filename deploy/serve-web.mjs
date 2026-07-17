@@ -52,8 +52,11 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-/** Routes forwarded to the daemon — everything else is static. */
-const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes', '/p'];
+/** Routes forwarded to the daemon — everything else is static.
+ *  ADR-0057: /pair and /session are the browser's auth bootstrap — they MUST
+ *  reach the daemon (the E3 smoke failed exactly here when they fell through
+ *  to the SPA fallback and pairing silently never happened). */
+const PROXY_PREFIXES = ['/rpc', '/events', '/health', '/lanes', '/p', '/pair', '/session'];
 
 function proxyHttp(req, res) {
   // This process is the internet-facing edge; the daemon behind it is loopback.

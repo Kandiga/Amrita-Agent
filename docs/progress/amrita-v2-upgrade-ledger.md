@@ -1724,3 +1724,45 @@ only token generator in the repo. Regression guard: a source-level fitness test 
 `packages/cli/test/lifecycle.test.ts` fails if a seeded PRNG ever reappears in the launcher. Anyone
 who already generated a token with the weak version should delete the `AMRITA_AUTH_TOKEN` line from
 `~/.amrita/secrets.env` and re-run `amrita open` to mint a strong one.
+
+## Phase SC — Setup-Center P0: secure bootstrap, honest promises, honest probes (2026-07-17)
+
+External clean-room QA of the community install (WSL, `ea11939`) filed 18 findings. This phase
+lands the P0/P1 slices that are fixable at root cause today, on `feat/setup-center-p0`:
+
+- **ADR-0057 secure browser bootstrap (findings 3/10/11).** The daemon bearer never reaches the
+  browser: `amrita open` prints a single-use CSPRNG pairing code (120s TTL, atomic consume,
+  5/min/IP) typed into a full-screen PairingGate; `POST /pair` answers with an HttpOnly
+  SameSite=Strict cookie session (in-memory, 7-day sliding). `#token=` adoption is rejected, the
+  legacy localStorage bearer is purged on boot, WS upgrades ride the cookie, cookie mutations
+  require JSON (CSRF floor). Public `/health` is `{ok,name}` only; auth unlocks the full payload.
+  serve-web binds loopback by default (`--host`/`AMRITA_WEB_HOST` to opt out); both layers send
+  nosniff/no-referrer/COOP/CSP, with serve-web's mirrored literals pinned to the daemon's
+  `SECURITY_HEADERS` by a fitness test. CSP keeps `script-src 'unsafe-inline'` deliberately —
+  srcdoc artifact iframes inherit the document policy (proven in-browser); the credential is
+  HttpOnly and `connect-src 'self'` closes exfiltration.
+- **False-ready dead end killed (finding 1, P0).** Root cause traced: the orchestrator preamble
+  promised "session waiting for approval / Allow button" unconditionally, the reply persists
+  BEFORE the planner runs, and on real-exec-off installs the planner silently returned. Now the
+  preamble tracks reality (`blockedOrchestratorPreamble` names ONE enable step and forbids the
+  promise — asserted against the actual bytes sent to the provider), and an undeliverable build
+  request is parked as one actionable Inbox card (`agent.missing` what/why/fix/nextCommand);
+  planner throws also leave an Inbox card.
+- **Probe honesty (finding 7).** Version probe 2s; auth probe 10s (was one shared 1.5s that
+  reported a genuinely logged-in CLI as "could not be verified" on WSL/VPS).
+- **main-branch installer trap (finding 5).** Prepared on `fix/main-installer-redirect`: main's
+  unpinned `git clone` fetched the v2 default branch then ran v0.1 entrypoints
+  (`ERR_MODULE_NOT_FOUND`); the shim now execs the v2-main installer. Push to `main` awaits
+  approval.
+- **E3 browser smoke (scratch daemon+web, Playwright):** pairing gate → typed real code → app
+  boots; `/session` 204; `document.cookie` empty (HttpOnly); cookie unlocks full `/health`;
+  used code replays → 401; WS opens via cookie through the proxy; srcdoc inline script executes
+  under the CSP. The smoke CAUGHT a real bug — `/pair`/`/session` missing from the serve-web
+  proxy prefixes (requests fell through to the SPA fallback) — fixed + pinned by a fitness test.
+
+Gates: root **849** tests, web **192**, typecheck/lint clean, amritad boots under raw node.
+Deferred honestly (own phases, per the QA plan §8): Setup Center UI with managed
+Install/Login/Test cards, typed onboarding job contracts, Electron/NSIS installer + signing,
+folder-picker grant flow, Telegram pairing UX, WSL lifecycle service. Breaking change for
+existing browsers: localStorage tokens no longer work — run `amrita open` once and type the
+pairing code.

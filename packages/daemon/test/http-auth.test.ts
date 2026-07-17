@@ -91,6 +91,10 @@ describe('public /health is minimal; authenticated /health is full (ADR-0057)', 
         expect(mjs, `serve-web.mjs CSP/value drift on: ${piece}`).toContain(piece);
       }
     }
+    // The E3 smoke once failed because /pair and /session fell through to the
+    // SPA fallback: the browser's auth bootstrap MUST be proxied to the daemon.
+    expect(mjs).toContain("'/pair'");
+    expect(mjs).toContain("'/session'");
   });
 });
 
